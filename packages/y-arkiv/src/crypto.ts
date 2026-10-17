@@ -76,20 +76,27 @@ function sharedX(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array {
 }
 
 /**
- * Wraps an epoch key for one member. Output: ephemeral public key (65) || envelope.
- * The wrapping key is HKDF(ECDH(ephemeral, member), epoch label).
+ * Encrypts to one public key. Output: ephemeral public key (65) || envelope,
+ * where the envelope key is HKDF(ECDH x-coordinate, label).
  */
-export async function wrapForMember(epochKey: Uint8Array, memberPublicKey: Uint8Array, epoch: number): Promise<Uint8Array> {
+export async function sealTo(publicKey: Uint8Array, plaintext: Uint8Array, label: string): Promise<Uint8Array> {
   const ephemeral = secp256k1.utils.randomSecretKey()
-  const kek = derive(sharedX(ephemeral, memberPublicKey), `wrap/${epoch}`)
-  const envelope = await seal(kek, epochKey)
+  const envelope = await seal(derive(sharedX(ephemeral, publicKey), label), plaintext)
   const out = new Uint8Array(65 + envelope.length)
   out.set(secp256k1.getPublicKey(ephemeral, false), 0)
   out.set(envelope, 65)
   return out
 }
 
-export async function unwrapAsMember(wrapped: Uint8Array, memberPrivateKeyHex: `0x${string}`, epoch: number): Promise<Uint8Array> {
-  const kek = derive(sharedX(hexToBytes(memberPrivateKeyHex), wrapped.subarray(0, 65)), `wrap/${epoch}`)
-  return open(kek, wrapped.subarray(65))
+export async function openWith(privateKeyHex: `0x${string}`, sealed: Uint8Array, label: string): Promise<Uint8Array> {
+  return open(derive(sharedX(hexToBytes(privateKeyHex), sealed.subarray(0, 65)), label), sealed.subarray(65))
+}
+
+/** Wraps an epoch key for one member: sealTo with label `wrap/<epoch>`. */
+export function wrapForMember(epochKey: Uint8Array, memberPublicKey: Uint8Array, epoch: number): Promise<Uint8Array> {
+  return sealTo(memberPublicKey, epochKey, `wrap/${epoch}`)
+}
+
+export function unwrapAsMember(wrapped: Uint8Array, memberPrivateKeyHex: `0x${string}`, epoch: number): Promise<Uint8Array> {
+  return openWith(memberPrivateKeyHex, wrapped, `wrap/${epoch}`)
 }

@@ -20,6 +20,7 @@ import type {
 } from "./store.js"
 
 const BLOCK_SECONDS = 2
+const REQUEST_BODY_LIMIT = 256 * 1024
 const PAGE = 200
 
 type Version = { from: bigint; to: bigint | null; entity: StoredEntity }
@@ -73,6 +74,9 @@ export class MemoryChain {
 
   batch(sender: Hex, spec: BatchSpec): BatchResult {
     this.stats.batches++
+    // the public RPC refuses request bodies over about 256 KiB, and payloads travel hex-encoded
+    const body = [...(spec.creates ?? []), ...(spec.patches ?? [])].reduce((n, c) => n + c.payload.length * 2 + 600, 0)
+    if (body > REQUEST_BODY_LIMIT) throw new ChainError(`request body of ${body} bytes exceeds the RPC limit`)
     // validate everything first so the batch is atomic
     const now = this.block
     for (const p of spec.patches ?? []) {

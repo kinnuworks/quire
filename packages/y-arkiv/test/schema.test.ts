@@ -40,7 +40,7 @@ describe("JSON Schema matches the reference implementation", () => {
       checked++
       if (k === "a" && frame.header.epoch) {
         const wrap = (frame.header.wraps as Record<string, string>)[vec.members.bea]
-        keys.set(frame.header.epoch as number, await unwrapAsMember(hexToBytes(wrap), vec.privateKeys.bea, frame.header.epoch as number))
+        keys.set(frame.header.epoch as number, await unwrapAsMember(hexToBytes(wrap!), vec.privateKeys.bea, frame.header.epoch as number))
       }
     }
     expect(checked).toBe(vec.entities.length)

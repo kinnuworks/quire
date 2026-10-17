@@ -114,15 +114,14 @@ describe("ArkivProvider", () => {
     expect(text(again)).not.toContain("secret")
   })
 
-  it("splits large snapshots into chunks that land in one batch", async () => {
+  it("splits large snapshots into chunks that fit the RPC's request limit", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
     const big = "x".repeat(300_000)
     a.doc.getText("t").insert(0, big)
-    const batches = chain.stats.batches
     await a.provider.compact()
-    expect(chain.stats.batches - batches).toBe(1)
+    // chunks go first in size-capped transactions, the head last
     expect(a.provider.snapshot!.chunks.length).toBeGreaterThanOrEqual(3)
     chain.mine()
     const reader = await peer(chain, link, undefined)
@@ -173,7 +172,7 @@ describe("ArkivProvider", () => {
     chain.mine()
     const batches = chain.stats.batches
     const n = await b.provider.shredMine()
-    expect(n).toBe(4) // three updates and the join request
+    expect(n).toBe(4) // three updates and the join request, never a snapshot
     expect(chain.stats.batches - batches).toBe(1)
     const left = await chain.store(undefined).query({ doc: link.doc, creators: [b.id!.address] })
     expect(left.entities).toHaveLength(0)

@@ -77,3 +77,12 @@ export const MAX_CHUNK_PLAINTEXT = PAD_BUCKETS[PAD_BUCKETS.length - 1]! - 64
 
 /** Writers flush buffered edits at most once per this many milliseconds (about one block). */
 export const FLUSH_INTERVAL_MS = 2000
+
+/** How many entities from non-members an owner's session fetches per minute, looking for join requests. */
+export const STRANGER_FETCHES_PER_MINUTE = 30
+
+/**
+ * Payload bytes per transaction. Payloads travel hex-encoded, so this keeps a
+ * request well under the public RPC's ~256 KiB body limit (see friction.md).
+ */
+export const MAX_BATCH_PAYLOAD_BYTES = 100_000

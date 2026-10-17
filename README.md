@@ -73,7 +73,7 @@ python3 readers/python/quire_audit.py --doc <0x document id>
 
 The Python reader was written from PROTOCOL.md and the test vectors alone, without reading the TypeScript. It has 92 tests of its own, including every attack below.
 
-The TypeScript suite has 76 tests, including a property-based convergence check and attacks from three rounds of adversarial review. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 25 security rules in turn and shows that a test fails every time. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`). The audit needs only the standard library.
+The TypeScript suite has 75 tests, including a property-based convergence check and attacks from three rounds of adversarial review. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 25 security rules in turn and shows that a test fails every time. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`). The audit needs only the standard library.
 
 ## How it uses Arkiv
 

@@ -56,7 +56,7 @@
   },
   "extensionRules": {
     "expected": "an extension that does not move expiry later fails clearly before sending",
-    "shorter": "1 day (earlier): Transaction failed: entity 0x182f9c03…0ba472 already expires at block 791378, so extending it to 748179 would shorten its life",
+    "shorter": "1 day (earlier): Transaction failed: entity 0x182f9c03\u20260ba472 already expires at block 791378, so extending it to 748179 would shorten its life",
     "longer": "3 days (later): ok, expiresAt 834582"
   },
   "patchAndExtendSameEntity": {
@@ -80,7 +80,8 @@
     "expected": "event within one block of confirmation",
     "txHash": "0x1805349ce14a87119f3e8ed393146f2d49e2ebf072d38f30cca200864d3f1786",
     "sendToConfirmMs": 7004,
-    "confirmToEventMs": "event arrived before createEntity returned or never"
+    "confirmToEventMs": "event arrived before createEntity returned or never",
+    "note": "superseded: this first version of the probe set its target after createEntity returned, so it missed the event. See the later file for the corrected probe."
   },
   "eventFields": {
     "expected": "creator available on EntityCreated",

@@ -10,5 +10,9 @@ const stop = client.watchEntityEvents({ onEvent: (e) => { counts[e.type] = (coun
 await new Promise((r) => setTimeout(r, 60_000))
 stop()
 const end = await client.getBlockNumber()
-console.log(JSON.stringify({ seconds: 60, blocks: Number(end - start), counts, distinctOwners: owners.size, sdk: "0.8.1" }))
+const result = { probe: "firehose", at: new Date().toISOString(), seconds: 60, blocks: Number(end - start), counts, distinctOwners: owners.size, sdk: "0.8.1" }
+const { writeFileSync, mkdirSync } = await import("node:fs")
+mkdirSync(new URL("../../../arkiv/probes/", import.meta.url), { recursive: true })
+writeFileSync(new URL(`../../../arkiv/probes/firehose-${result.at.slice(0, 16).replace(/[:T]/g, "-")}.json`, import.meta.url), JSON.stringify(result, null, 2))
+console.log(JSON.stringify(result))
 process.exit(0)

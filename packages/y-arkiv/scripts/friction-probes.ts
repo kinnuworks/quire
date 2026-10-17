@@ -179,6 +179,43 @@ const probes: Record<string, () => Promise<unknown>> = {
     return { expected: "a clear error naming the limit", out }
   },
 
+  /** Item 1: what a 429 from the keyless budget looks like (run once the budget is spent). */
+  async budget429() {
+    const res = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [`qp = str('${tag}')`, { limit: "0x1" }] }) })
+    return { expected: "a typed error from the SDK naming the budget", status: res.status, ratelimit: res.headers.get("ratelimit"), retryAfter: res.headers.get("retry-after"), body: (await res.text()).slice(0, 300) }
+  },
+
+  /** The gateway's request size limit, measured directly with padded JSON-RPC bodies. */
+  async requestBodyLimit() {
+    const out: Record<string, number> = {}
+    for (const kib of [200, 250, 255, 257, 270, 300]) {
+      const pad = "0".repeat(kib * 1024 - 80)
+      const res = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[],"pad":"${pad}"}` })
+      out[`${kib} KiB`] = res.status
+    }
+    return { expected: "a documented limit", out }
+  },
+
+  /** Item 2: a key with too little gas sends a large create. */
+  async lowBalanceError() {
+    const poor = privateKeyToAccount(generatePrivateKey())
+    await reader.waitForTransactionReceipt({ hash: await wallet.sendTransaction({ to: poor.address, value: parseEther("0.0005") }) })
+    const poorWallet = createWalletClient({ chain: tiramisu, transport: http(RPC), account: poor })
+    try {
+      await poorWallet.createEntity({ payload: payload(100_000), contentType: "application/octet-stream", attributes: attrs, expires: ExpirationTime.fromMinutes(30) })
+      return { result: "unexpectedly succeeded" }
+    } catch (e) {
+      const chain: string[] = []
+      let cause: unknown = e
+      while (cause && chain.length < 10) {
+        const c = cause as { details?: string; cause?: unknown }
+        if (c.details) chain.push(c.details)
+        cause = c.cause
+      }
+      return { expected: "an error saying the balance is too low for the gas", topLevel: (e as Error).message.split("\n")[0], causeDetails: [...new Set(chain)] }
+    }
+  },
+
   /** The event for a create carries owner but not creator. */
   async eventFields() {
     const socket = createPublicClient({ chain: tiramisu, transport: webSocket(WS) })

@@ -44,7 +44,7 @@ Each `arkiv_query` costs 100 units (`arkiv-cost: 100` header), so the keyless bu
 
 **Expected.** A thrown error (or at least a callback) naming the budget and the reset time, so an app can tell the user.
 
-**Steps to reproduce.** Run about 100 `client.query(...)` calls from one IP without an access key, then call `client.query` again and time it.
+**Steps to reproduce.** Run about 100 `client.query(...)` calls from one IP without an access key, then call `client.query` again and time it. The raw 429 is saved by probe `budget429` in [probes/2026-10-17-18-28.json](probes/2026-10-17-18-28.json).
 
 **Suggested fix.** In the SDK's default transport, turn a 429 with `ANON_COST_LIMITED` into a typed error carrying `retryAfter`, and expose the `RateLimit` and `Arkiv-Quota-Used-Percent` headers. This extends Arkiv-Network/reported-issues#17 with the exact budget (10,000 units, 100 queries) and the 18-minute wait we measured.
 
@@ -65,7 +65,7 @@ Separately, our batch probe failed on large batches with the **same** top-level 
 **Expected.** The top-level message says "insufficient balance for gas" or "request too large", which is what actually happened.
 
 **Steps to reproduce.**
-- Fund a fresh key with 0.002 GLM and call `createEntity` with a 100,000-byte payload.
+- Fund a fresh key with 0.0005 GLM and call `createEntity` with a 100,000-byte payload. Probe `lowBalanceError` ([probes/2026-10-17-18-28.json](probes/2026-10-17-18-28.json)) got the top-level "Execution error without revert data", with the cause "out of gas: gas required exceeds: 499999" only in the error chain.
 - Or call `executeBatch` with five creates of 26,000 bytes each.
 - In both cases print `error.message`, then walk `error.cause` and print each `details`.
 
@@ -85,7 +85,7 @@ The docs say an entity payload can be up to 128 KiB (131,072 bytes). What we mea
 | `batchBoundary` | 5 creates, 130,000 B total | RPC: `BAD_REQUEST` |
 | `batchBodyLimit` | 6 creates × 30,000 B (180,000 total) | fails |
 
-Payloads travel hex-encoded inside the transaction, and the RPC gateway refuses a request over roughly 256 KiB. So the limit applies to the whole transaction, not to each entity, and it sits a little under 128 KiB.
+Payloads travel hex-encoded inside the transaction, and the RPC gateway refuses large requests. Probe `requestBodyLimit` measured it directly with padded JSON-RPC bodies: 255 KiB returns 200 and 257 KiB returns HTTP 413. So the limit is 256 KiB per request, it applies to the whole transaction rather than each entity, and it caps a transaction's payloads at a little under 128 KB.
 
 **Expected.** Docs that state the per-transaction limit, and an error that names it.
 
@@ -97,7 +97,12 @@ Payloads travel hex-encoded inside the transaction, and the RPC gateway refuses 
 
 **What happened.** Quire needs to hear about new entities in one document. `watchEntityEvents` takes no owner, creator or attribute filter, so every client receives every entity event on the network. Over WebSocket with no `fromBlock` it is a single `eth_subscribe`, which is good, but the stream is the whole chain.
 
-**Measured** (probe `scripts/firehose-probe.ts`, 60 seconds, 30 blocks, 17 October 15:5x UTC): 44 `EntityCreated`, 13 `EntityDeleted`, 3 `ExpiryExtended` and 1 `OwnershipTransferred`, from 8 different owners.
+**Measured** with `scripts/firehose-probe.ts`, two runs of 60 seconds (30 blocks each) on 17 October:
+
+| Run (UTC) | EntityCreated | EntityDeleted | ExpiryExtended | OwnershipTransferred | Distinct owners |
+|---|---|---|---|---|---|
+| 15:5x | 44 | 13 | 3 | 1 | 8 |
+| 18:30 ([saved](probes/firehose-2026-10-17-18-30.json)) | 47 | 15 | 2 | 0 | 5 |
 
 That is fine today, but it grows linearly with the network. A client also has to fetch an entity just to learn it was not for them.
 
@@ -158,6 +163,8 @@ The SDK waits for the receipt by polling, so it resolves up to 3.6 seconds after
 
 **Measured** (probe `eventFields`): the event has `type, blockNumber, transactionHash, logIndex, entityKey, owner, expiresAt, creationFlags`.
 
+**Expected.** The creator, which is what readers trust, available on the creation event.
+
 Quire trusts `$creator`, not `$owner`. At creation the two are equal, so we use `owner` from the event as the creator for a cheap pre-filter, then confirm with `creator` from `arkiv_getEntity`. That equality is not written down anywhere.
 
 **Suggested fix.** Add `creator` to `EntityCreatedEvent`, or document that `owner == creator` at creation.
@@ -171,6 +178,8 @@ curl -s -o /dev/null -w "%{http_code}\n" -A "Python-urllib/3.15" -X POST https:/
 ```
 
 This returns `403`. The same request with curl's or node's user agent returns `200`.
+
+**Expected.** The same answer for any client; JSON-RPC is used from every language.
 
 Our independent Python reader hit this on its first run. It now sends its own `User-Agent` ([readers/python](../readers/python)).
 
@@ -187,6 +196,8 @@ We used it for every payload, and it did exactly what it says. Three gaps came u
 ## 11. `atBlock` retention is not documented
 
 The docs say `atBlock` must be "within the node's retained range" without giving the range.
+
+**Expected.** A stated retention window, so an app can promise its users how far back history goes.
 
 **Measured** (probe `atBlockRetentionOld`, head 705,036): queries at blocks 704,936, 695,036, 605,036, 305,036 and 1,000 all returned data. On Tiramisu today, history goes back to the start of the chain.
 

@@ -1,0 +1,31 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-17T18:28:22.096Z",
+  "tag": "probe-mvcqcc0g",
+  "budget429": {
+    "expected": "a typed error from the SDK naming the budget",
+    "status": 429,
+    "ratelimit": "limit=10000, remaining=0, reset=243",
+    "retryAfter": "243",
+    "body": "{\"error\":\"ANON_COST_LIMITED\",\"message\":\"unauthenticated query budget exhausted; get an API key at https://hub.arkiv.network for a monthly quota\"}\n"
+  },
+  "requestBodyLimit": {
+    "expected": "a documented limit",
+    "out": {
+      "200 KiB": 200,
+      "250 KiB": 200,
+      "255 KiB": 200,
+      "257 KiB": 413,
+      "270 KiB": 413,
+      "300 KiB": 413
+    }
+  },
+  "lowBalanceError": {
+    "expected": "an error saying the balance is too low for the gas",
+    "topLevel": "Transaction failed: Execution error without revert data",
+    "causeDetails": [
+      "out of gas: gas required exceeds: 499999"
+    ]
+  }
+}

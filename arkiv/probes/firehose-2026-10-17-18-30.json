@@ -1,0 +1,13 @@
+{
+  "probe": "firehose",
+  "at": "2026-10-17T18:30:02.722Z",
+  "seconds": 60,
+  "blocks": 30,
+  "counts": {
+    "EntityCreated": 47,
+    "EntityDeleted": 15,
+    "ExpiryExtended": 2
+  },
+  "distinctOwners": 5,
+  "sdk": "0.8.1"
+}

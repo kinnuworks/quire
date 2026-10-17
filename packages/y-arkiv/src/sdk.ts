@@ -29,6 +29,29 @@ import type { ArkivStore, BatchResult, BatchSpec, ChainEvent, CreateSpec, Hex, Q
 export const TIRAMISU_HTTP = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 export const TIRAMISU_WS = "wss://rpc.tiramisu.db-chain.testnet.arkiv.network"
 
+/** The keyless query budget ran out. Thrown at once, instead of waiting out a long Retry-After in silence. */
+export class QueryBudgetError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super(`Arkiv's free query budget for this address ran out. It refills in about ${Math.ceil(retryAfterSeconds / 60)} minutes, or use an access key.`)
+    this.name = "QueryBudgetError"
+  }
+}
+
+/**
+ * fetch for viem's http transport: adds the access key, and turns a 429 into
+ * QueryBudgetError. Without this, viem honours a Retry-After of up to half an
+ * hour without a word, and the app looks frozen (see friction.md).
+ */
+function arkivFetch(accessKey: string | undefined): typeof fetch {
+  return async (input, init) => {
+    const headers = new Headers(init?.headers)
+    if (accessKey) headers.set("x-api-key", accessKey)
+    const res = await fetch(input, { ...init, headers })
+    if (res.status === 429) throw new QueryBudgetError(Number(res.headers.get("retry-after") ?? "60"))
+    return res
+  }
+}
+
 export type SdkStoreOptions = {
   chain?: Chain
   httpUrl?: string
@@ -37,6 +60,8 @@ export type SdkStoreOptions = {
   privateKey?: Hex
   /** Or write through an injected wallet such as MetaMask. */
   injected?: { provider: EIP1193Provider; address: Hex }
+  /** An Arkiv access key, for scripts and servers. Never ship one in browser code: it would be public. */
+  accessKey?: string
 }
 
 type RpcEntity = {
@@ -62,7 +87,8 @@ export class SdkStore implements ArkivStore {
 
   constructor(options: SdkStoreOptions = {}) {
     const chain = options.chain ?? tiramisu
-    this.reader = createPublicClient({ chain, transport: http(options.httpUrl ?? TIRAMISU_HTTP) }) as PublicArkivClient<Transport, Chain>
+    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey), retryCount: 2 })
+    this.reader = createPublicClient({ chain, transport: transport() }) as PublicArkivClient<Transport, Chain>
     this.socket = createPublicClient({
       chain,
       transport: webSocket(options.wsUrl ?? TIRAMISU_WS, { reconnect: { attempts: 1_000, delay: 1_000 }, keepAlive: { interval: 20_000 } }),
@@ -70,7 +96,7 @@ export class SdkStore implements ArkivStore {
     if (options.privateKey) {
       const account = privateKeyToAccount(options.privateKey)
       this.address = account.address.toLowerCase() as Hex
-      this.wallet = createWalletClient({ chain, transport: http(options.httpUrl ?? TIRAMISU_HTTP), account }) as unknown as WalletArkivClient<Transport, Chain, Account>
+      this.wallet = createWalletClient({ chain, transport: transport(), account }) as unknown as WalletArkivClient<Transport, Chain, Account>
     } else if (options.injected) {
       this.address = options.injected.address.toLowerCase() as Hex
       this.wallet = createWalletClient({

@@ -15,7 +15,7 @@ import { createPublicClient, createWalletClient, formatEther, http, isAddress, p
 import { privateKeyToAccount } from "viem/accounts"
 
 const RPC = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
-const AMOUNT = parseEther("0.03")
+const AMOUNT = parseEther("0.05")
 const ONLY_BELOW = parseEther("0.005")
 // per-instance memory: a soft limit, not a guarantee across cold starts
 const recent = new Map<string, number>()

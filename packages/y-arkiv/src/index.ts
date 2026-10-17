@@ -21,5 +21,5 @@ export { ATTR, CONTENT_TYPE, KIND, LIFETIME, PAD_BUCKETS, PROTOCOL_TAG } from ".
 export { bucketFor, decodeFrame, decodeOuter, encodeFrame, encodeOuter } from "./codec.js"
 export type { Frame } from "./codec.js"
 export { clientIdFor, deriveEpochZeroKey, deriveMetaKey, open, randomBytes, seal } from "./crypto.js"
-export { SdkStore, TIRAMISU_HTTP, TIRAMISU_WS, toExpression } from "./sdk.js"
+export { QueryBudgetError, SdkStore, TIRAMISU_HTTP, TIRAMISU_WS, toExpression } from "./sdk.js"
 export type { SdkStoreOptions } from "./sdk.js"

@@ -1,0 +1,45 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-17T17:57:00.837Z",
+  "tag": "probe-mvcp80f9",
+  "wsLatency": {
+    "expected": "event within a block or two of sending",
+    "runs": [
+      {
+        "txHash": "0xb6749307023c7ae38952f49edef638a97eea0b92aa52a0bb50b659d09f52dfd1",
+        "sendToEventMs": 3894,
+        "sendToReturnMs": 4009
+      },
+      {
+        "txHash": "0x32e8c9ffafefc17a4319040349d70df53b3116bdb4780f69cb27aee0c6cd477f",
+        "sendToEventMs": 3855,
+        "sendToReturnMs": 6729
+      },
+      {
+        "txHash": "0x62741f147ed8acca6b2684eba3348e66810a298a96cb69920667f621e6efbc50",
+        "sendToEventMs": 3121,
+        "sendToReturnMs": 6706
+      }
+    ]
+  },
+  "atBlockRetentionOld": {
+    "expected": "documented: atBlock must be within the node's retained range (range not stated)",
+    "head": "705036",
+    "out": {
+      "block 704936": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0x642d43eba683ae9e795fc60a6ab7635582243d9a43b494ae411f973e558c5dc4\",\"c",
+      "block 695036": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0x136974841db84ad037eed1659c5d5b4d3a96c7cfa045f79f8835f12341ef4c04\",\"c",
+      "block 605036": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0xe6795ffb2c33f62cb9ad4c5537afd17c27d57023c8d3427d2c376f8c7c18f1a0\",\"c",
+      "block 305036": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0x45aa59dba8ccc92d751b70600195ad1d631511ad2cfc57a95f5167a1e1a88bb2\",\"c",
+      "block 1000": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0x78903fe206f8777bd6f8c2aec76807e8308538b25116cc17384597b48d36bfcd\",\"c"
+    }
+  },
+  "batchBoundary": {
+    "expected": "a clear error naming the limit",
+    "out": {
+      "130000 B total": "Transaction failed: Execution error without revert data",
+      "140000 B total": "Transaction failed: Execution error without revert data",
+      "150000 B total": "Transaction failed: Execution error without revert data"
+    }
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-17T17:54:22.470Z",
+  "tag": "probe-mvcp4m86",
+  "costHeaders": {
+    "expected": "arkiv_getEntity cheaper than arkiv_query, per docs on access keys",
+    "arkiv_query": {
+      "status": 200,
+      "cost": "100",
+      "quota": null,
+      "rateLimit": "limit=600, remaining=588, reset=57",
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0x893f62c1bb291d1a83a350799a4b7a2772ff3de2bb6abc06f3f9a23b2ebfdde4\"}],\"blockNumber\":\"0xac1b6\"}}"
+    },
+    "arkiv_getEntity": {
+      "status": 200,
+      "cost": null,
+      "quota": null,
+      "rateLimit": "limit=600, remaining=585, reset=57",
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"key\":\"0x893f62c1bb291d1a83a350799a4b7a2772ff3de2bb6abc06f3f9a23b2ebfdde4\",\"owner\":\"0x7ad475ff24a9d6d06b69f460005300fa914d8e11\",\"creator\":\"0x7ad475ff24a9d6d06b69f460005300fa914d8e11\",\"createdAt\":\"0xac1b6\",\"updatedAt\":\"0xac1b6\",\"expiresAt\":\"0xac8be\",\"creationFlags\":{\"readonly\":false,\"permissionlessExtension\":false,\"raw\":0},\"contentType\":\"application/octet-stream\",\""
+    },
+    "arkiv_getEntityCount": {
+      "status": 200,
+      "cost": null,
+      "quota": null,
+      "rateLimit": "limit=600, remaining=587, reset=56",
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":14569}"
+    },
+    "eth_blockNumber": {
+      "status": 200,
+      "cost": null,
+      "quota": null,
+      "rateLimit": "limit=600, remaining=593, reset=56",
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0xac1b6\"}"
+    },
+    "pythonUserAgent": 403
+  },
+  "payloadLimit": {
+    "expected": "documented maximum payload is 128 KiB (131,072 bytes)",
+    "out": {
+      "100000": "ok",
+      "120000": "ok",
+      "126000": "ok",
+      "128000": "ok",
+      "131072": "Transaction failed: Execution error without revert data"
+    }
+  },
+  "batchBodyLimit": {
+    "expected": "batch limited by gas or entity count, as documented",
+    "out": {
+      "4 x 30000 B": "ok",
+      "6 x 30000 B": "Transaction failed: Execution error without revert data",
+      "8 x 30000 B": "Transaction failed: Execution error without revert data",
+      "9 x 30000 B": "Transaction failed: Execution error without revert data"
+    }
+  },
+  "extensionRules": {
+    "expected": "an extension that does not move expiry later fails clearly before sending",
+    "shorter": "1 day (earlier): Transaction failed: entity 0x182f9c03…0ba472 already expires at block 791378, so extending it to 748179 would shorten its life",
+    "longer": "3 days (later): ok, expiresAt 834582"
+  },
+  "patchAndExtendSameEntity": {
+    "expected": "allowed, or rejected with a clear error",
+    "result": "ok",
+    "expiresAt": "834588",
+    "payloadBytes": 40
+  },
+  "atBlockRetention": {
+    "expected": "documented: within the node's retained range (range not stated)",
+    "head": "704990",
+    "out": {
+      "head-10": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0x182f9c030887e438a86dc06a8f36f7f5ac73fa",
+      "head-1000": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[],\"blockNumber\":\"0xabdf6\"}}",
+      "head-50000": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[],\"blockNumber\":\"0x9fe8e\"}}",
+      "head-300000": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[],\"blockNumber\":\"0x62dfe\"}}",
+      "head-704989": "200 {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[],\"blockNumber\":\"0x1\"}}"
+    }
+  },
+  "wsLatency": {
+    "expected": "event within one block of confirmation",
+    "txHash": "0x1805349ce14a87119f3e8ed393146f2d49e2ebf072d38f30cca200864d3f1786",
+    "sendToConfirmMs": 7004,
+    "confirmToEventMs": "event arrived before createEntity returned or never"
+  },
+  "eventFields": {
+    "expected": "creator available on EntityCreated",
+    "fields": [
+      "type",
+      "blockNumber",
+      "transactionHash",
+      "logIndex",
+      "entityKey",
+      "owner",
+      "expiresAt",
+      "creationFlags"
+    ]
+  },
+  "untypedPredicate": {
+    "expected": "untyped 7 compared to u64 7 either matches or errors",
+    "typedCount": 14,
+    "untyped": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[],\"blockNumber\":\"0xac1f0\"}}"
+  },
+  "burnerFunding": {
+    "expected": "plain value transfer works",
+    "gasUsed": "21000",
+    "status": "success"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-17T18:00:15.654Z",
+  "tag": "probe-mvcpc6qu",
+  "batchBoundary": {
+    "expected": "a clear error naming the limit",
+    "out": {
+      "gasPrice": "1000000002 wei",
+      "120000 B total": "ok",
+      "130000 B total": "Transaction failed: Execution error without revert data | rpc said: \"BAD_REQUEST\"",
+      "150000 B total": "Transaction failed: Execution error without revert data | rpc said: \"BAD_REQUEST\""
+    }
+  }
+}

@@ -29,8 +29,8 @@ async function burner(name: string): Promise<Identity> {
   const privateKey = generatePrivateKey()
   const address = privateKeyToAccount(privateKey).address.toLowerCase() as Hex
   const funder = createWalletClient({ chain: tiramisu, transport: http(TIRAMISU_HTTP), account: privateKeyToAccount(FUNDER!) })
-  const hash = await funder.sendTransaction({ to: address, value: parseEther("0.01") })
-  await new SdkStore().reader.waitForTransactionReceipt({ hash })
+  const hash = await funder.sendTransaction({ to: address, value: parseEther("0.08") })
+  await new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY }).reader.waitForTransactionReceipt({ hash })
   return { address, privateKey, name }
 }
 
@@ -39,14 +39,14 @@ describe.runIf(LIVE && FUNDER)("live on Tiramisu", () => {
     const ownerId = await burner("owner")
     const beaId = await burner("bea")
     const link = newDocLink(ownerId.address)
-    const ownerStore = new SdkStore({ privateKey: ownerId.privateKey })
+    const ownerStore = new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY, privateKey: ownerId.privateKey })
     await ArkivProvider.createDocument({ store: ownerStore, link, identity: ownerId })
 
     const aDoc = new Y.Doc()
     const a = new ArkivProvider(aDoc, { store: ownerStore, link, identity: ownerId, flushIntervalMs: 0 })
     await a.connect()
     const bDoc = new Y.Doc()
-    const b = new ArkivProvider(bDoc, { store: new SdkStore({ privateKey: beaId.privateKey }), link, identity: beaId, flushIntervalMs: 0 })
+    const b = new ArkivProvider(bDoc, { store: new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY, privateKey: beaId.privateKey }), link, identity: beaId, flushIntervalMs: 0 })
     await b.connect()
 
     await b.requestJoin()
@@ -62,20 +62,43 @@ describe.runIf(LIVE && FUNDER)("live on Tiramisu", () => {
     await b.flush()
     await until(() => aDoc.getText("t").toString() === "hello from bea")
 
-    const reader = new ArkivProvider(new Y.Doc(), { store: new SdkStore(), link, flushIntervalMs: 0 })
+    const readerStore = new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY })
+    const reader = new ArkivProvider(new Y.Doc(), { store: readerStore, link, flushIntervalMs: 0 })
     await reader.connect()
     expect(reader.doc.getText("t").toString()).toBe("hello from bea")
-    expect(reader.stats.queries).toBe(3)
+    // counted at the network: ACL, snapshots, updates
+    expect(readerStore.calls.query).toBe(3)
 
-    a.destroy()
-    b.destroy()
-    reader.destroy()
-  }, 180_000)
+    // a large paste goes out as chunks in separate transactions, then the head
+    const big = "x".repeat(250_000)
+    aDoc.getText("t").insert(0, big)
+    await a.flush()
+    expect(a.snapshot!.chunks.length).toBeGreaterThanOrEqual(2)
+    const late = new ArkivProvider(new Y.Doc(), { store: new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY }), link, flushIntervalMs: 0 })
+    await late.connect()
+    expect(late.doc.getText("t").toString().length).toBe(big.length + "hello from bea".length)
+
+    // revocation: bea is removed, the key rotates, and her old-epoch view stops updating
+    await a.revoke(beaId.address)
+    await until(() => b.acl?.rosterHidden === true)
+    aDoc.getText("t").insert(0, "after ")
+    await a.flush()
+    await new Promise((r) => setTimeout(r, 8000))
+    expect(bDoc.getText("t").toString().startsWith("after")).toBe(false)
+
+    // a frozen version opens from its own link
+    const version = await a.publishVersion()
+    const opened = await ArkivProvider.openVersion(new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY }), version)
+    expect(opened.doc.getText("t").toString().startsWith("after")).toBe(true)
+
+    for (const p of [a, b, reader, late]) p.destroy()
+    console.log(JSON.stringify({ doc: link.doc, owner: ownerId.address, bea: beaId.address, acl: a.aclKey, snapshot: a.snapshot?.key, version: version.key }))
+  }, 400_000)
 })
 
 describe.runIf(LIVE)("live read paths", () => {
   it("accepts our typed query and returns nothing for a random doc", async () => {
-    const store = new SdkStore()
+    const store = new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY })
     const page = await store.query({ doc: newDocLink("0x0000000000000000000000000000000000000001").doc, kind: KIND.update })
     expect(page.entities).toEqual([])
     expect(page.block).toBeGreaterThan(0n)

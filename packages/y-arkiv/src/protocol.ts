@@ -82,7 +82,10 @@ export const FLUSH_INTERVAL_MS = 2000
 export const STRANGER_FETCHES_PER_MINUTE = 30
 
 /**
- * Payload bytes per transaction. Payloads travel hex-encoded, so this keeps a
- * request well under the public RPC's ~256 KiB body limit (see friction.md).
+ * Payload bytes per transaction. Payloads travel hex-encoded in the
+ * transaction, and the public RPC gateway answers BAD_REQUEST once a request
+ * passes about 256 KiB. Measured (arkiv/probes): payloads totalling 120,000
+ * bytes land, 130,000 do not, and the SDK reports it only as "Execution error
+ * without revert data" (see friction.md).
  */
 export const MAX_BATCH_PAYLOAD_BYTES = 100_000

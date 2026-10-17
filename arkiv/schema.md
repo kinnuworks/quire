@@ -57,7 +57,7 @@ Opening a document costs three queries. Live edits after that cost none: they ar
 | Operation | One atomic `executeBatch` containing |
 |---|---|
 | Create document | ACL create + snapshot head |
-| Compact | chunks first, in transactions of at most 100,000 payload bytes (the RPC refuses bodies over about 256 KiB); then the head, which lists the chunk keys |
+| Compact | chunks first, in transactions of at most 100,000 payload bytes (payloads travel hex-encoded and the RPC refuses requests over about 256 KiB: 120,000 bytes lands, 130,000 does not); then the head, which lists the chunk keys |
 | Remove a member | ACL patch (new epoch, re-wrapped keys, sealed roster) + the new snapshot head under the new key |
 | Renew lease | extensions for my snapshot and its chunks, and the ACL if I am the owner, only where they move expiry later |
 | Shred my edit history | deletes of my updates and join requests |

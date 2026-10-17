@@ -118,7 +118,15 @@ Readers MUST ignore an update unless every client id that has structs in it equa
 
 A snapshot's `authors` map lets readers attribute text whose updates have expired. An entry counts only if `clientIdFor(address, salt)` equals its client id and `sig` recovers to `address`, so a compactor cannot invent a client id for someone who never wrote. Even a valid entry only says who owns that client id. The snapshot's content under it is still the compactor's word, so readers SHOULD show such attribution as claimed, naming the snapshot's creator.
 
-Readers MUST ignore an update or snapshot encrypted for an epoch older than the ACL's current epoch if its `createdAt` is greater than the largest `atBlock` in `revoked`: a removed member could read it.
+An update or snapshot that a writer sent under an older epoch, before it saw a rotation, is still applied. When a writer sees a new epoch it SHOULD compact straight away under the new key, so everything it wrote is also covered by new-epoch content. A removed member can read what was encrypted under keys they held; rotation protects what comes after.
+
+Readers MUST ignore an update whose `qs` is greater than its `createdAt`, and a snapshot whose `qs` or `base` is greater than its `createdAt`: a writer's view of the chain cannot be ahead of the block its entity landed in. A malformed entity (undecodable Yjs data, bad header types) MUST be ignored and MUST NOT stop a reader from opening the document.
+
+When opening a document, readers MUST apply the verified updates before the snapshots. Yjs keeps the first struct it sees for an id, so this order means a snapshot can never override a genuine update at the same clock.
+
+A reader MUST refuse a snapshot that carries structs under the reader's own client id beyond what the reader wrote: that would be someone writing as the reader. If a Yjs implementation re-randomises the local client id after a clash, the writer MUST derive a new id with a fresh salt before writing again.
+
+Text is proven only for clock ranges that arrived in verified updates. A Yjs item merged from several ranges counts as proven only if its whole range is covered. Anything else that a snapshot carries is claimed, attributed through the snapshot's `authors` map and its creator.
 
 A version uses epoch 0 in its outer header and frames, and its chunks are encrypted with the version key like its head. A version link carries no link secret, so a version's reader can check that the version is readonly and who created it, but not that the creator was a member.
 
@@ -155,7 +163,8 @@ In `creationFlags.raw`, bit 0 is readonly and bit 1 is permissionless extension.
 ## 6. Writing
 
 - Writers SHOULD merge all local Yjs updates produced within one block (about 2 seconds) into one update entity.
-- Any member MAY compact. Before writing a snapshot, a writer MUST re-read updates since the previous snapshot's base minus 60 blocks, so the new snapshot contains everything older than its own base. Compaction MUST NOT delete other entities; covered updates expire on their own.
+- Any member MAY compact. Before writing a snapshot, a writer MUST re-read updates since the previous snapshot's base minus 60 blocks, so the new snapshot contains everything older than its own base. A writer SHOULD delete its own previous snapshot and chunks in the same transaction as the new head. It MUST NOT delete anyone else's entities; covered updates expire on their own.
+- A snapshot's `authors` map SHOULD list only client ids that still have structs in the state. The head's data part MUST leave room for its header, so the head's plaintext stays under 100,000 bytes.
 - An update MUST be given at least the lifetime a new snapshot would get, so it never expires before a snapshot covers it. Writers SHOULD compact shortly after they stop typing and before they leave.
 - A snapshot larger than one entity is split into chunks. Chunks are written first, in transactions whose payloads total at most 100,000 bytes (payloads travel hex-encoded and the public RPC answers BAD_REQUEST once a request passes about 256 KiB: 120,000 bytes of payload lands, 130,000 does not). The head is written last and lists the chunk keys.
 - The lease: when less than half of the newest snapshot's lifetime remains, an active member renews it. If they created it and nothing is uncovered, they extend it and its chunks; otherwise they write a fresh snapshot. Any member extends the ACL the same way. An extension MUST only be sent if it moves expiry later, because Arkiv reverts one that does not.

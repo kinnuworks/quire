@@ -49,7 +49,7 @@ Opening a document costs three queries. Live edits after that cost none: they ar
 | 4 | owner opens | `… AND qk = str('j')`, limit 50 | `provider.ts` loadJoinRequests |
 | 5 | shred | `… AND $creator = addr(<me>)` | `provider.ts` shredMine |
 | 6 | history check | queries 1 to 3 with `atBlock = <past block>` | `provider.ts` loadAt |
-| – | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |
+| 7 | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |
 
 ## Batches
 

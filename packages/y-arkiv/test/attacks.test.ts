@@ -300,5 +300,5 @@ describe("pending updates", () => {
     Y.applyUpdate(clash, update)
     expect(overridesVerified(clash, [update])).toBe(true)
   })
-  // the end-to-end forged-snapshot cases live in review4.test.ts
+  // the end-to-end forged-snapshot cases live in provenance.test.ts
 })

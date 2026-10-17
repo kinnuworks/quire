@@ -171,3 +171,5 @@ pre.code { padding: 12px; border-radius: var(--r-md); background: #1B1B1F; color
 .input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .ws-banner code{font-size:12px;word-break:break-all}
 .link-button{padding:0;border:0;background:none;font:inherit;color:var(--accent-ink);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.demo-link{margin-top:14px;color:var(--ink-3)}
+.demo-link a{color:var(--accent-ink);text-decoration:underline;text-underline-offset:2px}

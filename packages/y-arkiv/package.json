@@ -19,7 +19,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "rm -rf dist && tsc -p tsconfig.build.json && vitest run",
+    "prepack": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "vitest run",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "vectors": "tsx scripts/vectors.ts",

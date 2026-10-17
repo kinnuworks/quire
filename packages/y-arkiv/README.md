@@ -30,7 +30,7 @@ await provider.connect()
 ydoc.getText("t").insert(0, "hello") // goes out about one block later
 ```
 
-Bind any Yjs editor to `ydoc` as usual: Tiptap's `Collaboration` extension, BlockNote, `y-codemirror.next`, `y-prosemirror`.
+Bind any Yjs editor to `ydoc` as usual: Tiptap's `Collaboration` extension, BlockNote, `y-codemirror.next`, `y-prosemirror`. The provider syncs the document only, with no awareness (cursors, presence), and edits land in about three to seven seconds.
 
 Share `formatDocLink(link)` inside a URL fragment. Whoever opens it can read the document, and can ask to join:
 
@@ -57,6 +57,7 @@ npx y-arkiv read '<document link>'
 npx y-arkiv blame '<document link>'    # who wrote each run of text, with the entity and block that prove it
 npx y-arkiv watch '<document link>'
 QUIRE_KEY=0x… npx y-arkiv extend '<version link>'
+npx y-arkiv check-signature <address> '<message>' <signature>   # a "Prove this key is yours" signature
 ```
 
 All of them take `--rpc <url> --ws <url>`, to read through your own node.

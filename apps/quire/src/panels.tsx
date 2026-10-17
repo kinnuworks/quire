@@ -1,5 +1,6 @@
 import { render } from "@arkiv-network/sdk/query"
 import { useEffect, useState } from "react"
+import { privateKeyToAccount } from "viem/accounts"
 import { type ArkivProvider, type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, type Identity, KIND, loadAt, type StoredEntity, toExpression } from "y-arkiv"
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
@@ -88,6 +89,7 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
           <p className="muted small">A key made for this document only. {balance === null ? "" : `${formatGlm(balance)} GLM of test gas left.`}</p>
         </section>
       )}
+      {identity && <ProveKey identity={identity} link={link} />}
 
       {owner && p.joinRequests.length > 0 && (
         <section>
@@ -441,6 +443,32 @@ const KEEP = [
   { label: "1 year", s: 365 * 86400 },
   { label: "3 years", s: 3 * 365 * 86400 },
 ]
+
+/**
+ * Proves to a reviewer that this browser holds the key behind an address, without handing over the
+ * key: the reviewer picks a phrase, this signs "quire1:prove:<doc>:<phrase>", and anyone checks it with
+ * `y-arkiv check-signature`. The prefix keeps the signature from passing as anything else Quire signs.
+ */
+function ProveKey({ identity, link }: { identity: Identity; link: DocLink }) {
+  const [phrase, setPhrase] = useState("")
+  const [sig, setSig] = useState<string | null>(null)
+  const message = `quire1:prove:${link.doc}:${phrase}`
+  return (
+    <section>
+      <h4>Prove this key is yours</h4>
+      <p className="muted small">Ask the person checking for a phrase, sign it here, and send them the signature. They learn that you hold this key; the key itself never leaves the browser.</p>
+      <div className="row">
+        <input className="input" placeholder="Their phrase" value={phrase} onChange={(e) => (setPhrase(e.target.value), setSig(null))} />
+        <button className="btn btn-outline" disabled={!phrase} onClick={async () => setSig(await privateKeyToAccount(identity.privateKey).signMessage({ message }))}>
+          Sign
+        </button>
+      </div>
+      {sig && (
+        <pre className="preview small">{`y-arkiv check-signature ${identity.address} '${message.replace(/'/g, "'\\''")}' ${sig}`}</pre>
+      )}
+    </section>
+  )
+}
 
 /** The document id is public, so junk requests can crowd the list. A $creator query finds one person's request regardless. */
 function FindRequest({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (what: string, fn: () => Promise<string | void>) => Promise<void> }) {

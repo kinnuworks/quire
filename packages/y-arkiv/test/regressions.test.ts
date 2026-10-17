@@ -39,7 +39,7 @@ function verdicts(p: { doc: Y.Doc; provider: { authorOfItem: (c: number, k: numb
   return out
 }
 
-describe("R3-1 live snapshot pre-empts a member's future clocks", () => {
+describe("live snapshot pre-empts a member's future clocks", () => {
   it("a forged snapshot under bea's next clocks must not become 'proven bea' text on live peers", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -74,7 +74,7 @@ describe("R3-1 live snapshot pre-empts a member's future clocks", () => {
   })
 })
 
-describe("R3-2 flush drops edits when head() or sealing fails", () => {
+describe("flush drops edits when head() or sealing fails", () => {
   it("a transient head() failure must not lose the edits or wedge every later edit at peers", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -105,7 +105,7 @@ describe("R3-2 flush drops edits when head() or sealing fails", () => {
   })
 })
 
-describe("R3-3 the authors table eventually makes compaction impossible", () => {
+describe("the authors table eventually makes compaction impossible", () => {
   it("compaction still works once ~400 sessions have left text in the document", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -126,7 +126,7 @@ describe("R3-3 the authors table eventually makes compaction impossible", () => 
   })
 })
 
-describe("R3-4 loadAt cannot rebuild a past block whose chunked snapshot was replaced", () => {
+describe("loadAt cannot rebuild a past block whose chunked snapshot was replaced", () => {
   it("loadAt(block) returns the text the chain held at that block", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -146,7 +146,7 @@ describe("R3-4 loadAt cannot rebuild a past block whose chunked snapshot was rep
   })
 })
 
-describe("R3-5 the 'old epoch is refused' regression test passes for the wrong reason", () => {
+describe("the 'old epoch is refused' regression test passes for the wrong reason", () => {
   it("a properly signed stale-epoch update from a remaining member is applied (and readable by the removed member)", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -169,7 +169,7 @@ describe("R3-5 the 'old epoch is refused' regression test passes for the wrong r
   })
 })
 
-describe("R3-6 a member's empty snapshot hides older content from late joiners", () => {
+describe("a member's empty snapshot hides older content from late joiners", () => {
   it("late joiner sees the text that live peers see", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -194,7 +194,7 @@ describe("R3-6 a member's empty snapshot hides older content from late joiners",
   })
 })
 
-describe("R3-7 anyone who knows the public doc id can make the owner's session burn its query budget", () => {
+describe("anyone who knows the public doc id can make the owner's session burn its query budget", () => {
   it("junk join entities from a stranger (no link needed) do not multiply the owner's queries", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -218,7 +218,7 @@ describe("R3-7 anyone who knows the public doc id can make the owner's session b
   })
 })
 
-describe("R3-8 revoke() writes its snapshot without the MUST re-read of recent updates", () => {
+describe("revoke() writes its snapshot without the MUST re-read of recent updates", () => {
   it("an edit the owner's session missed live is not lost by a revocation", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -240,7 +240,7 @@ describe("R3-8 revoke() writes its snapshot without the MUST re-read of recent u
   })
 })
 
-describe("R3-9 a missed ACL patch is never re-read by resync()", () => {
+describe("a missed ACL patch is never re-read by resync()", () => {
   it("a member whose socket missed an approval still ends up with the new member's text", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -262,7 +262,7 @@ describe("R3-9 a missed ACL patch is never re-read by resync()", () => {
   })
 })
 
-describe("R3-9b a missed revocation keeps a writer on the old key until reload", () => {
+describe("a missed revocation keeps a writer on the old key until reload", () => {
   it("after resync, a writer that missed the rotation writes under the current epoch", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)

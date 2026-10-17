@@ -6,6 +6,9 @@ import { ArrowIcon, BookIcon, GithubIcon, HistoryIcon, HourglassIcon, KeyIcon, L
 import { knownDocuments, newIdentity, preferredName, saveIdentity, saveLink, setPreferredName } from "../session"
 import { TryIt } from "../TryIt"
 
+/** The open demo document from arkiv/demo.json: read-only for visitors. */
+const DEMO = "#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283"
+
 const REPO = "https://github.com/kinnuworks/quire"
 
 function useReveal() {
@@ -160,7 +163,7 @@ function HeroVisual() {
         <div className="float-row">
           <ShieldIcon />
           <div>
-            <b>1 write ignored</b>
+            <b>1 outside write, never applied</b>
             <div className="t-micro">its creator is not a member</div>
           </div>
         </div>
@@ -204,6 +207,9 @@ export function Home() {
           <div id="start">
             <CreateForm id="create" />
           </div>
+          <p className="t-small demo-link">
+            Or <a href={DEMO}>open the live demo document</a>: three members, read straight from Arkiv, plus one forged write from outside the member list that it never applies.
+          </p>
           <div className="trust">
             <span>Free on testnet</span>
             <span>No account</span>
@@ -253,7 +259,7 @@ export function Home() {
             <div className="card card--chosen reveal" style={{ "--i": 1 } as React.CSSProperties}>
               <p className="t-title">With Quire</p>
               <p className="t-small" style={{ marginTop: 14 }}>
-                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so we have nothing to hand over. The page itself is served by Vercel; the readers in the repository check documents without it.
+                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. The page itself is served by Vercel; the readers in the repository check documents without it.
               </p>
               <div className="flow">
                 <span>Your browser</span>
@@ -498,7 +504,7 @@ export function Home() {
             <details>
               <summary>Is there really no server?</summary>
               <p>
-                There is one small function, and it only sends a little test gas to a new document key. It sees that key's address and your IP address, never document data. Reading and writing documents goes straight from your browser to Arkiv. You can also skip the drip and fund the key yourself.
+                There is one small function, and it only sends a little test gas to a new document key. It sees that key's address and your IP address, never document data. Reading and writing documents goes from your browser to Arkiv's public RPC endpoint, which sees your IP address and the document id but only ciphertext. You can also skip the drip and fund the key yourself.
               </p>
             </details>
             <details>

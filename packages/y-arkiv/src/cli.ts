@@ -8,9 +8,12 @@
  *   quire verify '<link>'          show members, lease, and writes that were ignored
  *   quire blame  '<link>'          who wrote each piece of text, with the entity and block that prove it
  *   quire extend '<version link>'  keep a published version alive (needs QUIRE_KEY, a funded key)
+ *   quire check-signature <address> '<message>' <signature>
+ *                                  check a "Prove this key is yours" signature from the app
  *
  *   --rpc <url> --ws <url>         use your own Arkiv node instead of the public endpoint
  */
+import { verifyMessage } from "viem"
 import * as Y from "yjs"
 import { blame } from "./blame.js"
 import { ArkivProvider, extendVersion } from "./provider.js"
@@ -45,7 +48,15 @@ async function main() {
   const httpUrl = flag("--rpc")
   const wsUrl = flag("--ws")
   const [cmd, raw] = args
-  if (!cmd || !raw) fail("usage: quire <read|watch|verify|blame|extend> '<link>' [--rpc url --ws url]")
+  if (!cmd || !raw) fail("usage: quire <read|watch|verify|blame|extend|check-signature> '<link>' [--rpc url --ws url]")
+  if (cmd === "check-signature") {
+    const [, address, message, signature] = args
+    if (!address || !message || !signature) fail("usage: quire check-signature <address> '<message>' <signature>")
+    if (!message.startsWith("quire1:prove:")) fail("not a Quire proof: the message must start with quire1:prove:")
+    const ok = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` }).catch(() => false)
+    console.log(ok ? `valid: ${address} signed this message` : "INVALID: that address did not sign this message")
+    process.exit(ok ? 0 : 1)
+  }
   const fragment = raw.includes("#") ? raw.slice(raw.indexOf("#")) : raw
   if (cmd === "extend") {
     const version = parseVersionLink(fragment)

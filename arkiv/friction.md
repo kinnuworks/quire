@@ -14,7 +14,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 2 | SDK errors | Oversized batches and low balances both surface as "Execution error without revert data" | High: cost us an hour |
 | 3 | RPC / docs | The real per-transaction payload limit is about 128 KB total, not 128 KiB per entity | Medium |
 | 4 | `watchEntityEvents` | No server-side filter: every client receives every entity event on the network | Medium |
-| 5 | SDK `getEntity` | Billed as a query (cost 100); the raw `arkiv_getEntity` is free but missing from the SDK's RPC types | Medium |
+| 5 | SDK `getEntity` | Billed as a query (cost 100); the raw `arkiv_getEntity` is free but missing from the SDK's RPC types; free still counts against an undocumented 600 requests per minute | Medium |
 | 6 | SDK writes | `createEntity` resolves about 3 s after the WebSocket event for the same entity | Low |
 | 7 | Queries | An untyped literal compared with a typed attribute silently matches nothing | Low |
 | 8 | Events | `EntityCreated` has `owner` but no `creator` | Low |
@@ -131,6 +131,8 @@ The SDK's `client.getEntity(key)` is documented in its own JSDoc as using `arkiv
 
 **What we did.** Every live edit is fetched with raw `arkiv_getEntity`, so live collaboration costs no query budget at all ([sdk.ts `get`](../packages/y-arkiv/src/sdk.ts)).
 
+**Free is not unlimited.** Every response in the same probe, `arkiv_getEntity` included, carries a second header: `ratelimit: limit=600, remaining=588, reset=57`. That is a request-rate limit per minute, separate from the cost budget, and the docs do not mention it. We stay under it by design: an owner's session fetches at most 240 entities per minute from addresses outside the member list (the cap that stops a flood of junk join requests), and a writer at two-second blocks produces about 30 edits a minute. The docs should state both limits and say which one a 429 refers to.
+
 ## 6. `createEntity` resolves seconds after the chain announced the entity
 
 **Measured** (probe `wsLatency`, three runs):
@@ -199,7 +201,7 @@ The docs say `atBlock` must be "within the node's retained range" without giving
 
 **Expected.** A stated retention window, so an app can promise its users how far back history goes.
 
-**Measured** (probe `atBlockRetentionOld`, head 705,036): queries at blocks 704,936, 695,036, 605,036, 305,036 and 1,000 all returned data. On Tiramisu today, history goes back to the start of the chain.
+**Measured** (probe `atBlockRetentionOld`, head 705,036): queries at blocks 704,936, 695,036, 605,036, 305,036 and 1,000 all succeeded and returned data. The probe did not check that each answer matched the state at that height, so this shows the node accepts heights back to the start of the chain, not that its state there is complete.
 
 Quire's History tab rebuilds a document as of any past block with `atBlock` reads, so this matters to us.
 

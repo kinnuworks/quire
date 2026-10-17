@@ -11,6 +11,15 @@ Under the editor is `y-arkiv`, a Yjs provider. A Yjs app (Tiptap, BlockNote, Cod
 
 Built for Arkiv: Global Tour Stop, in the Privacy, Open Source and Security tracks. Testnet only; all demo data is synthetic.
 
+**Check it in a minute.** Open the [live demo document](https://quire-five.vercel.app/#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283): it is read straight from Arkiv in three queries. Turn on **Who wrote what** to color each paragraph by the key that wrote it, and open **Explorer** to see the public entity next to what your browser decrypts. Then, without our app:
+
+```bash
+pnpm install
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
+```
+
+That prints every paragraph with the address, block and entity that prove who wrote it. [Submission evidence](#submission-evidence) has the rest.
+
 ## Who is harmed today
 
 **Privacy: people whose drafts sit on someone else's server.** A newsroom drafting in a hosted editor leaves its drafts, comments and contributor list on the provider's servers, readable by the provider and by anyone who can compel it. Providers read those files themselves: on 31 October 2017 Google Docs locked journalists out of their own drafts with a mistaken abuse flag, and Google confirmed it scans documents with automated pattern matching ([Fortune](https://fortune.com/2017/11/01/google-docs-bug-patch)). And the provider is where a court order goes. On 5 January 2021 the US Justice Department obtained a court order requiring Google, which ran the New York Times' email, to hand over email logs for four Times reporters, under a gag order that kept the paper's own executive editor from being told ([Boston Globe](https://www.bostonglobe.com/2021/06/08/business/new-york-times-requests-disclosure-court-filings-seeking-reporters-email-data-gag-order), [Freedom of the Press Foundation tracker](https://pressfreedomtracker.us/all-incidents/justice-department-attempts-to-seize-email-records-of-four-new-york-times-reporters/)). Google resisted and the order was withdrawn, which is the only reason nothing was handed over. That order was for email logs, which are metadata. A hosted editor holds the content as well.

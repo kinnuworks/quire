@@ -228,7 +228,7 @@ export function Home() {
               <span className="dot" />
               Why it exists
             </span>
-            <h2>A shared document is only as private as its host.</h2>
+            <h2>Whoever hosts your document can read it.</h2>
             <p className="lead">In the usual setup, one company holds the only copy. It can read the document, and it can lock you out of it.</p>
           </div>
           <div className="grid grid-2">
@@ -280,7 +280,7 @@ export function Home() {
               <span className="eyebrow">
                 <LockIcon /> What the public sees
               </span>
-              <h3>The explorer sees four fields and noise.</h3>
+              <h3>On the explorer: four short fields and a block of ciphertext.</h3>
               <p className="lead">
                 Each entity carries a protocol tag, a random document id, a kind and a block number. The text, the title and the member list are encrypted and padded to one of six sizes. You also get a fresh address in every document, so the chain alone does not tie your documents together.
               </p>

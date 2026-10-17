@@ -12,7 +12,7 @@ function devDrip(): Plugin {
       server.middlewares.use("/api/drip", async (req, res) => {
         let raw = ""
         for await (const chunk of req) raw += chunk
-        const { default: handler } = await server.ssrLoadModule("/api/drip.ts")
+        const { default: handler } = await server.ssrLoadModule(fileURLToPath(new URL("../../api/drip.ts", import.meta.url)))
         const reply = {
           code: 200,
           status(n: number) {

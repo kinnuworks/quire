@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/chunk-header.json",
+  "title": "Chunk frame header (kind c)",
+  "type": "object",
+  "required": [
+    "i",
+    "of"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "i": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "of": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    }
+  }
+}

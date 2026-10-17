@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/entity.json",
+  "title": "Quire entity (arkiv_query JSON shape)",
+  "type": "object",
+  "required": [
+    "key",
+    "owner",
+    "creator",
+    "createdAt",
+    "expiresAt",
+    "payload",
+    "attributes"
+  ],
+  "properties": {
+    "key": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "creator": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]+$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]+$"
+    },
+    "payload": {
+      "type": "string",
+      "pattern": "^0x5101[0-9a-f]*$",
+      "description": "'Q', version 1, epoch u32 BE, then the AES-256-GCM envelope"
+    },
+    "attributes": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "qp"
+              },
+              "type": {
+                "const": "str"
+              },
+              "value": {
+                "const": "quire1"
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "value"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "qd"
+              },
+              "type": {
+                "const": "bytes32"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^0x[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "value"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "qk"
+              },
+              "type": {
+                "const": "str"
+              },
+              "value": {
+                "enum": [
+                  "a",
+                  "u",
+                  "s",
+                  "c",
+                  "j",
+                  "v"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "value"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "qs"
+              },
+              "type": {
+                "const": "u64"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^0x[0-9a-f]+$"
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "value"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

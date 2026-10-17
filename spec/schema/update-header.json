@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/update-header.json",
+  "title": "Update frame header (kind u); data is a Yjs v1 update",
+  "type": "object",
+  "required": [
+    "t"
+  ],
+  "properties": {
+    "t": {
+      "type": "integer",
+      "description": "writer clock, ms since epoch"
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/snapshot-header.json",
+  "title": "Snapshot or version frame header (kind s or v); data is the first part of a Yjs v1 state update",
+  "type": "object",
+  "required": [
+    "base",
+    "t",
+    "chunks",
+    "size"
+  ],
+  "properties": {
+    "base": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "t": {
+      "type": "integer"
+    },
+    "chunks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^0x[0-9a-f]{64}$"
+      }
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authors": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[0-9]+$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^0x[0-9a-f]{40}$"
+      },
+      "description": "Yjs client id to address, as claimed by the compactor"
+    }
+  }
+}

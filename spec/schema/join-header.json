@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/join-header.json",
+  "title": "Join request frame header (kind j)",
+  "type": "object",
+  "required": [
+    "publicKey",
+    "name"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "publicKey": {
+      "type": "string",
+      "pattern": "^0x04[0-9a-f]{128}$"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 40
+    }
+  }
+}

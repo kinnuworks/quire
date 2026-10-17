@@ -125,8 +125,8 @@ for (const kind of Object.values(KIND)) {
       key: e.key,
       creator: e.creator,
       owner: e.owner,
-      createdAt: e.createdAt.toString(),
-      expiresAt: e.expiresAt.toString(),
+      createdAt: `0x${e.createdAt.toString(16)}`,
+      expiresAt: `0x${e.expiresAt.toString(16)}`,
       readonly: e.readonly,
       permissionlessExtension: e.permissionlessExtension,
       attributes: [
@@ -135,7 +135,7 @@ for (const kind of Object.values(KIND)) {
         { name: "qk", type: "str", value: e.attributes.kind },
         { name: "qs", type: "u64", value: `0x${e.attributes.seq.toString(16)}` },
       ],
-      payload: bytesToHex(e.payload),
+      payload: `0x${bytesToHex(e.payload)}`,
     })
   }
 }

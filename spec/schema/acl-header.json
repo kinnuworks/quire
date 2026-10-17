@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/acl-header.json",
+  "title": "ACL frame header (kind a)",
+  "type": "object",
+  "required": [
+    "v",
+    "owner",
+    "epoch",
+    "members",
+    "wraps",
+    "revoked"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "owner": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "address",
+          "publicKey",
+          "name",
+          "role",
+          "addedAtBlock"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{40}$"
+          },
+          "publicKey": {
+            "type": "string",
+            "pattern": "^0x04[0-9a-f]{128}$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "writer"
+            ]
+          },
+          "addedAtBlock": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      }
+    },
+    "wraps": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^0x[0-9a-f]{40}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^0x04[0-9a-f]{128}[0-9a-f]{120}$",
+        "description": "ephemeral public key (65 bytes) then an envelope of the 32-byte epoch key"
+      }
+    },
+    "revoked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "address",
+          "atBlock"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{40}$"
+          },
+          "atBlock": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      }
+    }
+  }
+}

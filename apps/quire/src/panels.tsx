@@ -142,28 +142,7 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
         {!p.acl.rosterHidden && <p className="muted small">Readers apply an edit only if its on-chain creator is in this list. Removing someone rotates the key for everyone who stays.</p>}
       </section>
 
-      {!p.acl.rosterHidden && (
-        <section>
-          <h4>Ignored writes</h4>
-          <p>
-            <span className="big">{p.stats.rejectedWrites}</span> <span className="muted small">entities seen by this tab came from outside the member list, or tried to write under someone else's name.</span>
-          </p>
-          <button
-            className="btn btn-ghost"
-            disabled={!!busy}
-            onClick={() =>
-              run("scanning", async () => {
-                const n = await p.scanOutsiders()
-                return n.length === 0
-                  ? "Nothing on chain for this document from outside the member list."
-                  : `${n.length} ${n.length === 1 ? "entity" : "entities"} on chain for this document came from outside the member list (${n.map((x) => short(x)).join(", ")}). None were applied.`
-              })
-            }
-          >
-            Check the chain for outside writes
-          </button>
-        </section>
-      )}
+      {!p.acl.rosterHidden && <OutsideWrites p={p} />}
       <section>
         <h4>This browser</h4>
         <p className="muted small">This browser keeps the document's link{identity ? " and your key" : ""} so you can reopen it. On a shared computer, remove it.</p>
@@ -453,6 +432,39 @@ const KEEP = [
 ]
 
 /**
+ * Writes kept out. The normal reads ask only for members' entities, so outside writes never even
+ * arrive; one extra query, run once when this panel opens, lists them.
+ */
+function OutsideWrites({ p }: { p: ArkivProvider }) {
+  const [outside, setOutside] = useState<Hex[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let alive = true
+    p.scanOutsiders().then((n) => alive && setOutside(n), () => alive && setFailed(true))
+    return () => {
+      alive = false
+    }
+  }, [p])
+  const creators = outside ? [...new Set(outside)] : []
+  return (
+    <section>
+      <h4>Writes kept out</h4>
+      <p>
+        <span className="big">{outside === null ? (failed ? "?" : "…") : outside.length}</span>{" "}
+        <span className="muted small">
+          {outside === null
+            ? failed
+              ? "could not check the chain just now."
+              : "checking the chain for entities from outside the member list (one query)."
+            : `${outside.length === 1 ? "entity" : "entities"} on chain for this document from outside the member list${creators.length ? ` (${creators.map((x) => short(x)).join(", ")})` : ""}. None were applied.`}
+        </span>
+      </p>
+      {p.stats.rejectedWrites > 0 && <p className="muted small">This tab also refused {p.stats.rejectedWrites} {p.stats.rejectedWrites === 1 ? "write" : "writes"} that arrived: from outside the list, under someone else's client id, or malformed.</p>}
+    </section>
+  )
+}
+
+/**
  * Proves to a reviewer that this browser holds the key behind an address, without handing over the
  * key: the reviewer picks a phrase, this signs "quire1:prove:<doc>:<phrase>", and anyone checks it with
  * `y-arkiv check-signature`. The prefix keeps the signature from passing as anything else Quire signs.
@@ -552,7 +564,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
                   p.acl?.keepUntil && head !== null && BigInt(p.acl.keepUntil) > head
                     ? `by block ${p.acl.keepUntil}, about ${Math.ceil(Number(BigInt(p.acl.keepUntil) - head) / 43200)} days from now, because you chose to keep it`
                     : "within 30 days"
-                }. Old ciphertext stays in block history.`,
+                }, or later if a member chose to keep proof of their edits (up to three years). Without the member list no reader can check those pieces, but anyone holding the link could still decrypt them. Old ciphertext stays in block history.`,
               ) &&
               run("deleting", async () => `Deleted ${await p.deleteDocument()} entities. The document no longer opens.`)
             }
@@ -585,7 +597,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
         <section>
           <h4>Keep proof of what I wrote</h4>
           <p className="muted small">
-            Readers prove who wrote what from each person's edits, which expire with the document's 30-day lease. This extends every edit your key wrote here, and the member list they are checked against, so <code>y-arkiv blame</code> can still prove your text later. It keeps proof, not a readable copy: snapshots still lapse on their own.
+            Readers prove who wrote what from each person's edits, which expire with the document's 30-day lease. This extends every edit your key wrote here, the member list they are checked against, and a snapshot of yours (your edits sit on text others wrote, so they cannot be rebuilt without it), so <code>y-arkiv blame</code> can still prove your text later. That keeps a readable copy of the document alive for as long as you choose, for anyone with the link, even if the owner lets it lapse. The owner can still delete the member list, which stops readers from checking anything.
           </p>
           <div className="row">
             {[

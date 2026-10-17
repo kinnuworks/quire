@@ -1,6 +1,6 @@
 # Quire
 
-Quire is a collaborative document editor that keeps no copy of your documents. Every edit is encrypted in the browser and written to [Arkiv](https://arkiv.network) as an entity. Collaborators receive it over a WebSocket subscription a block or two later. The link you share is the key.
+Quire is a collaborative document editor that keeps no copy of your documents. Every edit is encrypted in the browser and written to [Arkiv](https://arkiv.network) as an entity. Collaborators receive it over a WebSocket subscription, usually three to seven seconds later. The link you share is the key.
 
 Under the editor is `y-arkiv`, a Yjs provider. A Yjs app (Tiptap, BlockNote, CodeMirror) can swap `y-websocket` for it to get end-to-end encrypted document sync with no sync server. It syncs the document only: there are no shared cursors or presence, each writer needs a key with a little test gas, and edits arrive in three to seven seconds rather than instantly.
 
@@ -42,6 +42,7 @@ This proves which key wrote the text, not which person: an address is a key made
 | Nostr relays | Signed events and live push, but each relay decides what to keep and returns what it has. A document assembled from relays depends on which relays kept which events, nothing makes two writes land together (key rotation needs the new member list and the new snapshot at once), and there is no lease: data lives until a relay drops it |
 | Ciphertext in EVM contract logs | Contracts are not available on Tiramisu, logs cannot be queried by typed range or expire, and reading them back needs an indexer, which is an operator again |
 | Postgres behind our API | Every problem in the first row, and we become the party a court order goes to |
+| CryptPad, Proton Docs | Hosted end-to-end encrypted editors: a court order to the host gets ciphertext too, and they are faster and have presence. But the host still decides whether your document exists: it can delete it, lock your account or shut down, and nobody outside can check who wrote what without trusting its servers. On Arkiv no host holds the only copy, every edit is a public entity whose creator nobody can forge, and anyone can rebuild and audit a document from the chain |
 
 What Arkiv gives us that the product depends on:
 
@@ -69,7 +70,7 @@ The fastest check uses the public demo documents listed under [Submission eviden
 1. Open the live app and press **New document**. The page creates a key for this document only, funds it with a little test gas, and writes the member list and first snapshot in one transaction. Before asking the drip, the page spends a second or two on a proof of work, so a script cannot drain the sponsor with a loop of requests.
 2. Press **Copy invite link** and open it in a private window. That window can read the document.
 3. In the private window, press **Ask to join**. The request is sealed to the owner's key, and the owner's window shows it live. Press **Add**.
-4. Type in either window. The other updates a block or two later, and the **Live** tab shows each transaction and the measured delay.
+4. Type in either window. The other updates a few seconds later, and the **Live** tab shows each transaction and the measured delay.
 5. Turn on **Who wrote what**. Each paragraph gets a bar in the colors of the wallets that wrote it.
 6. Open **Explorer** to see an entity as the public sees it next to what your browser decrypts.
 7. In the owner's window, remove the second member. The key rotates and the roster is sealed under the new key. The removed window keeps what it saw and gets nothing new.
@@ -82,9 +83,9 @@ pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '<document link>'
 python3 readers/python/quire_audit.py --doc <0x document id>
 ```
 
-The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 95 tests of its own, covering forged writes, forged snapshots, swapped authorship and malformed headers. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library. `pnpm --dir packages/y-arkiv compare-readers` runs both readers on the two live demos and on the vectors (as a member and as a link holder) and diffs their verdicts: the text, every entity applied, every outside write rejected. They agree on all four.
+The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 97 tests of its own, covering forged writes, forged snapshots, swapped authorship and malformed headers. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library. `pnpm --dir packages/y-arkiv compare-readers` runs both readers on the two live demos and on the vectors (as a member and as a link holder) and diffs their verdicts: the text, every entity applied, every outside write rejected. They also run every edge case in `spec/vectors/cases` (JSON number forms, a byte-order mark, a wrong snapshot size, tied snapshots, a backdated `qs`), each a document with one crafted entity and the text a correct reader must produce. They agree on all of them.
 
-The TypeScript suite has 91 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 33 security rules in turn and shows that a test fails every time.
+The TypeScript suite has 104 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 37 security rules in turn and shows that a test fails every time.
 
 ## How it uses Arkiv
 
@@ -92,7 +93,7 @@ The TypeScript suite has 91 tests (plus 2 that run only against Tiramisu), inclu
 |---|---|---|
 | Typed attributes vs payload | Four attributes (`qp`, `qd`, `qk`, and `qs` as `u64`); everything else is encrypted payload | Explorer tab |
 | Queries | Compound predicates, a `u64` range on `qs`, `$creator` OR filters, cursor pages pinned with `atBlock` | Opening a document: three queries in the Live tab counter (the owner pays one more, for join requests) |
-| `$creator` | The member list is found by the owner's address. Edits are applied only from members, and only if their client id is `clientIdFor($creator, salt)` with a salt the creator signed. The owner can find one person's join request with a `$creator` filter, however many junk requests there are | People tab: "Ignored writes", "Expecting someone?"; `y-arkiv blame` |
+| `$creator` | The member list is found by the owner's address. Edits are applied only from members, and only if their client id is `clientIdFor($creator, salt)` with a salt the creator signed. The owner can find one person's join request with a `$creator` filter, however many junk requests there are | People tab: "Writes kept out", "Expecting someone?"; `y-arkiv blame` |
 | Entity Expiration | Edits and snapshots live 30 days (or until the owner's chosen date), join requests 1 hour, versions 1 year | Lifetime tab |
 | Lifetime Extension | The newest snapshot is a lease. A member renews it by extending their own snapshot or writing a fresh one, and only when the new expiry is later. A writer keeps proof of their text by extending their own edit entities for up to three years | Lifetime tab: countdown, "Keep proof of what I wrote" |
 | Creation flags | Published versions are readonly and anyone can extend them (the version page has a "Keep this version alive" button; the CLI has `extend`). The member list allows permissionless extension too, so a document stays open while its writers use it. Anyone can extend it, strangers included, but it holds no text, so that keeps nothing readable alive, and the owner can still delete it. Edits and snapshots carry no flags, so only their creator can extend them | Explorer tab, version page |
@@ -129,10 +130,10 @@ Two public demo documents live on Tiramisu. Their content is synthetic, and thei
 **Open demo**: three members, readable by anyone with the link.
 https://quire-five.vercel.app/#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283
 
-**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you can open the member list, but it is sealed under the new key, so you learn only that there are two members, and you can read none of the text. The addresses that wrote entities are still public on chain, as for any document.
+**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you can open the member list, but it is sealed under the new key, so you learn only that there are two members, and nothing written after the removal. Text written before it stays readable to anyone with the original link while those entities live (30 days), because they were encrypted under the key the link carries; this demo was made before the owner's old-epoch cleanup existed. In the app, removing someone now deletes the owner's own earlier entities in the same step. The addresses that wrote entities are still public on chain, as for any document.
 https://quire-five.vercel.app/#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada
 
-Addresses that create Quire's entities:
+Addresses behind the demos (the sponsor only sends transfers; the others create entities):
 
 | Address | Role |
 |---|---|
@@ -178,7 +179,7 @@ The full live suite (`pnpm --dir packages/y-arkiv test:live`) passed on Tiramisu
 | `apps/quire` | the editor (Vite, React, Tiptap) |
 | `api/drip.ts` | sends a little test GLM to a new document key |
 | `api/rpc.ts` | the optional query relay, used only after a visitor's free query budget runs out and they choose it |
-| `readers/python` | independent reader and a standard-library privacy audit |
+| `readers/python` | a second implementation, written against the spec and vectors, and a standard-library privacy audit |
 | `spec` | JSON Schema for every entity and header, and conformance vectors with a forged write |
 | `arkiv/probes` | raw results behind the friction report |
 

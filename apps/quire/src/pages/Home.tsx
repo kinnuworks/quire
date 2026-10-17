@@ -202,7 +202,7 @@ export function Home() {
             Write together. <span className="t-muted">Only people with the link can read it.</span>
           </h1>
           <p className="lead">
-            Quire is a shared editor with no server in the middle. Every edit is encrypted in your browser, stored on Arkiv, and reaches your collaborators a block or two later.
+            Quire is a shared editor with no sync server. Every edit is encrypted in your browser, stored on Arkiv, and reaches your collaborators a few seconds later.
           </p>
           <div id="start">
             <CreateForm id="create" />
@@ -468,7 +468,7 @@ export function Home() {
           </div>
           <div className="grid grid-3">
             {[
-              { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Swap it for y-websocket and any Yjs editor syncs over Arkiv." },
+              { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Swap it for y-websocket and a Yjs editor syncs its document over Arkiv: each writer needs a little test gas, and there are no shared cursors yet." },
               { i: <BookIcon />, t: "A written spec", d: "PROTOCOL.md, JSON Schema for every entity, and test vectors with a forged write." },
               { i: <TerminalIcon />, t: "Read without us", d: "Our CLI, and a Python reader written from the spec alone, rebuild any document from chain data and check every rule." },
               { i: <HistoryIcon />, t: "Time travel", d: "Rebuild a document exactly as Arkiv held it at a past block, with atBlock reads." },

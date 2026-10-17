@@ -75,7 +75,7 @@ export function DocPage({ link }: { link: DocLink }) {
       extensions: [
         StarterKit.configure({ undoRedo: false }),
         Collaboration.configure({ document: doc }),
-        Placeholder.configure({ placeholder: "Start writing. Members see it a block or two later." }),
+        Placeholder.configure({ placeholder: "Start writing. Members see it a few seconds later." }),
         AuthorshipBars.configure({ doc, provider: () => providerRef.current, enabled: () => blameRef.current }),
       ],
       editable: false,

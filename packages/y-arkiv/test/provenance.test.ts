@@ -443,6 +443,13 @@ describe("claimed text names its carrier", () => {
     const runs = blame(doc, p).flat()
     expect(runs.find((r) => r.text.includes("I resign"))).toMatchObject({ address: bea.id!.address, proven: false, via: mal.id!.address })
     expect(runs.find((r) => r.text.includes("Bea writes"))).toMatchObject({ proven: true })
+    // the editor's colored bars ask authorOfItem directly: it must name the carrier too
+    type It = { id: { client: number; clock: number }; content: { str?: string }; right: It | null }
+    let item = (doc.getText("t") as unknown as { _start: It | null })._start
+    while (item && !item.content.str?.includes("resign")) item = item.right
+    // Yjs may merge Bea's real text and the forged part into one item: ask about the forged clocks
+    const at = item!.id.clock + item!.content.str!.indexOf(" I resign.")
+    expect(p.authorOfItem(item!.id.client, at, " I resign.".length)).toMatchObject({ proven: false, via: mal.id!.address })
     a.provider.destroy()
   })
 })
@@ -462,6 +469,37 @@ describe("member list expiry seen by another tab", () => {
     await a.provider.keepMyProof(3 * 365 * 86400)
     chain.mine()
     await expect(bea.provider.keepMyProof(365 * 86400)).resolves.toMatchObject({ extended: expect.any(Number) })
+    a.provider.destroy()
+  })
+})
+
+describe("read-only member session", () => {
+  it("reads past a rotation with a member key and never writes", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    const cal = await peer(chain, link, identity("cal"))
+    await admit(chain, a, bea)
+    await admit(chain, a, cal)
+    a.doc.getText("t").insert(0, "before and after")
+    await a.provider.flush()
+    await settle(chain, [a, bea, cal])
+    await a.provider.revoke(cal.id!.address)
+    await settle(chain, [a, bea, cal])
+    // half the lease later a writer's session would renew it; a read-only one must not
+    chain.mine((16 * 86400) / 2)
+    const batches = { n: 0 }
+    const real = chain.store(bea.id!.address)
+    const store = { ...real, address: real.address, head: () => real.head(), predictKeys: (n: number) => real.predictKeys(n), query: (q: never) => real.query(q), get: (k: Hex, b?: bigint) => real.get(k, b), watch: () => () => undefined, batch: (s: never) => (batches.n++, real.batch(s)) } as ArkivStore
+    const doc = new Y.Doc()
+    const p = new ArkivProvider(doc, { store, link, identity: bea.id, readOnly: true, flushIntervalMs: 0, autoCompact: false })
+    await p.connect()
+    await p.idle()
+    expect(p.acl!.rosterHidden).toBe(false)
+    expect(doc.getText("t").toString()).toBe("before and after")
+    await expect(p.compact()).rejects.toThrow(/read-only/)
+    expect(batches.n).toBe(0)
     a.provider.destroy()
   })
 })

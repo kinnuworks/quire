@@ -100,6 +100,11 @@ export type ProviderOptions = {
    * one query plus more pages; every edit still on chain then counts as proven. For audits.
    */
   fullHistory?: boolean
+  /**
+   * Never write: no lease renewal, no compaction. For audits that read as a member (an identity
+   * unwraps the current key) without touching the document.
+   */
+  readOnly?: boolean
   /** Re-read recent updates this often, to cover a dropped socket. 0 disables. Default 15 minutes. */
   resyncIntervalMs?: number
   /** Compact this long after the last flush if anything is uncovered. Default 2 minutes. */
@@ -187,6 +192,7 @@ export class ArkivProvider extends Observable<string> {
   private readonly now: () => number
   private readonly autoCompact: boolean
   private readonly fullHistory: boolean
+  private readonly readOnly: boolean
   private readonly onDocUpdate: (update: Uint8Array, origin: unknown) => void
 
   constructor(doc: Y.Doc, options: ProviderOptions) {
@@ -211,6 +217,7 @@ export class ArkivProvider extends Observable<string> {
     this.now = options.now ?? Date.now
     this.autoCompact = options.autoCompact ?? true
     this.fullHistory = options.fullHistory ?? false
+    this.readOnly = options.readOnly ?? false
     // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
     this.resyncInterval = options.resyncIntervalMs ?? 15 * 60_000
     this.idleCompactMs = options.idleCompactMs ?? 120_000
@@ -331,13 +338,13 @@ export class ArkivProvider extends Observable<string> {
       throw e
     }
     // housekeeping never fails the connection: a lost race with another member is fine
-    this.renewLeaseIfDue().catch((e) => this.emit("error", [e]))
+    if (!this.readOnly) this.renewLeaseIfDue().catch((e) => this.emit("error", [e]))
     if (this.resyncInterval > 0) {
       // a tab left open for days must renew the lease too, not only a fresh load
       this.resyncTimer = setInterval(
         () =>
           void this.resync({ joins: true })
-            .then(() => this.renewLeaseIfDue())
+            .then(() => (this.readOnly ? false : this.renewLeaseIfDue()))
             .catch((e) => this.emit("error", [e])),
         this.resyncInterval,
       )
@@ -971,6 +978,7 @@ export class ArkivProvider extends Observable<string> {
   }
 
   private assertWriter(): void {
+    if (this.readOnly) throw new Error("this session was opened read-only")
     if (this.role !== "owner" && this.role !== "writer") throw new Error("this session is not a member of the document")
   }
 

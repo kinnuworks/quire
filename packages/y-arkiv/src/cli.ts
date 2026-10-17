@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 /**
- * quire: read, watch and verify a Quire document from a terminal, straight
- * from Arkiv. Needs only the document link; never writes.
+ * y-arkiv (also installed as `quire`): read, watch, verify and blame a Quire
+ * document from a terminal, straight from Arkiv. Needs only the document link,
+ * and never writes, except `extend`.
  *
- *   quire read   '<link>'          print the document text
- *   quire watch  '<link>'          print each edit as it lands
- *   quire verify '<link>'          show members, lease, and writes that were ignored
- *   quire blame  '<link>'          who wrote each piece of text, with the entity and block that prove it
- *   quire extend '<version link>'  keep a published version alive (needs QUIRE_KEY, a funded key)
- *   quire check-signature <address> '<message>' <signature>
- *                                  check a "Prove this key is yours" signature from the app
+ *   y-arkiv read   '<link>'                 print the document text
+ *   y-arkiv watch  '<link>'                 print each edit as it lands
+ *   y-arkiv verify '<link>'                 members, lease, ignored writes, outside writes
+ *   y-arkiv blame  '<link>'                 who wrote each run of text, with the entity and block that prove it
+ *   y-arkiv extend '<version link>'         keep a published version alive (QUIRE_KEY: any funded key)
+ *   y-arkiv check-signature <address> '<message>' <signature>
+ *                                           check a "Prove this key is yours" signature from the app
  *
- *   --rpc <url> --ws <url>         use your own Arkiv node instead of the public endpoint
- *   ARKIV_ACCESS_KEY=…             raise the public endpoint's query budget
+ *   QUIRE_KEY=0x…          read as that member: after a removal, the link alone cannot open the sealed roster
+ *   --rpc <url> --ws <url> use your own Arkiv node instead of the public endpoint
+ *   ARKIV_ACCESS_KEY=…     raise the public endpoint's query budget
  */
+import "./node-quiet.js"
 import { verifyMessage } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
 import { blame } from "./blame.js"
 import { ArkivProvider, extendVersion } from "./provider.js"
@@ -51,7 +55,12 @@ async function main() {
   // half a custom node would still send document ids to the public WebSocket endpoint
   if (!!httpUrl !== !!wsUrl) fail("pass --rpc and --ws together, so every request goes to the node you chose")
   const [cmd, raw] = args
-  if (!cmd || !raw) fail("usage: quire <read|watch|verify|blame|extend|check-signature> '<link>' [--rpc url --ws url]")
+  if (!cmd || !raw) fail(
+      "usage: y-arkiv read|watch|verify|blame '<document link>'\n" +
+        "       y-arkiv extend '<version link>'          (QUIRE_KEY=a funded key)\n" +
+        "       y-arkiv check-signature <address> '<message>' <signature>\n" +
+        "options: --rpc <url> --ws <url>; QUIRE_KEY to read as a member; ARKIV_ACCESS_KEY for more queries",
+    )
   if (cmd === "check-signature") {
     const [, address, message, signature] = args
     if (!address || !message || !signature) fail("usage: quire check-signature <address> '<message>' <signature>")
@@ -74,8 +83,12 @@ async function main() {
   if (!link) fail("that is not a Quire document link")
   const store = new SdkStore({ httpUrl, wsUrl, accessKey: process.env.ARKIV_ACCESS_KEY })
   const doc = new Y.Doc()
+  // a member's key (QUIRE_KEY) unwraps the current epoch after a removal; the CLI still never writes
+  const key = process.env.QUIRE_KEY as `0x${string}` | undefined
+  if (key && !/^0x[0-9a-fA-F]{64}$/.test(key)) fail("QUIRE_KEY must be 0x followed by 64 hex characters")
+  const identity = key ? { address: privateKeyToAccount(key).address.toLowerCase() as `0x${string}`, privateKey: key, name: "reader" } : undefined
   // blame reads every update still on chain, not only those after the newest snapshot
-  const provider = new ArkivProvider(doc, { store, link, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" })
+  const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" })
   await provider.connect()
 
   if (cmd === "read") {
@@ -109,7 +122,7 @@ async function main() {
     process.exit(0)
   }
   if (cmd === "blame") {
-    if (provider.acl?.rosterHidden) fail("the roster is sealed under a newer key; this link cannot attribute anything")
+    if (provider.acl?.rosterHidden) fail("the roster is sealed under a newer key, which this link does not carry. Run it again with QUIRE_KEY set to a current member's key (from their key file); the CLI only reads.")
     const short = (a: string | null | undefined) => (a ? `${a.slice(0, 8)}…${a.slice(-4)}` : "unknown")
     const total = new Map<string, { proven: number; claimed: number }>()
     blame(doc, provider).forEach((runs, i) => {

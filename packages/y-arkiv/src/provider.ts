@@ -16,6 +16,7 @@ import {
   deriveEpochZeroKey,
   deriveMetaKey,
   open,
+  clientIdFor,
   openWith,
   publicKeyOf,
   randomBytes,
@@ -92,6 +93,22 @@ export type ProviderOptions = {
   /** Compact this long after the last flush if anything is uncovered. Default 30 s. */
   idleCompactMs?: number
   now?: () => number
+  /**
+   * The client id salt. Pass the one used with prepareDoc() when an editor binds
+   * to the doc before the provider exists; otherwise a fresh one is made here.
+   */
+  salt?: Uint8Array
+}
+
+/**
+ * Gives a Y.Doc the client id derived from `address` before anything edits it.
+ * Use when an editor is attached to the doc before the provider is created,
+ * and pass the returned salt to the provider.
+ */
+export function prepareDoc(doc: Y.Doc, address: string): Uint8Array {
+  const salt = randomBytes(16)
+  doc.clientID = clientIdFor(address, salt)
+  return salt
 }
 
 
@@ -116,8 +133,12 @@ export class ArkivProvider extends Observable<string> {
   private readonly epochKeys = new Map<number, Uint8Array>()
   private readonly seen = new Set<string>()
   private readonly authors = new Map<number, Hex>()
-  /** Authorship carried inside snapshots: asserted by whoever compacted, not proven on chain. */
+  /** Authorship carried inside snapshots: the address matches the client id, but the content is the compactor's word. */
   private readonly claimedAuthors = new Map<number, Hex>()
+  /** This session's client id salt, sent with every edit so readers can check the id against our address. */
+  private readonly salt: Uint8Array
+  /** Salt for every client id we can attribute, carried forward into snapshot headers. */
+  private readonly salts = new Map<number, string>()
   /** Every edit applied since the newest snapshot, oldest first, for time travel. */
   readonly history: HistoryEntry[] = []
   /** The newest snapshot's state: the starting point for time travel. */
@@ -151,7 +172,17 @@ export class ArkivProvider extends Observable<string> {
     this.idleCompactMs = options.idleCompactMs ?? 30_000
     this.metaKey = deriveMetaKey(this.link.secret)
     this.epochKeys.set(0, deriveEpochZeroKey(this.link.secret))
-    if (this.identity) this.authors.set(doc.clientID, this.identity.address.toLowerCase() as Hex)
+    this.salt = options.salt ?? randomBytes(16)
+    if (this.identity) {
+      // our Yjs client id is derived from our address, so nobody else can write under it
+      const id = clientIdFor(this.identity.address, this.salt)
+      if (doc.clientID !== id && doc.store.clients.has(doc.clientID)) {
+        throw new Error("the doc was edited before the provider set its client id; use prepareDoc()")
+      }
+      doc.clientID = id
+      this.authors.set(doc.clientID, this.identity.address.toLowerCase() as Hex)
+      this.salts.set(doc.clientID, bytesToHex(this.salt))
+    }
 
     this.onDocUpdate = (update, origin) => {
       if (origin === this) return
@@ -426,7 +457,7 @@ export class ArkivProvider extends Observable<string> {
     // the removed member could still read it
     if (frame.epoch < this.acl.epoch && entity.createdAt > this.lastRevocationBlock()) return this.reject()
     // a writer may only add structs under Yjs client ids that are new or already theirs
-    if (!this.bindAuthors(frame.data, entity.creator)) return this.reject()
+    if (!this.checkAuthors(frame.data, entity.creator, frame.header.salt)) return this.reject()
     Y.applyUpdate(this.doc, frame.data, this)
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.stats.updatesApplied++
@@ -486,8 +517,12 @@ export class ArkivProvider extends Observable<string> {
     const state = concat(parts)
     const claimed = frame.header.authors
     if (claimed && typeof claimed === "object") {
-      for (const [client, address] of Object.entries(claimed as Record<string, string>)) {
-        if (/^0x[0-9a-f]{40}$/.test(address)) this.claimedAuthors.set(Number(client), address as Hex)
+      for (const [client, entry] of Object.entries(claimed as Record<string, { address?: string; salt?: string }>)) {
+        // a claim counts only if the address and salt really derive that client id
+        if (typeof entry?.address === "string" && typeof entry.salt === "string" && /^[0-9a-f]{32}$/.test(entry.salt) && clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client)) {
+          this.claimedAuthors.set(Number(client), entry.address.toLowerCase() as Hex)
+          this.salts.set(Number(client), entry.salt)
+        }
       }
     }
     Y.applyUpdate(this.doc, state, this)
@@ -530,20 +565,19 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /**
-   * Binds every Yjs client id that has structs in `update` to `author`, the
-   * entity's on-chain creator. Returns false, binding nothing, if any of those
-   * client ids already belongs to someone else: that would be one member
-   * writing under another member's name.
+   * An edit may only carry structs under the client id its creator derives
+   * from the salt in the edit's header: clientIdFor(creator, salt). Anything
+   * else is someone writing under another member's name.
    */
-  private bindAuthors(update: Uint8Array, author: Hex): boolean {
-    const a = author.toLowerCase() as Hex
+  private checkAuthors(update: Uint8Array, author: Hex, salt: unknown): boolean {
+    if (typeof salt !== "string" || !/^[0-9a-f]{32}$/.test(salt)) return false
+    const expected = clientIdFor(author, hexToBytes(salt))
     // parseUpdateMeta covers structs at any clock; encodeStateVectorFromUpdate only counts
     // runs that start at clock 0, so it misses every update after a writer's first
     const clients = [...Y.parseUpdateMeta(update).from.keys()]
-    // proven bindings first; a snapshot's claimed authors also count, so nobody can take over
-    // a client id once its own edits have expired into a snapshot
-    if (clients.some((c) => (this.authors.get(c) ?? this.claimedAuthors.get(c) ?? a) !== a)) return false
-    for (const c of clients) this.authors.set(c, a)
+    if (clients.some((c) => c !== expected)) return false
+    this.authors.set(expected, author.toLowerCase() as Hex)
+    this.salts.set(expected, salt)
     return true
   }
 
@@ -611,10 +645,8 @@ export class ArkivProvider extends Observable<string> {
       }
       const { epoch, key } = this.currentContentKey()
       const head = await this.store.head()
-      const payload = encodeOuter(
-        epoch,
-        await seal(key, encodeFrame({ kind: KIND.update, doc: hexToBytes(this.link.doc), epoch, header: { t: this.now() }, data: merged }, randomBytes)),
-      )
+      const header = { t: this.now(), salt: bytesToHex(this.salt) }
+      const payload = encodeOuter(epoch, await seal(key, encodeFrame({ kind: KIND.update, doc: hexToBytes(this.link.doc), epoch, header, data: merged }, randomBytes)))
       let result
       try {
         result = await this.store.batch({
@@ -951,10 +983,12 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /** client id to address, proven entries first. Stored in snapshot headers. */
-  private authorTable(): Record<string, Hex> {
-    const out: Record<string, Hex> = {}
-    for (const [c, a] of this.claimedAuthors) out[String(c)] = a
-    for (const [c, a] of this.authors) out[String(c)] = a
+  private authorTable(): Record<string, { address: Hex; salt: string }> {
+    const out: Record<string, { address: Hex; salt: string }> = {}
+    for (const [c, a] of [...this.claimedAuthors, ...this.authors]) {
+      const salt = this.salts.get(c)
+      if (salt) out[String(c)] = { address: a, salt }
+    }
     return out
   }
 
@@ -1069,7 +1103,7 @@ async function writeSnapshotEntities(
   head: bigint,
   now: number,
   kind: Kind,
-  authors: Record<string, Hex>,
+  authors: Record<string, { address: Hex; salt: string }>,
   lifetime: number,
   extra: BatchSpec,
   readonly = false,

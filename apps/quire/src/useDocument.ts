@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import * as Y from "yjs"
-import { ArkivProvider, type DocLink, type FlushInfo, type Identity, type JoinRequest, type RemoteEdit, SdkStore } from "y-arkiv"
+import { ArkivProvider, type DocLink, type FlushInfo, type Identity, type JoinRequest, prepareDoc, type RemoteEdit, SdkStore } from "y-arkiv"
 
 export type Activity = {
   id: number
@@ -27,7 +27,11 @@ export type DocumentSession = {
 let nextId = 1
 
 export function useDocument(link: DocLink | null, identity: Identity | undefined): DocumentSession {
-  const doc = useMemo(() => new Y.Doc(), [link?.doc, identity?.address])
+  // the client id is derived from our address before the editor binds to the doc
+  const { doc, salt } = useMemo(() => {
+    const d = new Y.Doc()
+    return { doc: d, salt: identity ? prepareDoc(d, identity.address) : undefined }
+  }, [link?.doc, identity?.address])
   const [provider, setProvider] = useState<ArkivProvider | null>(null)
   const [store, setStore] = useState<SdkStore | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -38,7 +42,7 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   useEffect(() => {
     if (!link) return
     const s = new SdkStore(identity ? { privateKey: identity.privateKey } : {})
-    const p = new ArkivProvider(doc, { store: s, link, identity })
+    const p = new ArkivProvider(doc, { store: s, link, identity, salt })
     const log = (a: Omit<Activity, "id" | "at">) => {
       activity.current = [{ id: nextId++, at: Date.now(), ...a }, ...activity.current].slice(0, 200)
       bump()

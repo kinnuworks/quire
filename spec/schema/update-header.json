@@ -4,12 +4,18 @@
   "title": "Update frame header (kind u); data is a Yjs v1 update",
   "type": "object",
   "required": [
-    "t"
+    "t",
+    "salt"
   ],
   "properties": {
     "t": {
       "type": "integer",
       "description": "writer clock, ms since epoch"
+    },
+    "salt": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "session salt: the Yjs client id is clientIdFor(creator, salt)"
     }
   },
   "additionalProperties": false

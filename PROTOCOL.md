@@ -95,9 +95,9 @@ Headers by kind:
 
 | Kind | Header fields | Data |
 |---|---|---|
-| ACL | `v` (1), `owner`, `ownerPublicKey`, `epoch`, `keepUntil` (block or null), `wraps` (list of hex, unlabelled); epoch 0: `members[] {address, publicKey, name, role, addedAtBlock}` and `revoked[] {address, atBlock}`; epoch 1+: `roster` (hex envelope of `{members, revoked}`) | empty |
-| update | `t`: writer's clock in ms | a Yjs v1 update |
-| snapshot | `id` (16 random bytes, 32 hex characters without `0x`), `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: address}` | the first part of a Yjs v1 state update |
+| ACL | `v` (1), `owner`, `ownerPublicKey`, `epoch`, `keepUntil` (block or null), `wraps` (list of hex, unlabelled); epoch 0: `members[] {address, publicKey, name, role, addedAtBlock}` and `revoked[] {address, atBlock}`; epoch 1+: `roster` (hex envelope of `{doc, epoch, members, revoked}`, see section 3) | empty |
+| update | `t`: writer's clock in ms; `salt`: 16 random bytes as 32 hex characters, fixed for the writer's session | a Yjs v1 update |
+| snapshot | `id` (16 random bytes, 32 hex characters without `0x`), `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: {address, salt}}` | the first part of a Yjs v1 state update |
 | chunk | `i` (1-based index), `of` (the snapshot's `id`) | the next part. Its outer epoch MUST equal its head's |
 | join | `publicKey` (65-byte hex), `name` | empty |
 | version | same as snapshot | same as snapshot |
@@ -107,14 +107,20 @@ Headers by kind:
 1. Query the ACL: `qp = "quire1" AND qd = <doc> AND qk = "a" AND $creator = <owner from link>`. Readers MUST NOT trust an ACL created by any other address.
 2. Decrypt it with the meta key. If `epoch` > 0, unwrap your epoch key from `wraps` and open `roster` with it. Without that key you can neither see the members nor read current content.
 3. Query all snapshots from members: `qk = "s"` and `$creator` is any member address, following cursors. Order them by `qs`, newest first (Arkiv does not promise an order). Apply the newest one that can be assembled, plus any others whose `base` differs from that snapshot's `base` by at most 60 blocks. If the newest cannot be assembled, fall back to the next. For each `chunks[i]`, fetch the entity by key. The chunk MUST have the same `$creator` as its head, its `i` MUST be the 1-based position and its `of` MUST equal the head's `id`.
-4. Query updates from members with `qs >= newest base - 60`, following cursors. Pin later pages to the first page's block with `atBlock`. Yjs updates commute, but client id binding (below) depends on order, so apply them sorted by `createdAt`, then by entity key. Live updates arrive in block order and are applied as they come.
+4. Query updates from members with `qs >= newest base - 60`, following cursors. Pin later pages to the first page's block with `atBlock`. Apply them in any order: Yjs updates commute, and the client id check below depends only on each update itself.
 5. Subscribe to entity events over WebSocket. On `EntityCreated`, fetch the entity by key and apply it if its creator is a member. On `EntityPatched` of the ACL, reload the ACL and catch up. An entity that cannot be read yet (its epoch key or a chunk has not arrived) SHOULD be retried, not dropped.
 
 Readers MUST ignore updates and snapshots whose `$creator` is not in the ACL, even if they decrypt.
 
-Readers MUST ignore an update whose structs use a Yjs client id already bound to a different address. A client id is bound by the `authors` map of the snapshot a reader applied, and otherwise by the first update the reader applies that uses it. Client ids are taken from the update's structs at any clock (Yjs `parseUpdateMeta`), not from a state vector derived from the update, which only counts runs that start at clock 0. This keeps one member from writing under another member's name, including after that member's own updates have expired into a snapshot.
+Client ids are derived from addresses. A writer picks a random 16-byte `salt` per session and uses the Yjs client id `clientIdFor(address, salt)`: the first 8 bytes of keccak-256 over the 20 address bytes followed by the 16 salt bytes, read big-endian and masked to 53 bits (a result of 0 becomes 1). Every update carries its `salt` in the header.
 
-Readers MUST ignore an update or snapshot encrypted for an epoch older than the ACL's current epoch if its `createdAt` is greater than the `atBlock` of the latest entry in `revoked`: a removed member could read it.
+Readers MUST ignore an update unless every client id that has structs in it equals `clientIdFor($creator, salt)`. Client ids are taken from the update's structs at any clock (Yjs `parseUpdateMeta`), not from a state vector derived from the update, which only counts runs that start at clock 0. No reader state is involved, so the check gives the same answer on every reader and in every order, and writing under another member's client id needs a 2^53 preimage search.
+
+A snapshot's `authors` map lets readers attribute text whose updates have expired. An entry counts only if `clientIdFor(address, salt)` equals its client id; even then it says who owns that client id, not that the snapshot's content under it is genuine, because a snapshot is one member's word. Readers SHOULD show such attribution as claimed rather than proven.
+
+Readers MUST ignore an update or snapshot encrypted for an epoch older than the ACL's current epoch if its `createdAt` is greater than the largest `atBlock` in `revoked`: a removed member could read it.
+
+A version uses epoch 0 in its outer header and frames, and its chunks are encrypted with the version key like its head. A version link carries no link secret, so a version's reader can check that the version is readonly and who created it, but not that the creator was a member.
 
 The exact raw query strings, as sent to `arkiv_query`:
 
@@ -144,7 +150,7 @@ Both methods return entities in this shape. Numbers are hex quantities, and the 
 }
 ```
 
-The conformance vectors in `spec/vectors/document.json` use the same shape, including `creationFlags`.
+In `creationFlags.raw`, bit 0 is readonly and bit 1 is permissionless extension. The conformance vectors in `spec/vectors/document.json` use the same shape, including `creationFlags`.
 
 ## 6. Writing
 

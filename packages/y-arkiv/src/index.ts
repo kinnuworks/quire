@@ -1,4 +1,4 @@
-export { ArkivProvider, loadAt } from "./provider.js"
+export { ArkivProvider, loadAt, prepareDoc } from "./provider.js"
 export type {
   Authorship,
   FlushInfo,
@@ -20,6 +20,6 @@ export type { ArkivStore, ChainEvent, Hex, QuerySpec, StoredEntity } from "./sto
 export { ATTR, CONTENT_TYPE, KIND, LIFETIME, PAD_BUCKETS, PROTOCOL_TAG } from "./protocol.js"
 export { bucketFor, decodeFrame, decodeOuter, encodeFrame, encodeOuter } from "./codec.js"
 export type { Frame } from "./codec.js"
-export { deriveEpochZeroKey, deriveMetaKey, open, randomBytes, seal } from "./crypto.js"
+export { clientIdFor, deriveEpochZeroKey, deriveMetaKey, open, randomBytes, seal } from "./crypto.js"
 export { SdkStore, TIRAMISU_HTTP, TIRAMISU_WS, toExpression } from "./sdk.js"
 export type { SdkStoreOptions } from "./sdk.js"

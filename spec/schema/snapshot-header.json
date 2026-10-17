@@ -36,10 +36,24 @@
         "pattern": "^[0-9]+$"
       },
       "additionalProperties": {
-        "type": "string",
-        "pattern": "^0x[0-9a-f]{40}$"
+        "type": "object",
+        "required": [
+          "address",
+          "salt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{40}$"
+          },
+          "salt": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          }
+        }
       },
-      "description": "Yjs client id to address, as claimed by the compactor"
+      "description": "client id to {address, salt}; valid only where clientIdFor(address, salt) equals the client id"
     },
     "id": {
       "type": "string",

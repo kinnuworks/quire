@@ -10,7 +10,8 @@
     "createdAt",
     "expiresAt",
     "payload",
-    "attributes"
+    "attributes",
+    "creationFlags"
   ],
   "properties": {
     "key": {
@@ -144,7 +145,8 @@
           "type": "boolean"
         },
         "raw": {
-          "type": "integer"
+          "type": "integer",
+          "description": "bit 0 readonly, bit 1 permissionless extension"
         }
       }
     }

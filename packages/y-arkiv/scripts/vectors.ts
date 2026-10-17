@@ -19,6 +19,10 @@ import { MemoryChain } from "../src/memory.js"
 import { KIND } from "../src/protocol.js"
 import type { Hex } from "../src/store.js"
 
+function randomBytesFixed(n: number, byte: number): Uint8Array {
+  return new Uint8Array(n).fill(byte)
+}
+
 const out = resolve(dirname(fileURLToPath(import.meta.url)), "../../../spec/vectors")
 mkdirSync(out, { recursive: true })
 
@@ -102,14 +106,18 @@ await settle(a.p, b.p, c.p)
 // a forged update: Mallory holds the link, so she can encrypt a perfectly valid
 // epoch 0 update with new text. Only the $creator filter keeps it out.
 {
+  const { clientIdFor } = await import("../src/crypto.js")
+  const forgedSalt = randomBytesFixed(16, 0x4d)
   const forged = new Y.Doc()
+  // a well-formed edit: Mallory's own derived client id and salt. Only the member list keeps it out.
+  forged.clientID = clientIdFor(mallory.address, forgedSalt)
   Y.applyUpdate(forged, Y.encodeStateAsUpdate(reader0.doc))
   const before = Y.encodeStateVector(forged)
   para(forged, "MALLORY WAS HERE")
   const update = Y.encodeStateAsUpdate(forged, before)
   const { encodeFrame, encodeOuter } = await import("../src/codec.js")
   const { randomBytes, seal } = await import("../src/crypto.js")
-  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 0, header: { t: 0 }, data: update }, randomBytes)
+  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 0, header: { t: 0, salt: bytesToHex(forgedSalt) }, data: update }, randomBytes)
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(SECRET), frame))
   await chain.store(mallory.address).batch({
     creates: [{ payload, attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],

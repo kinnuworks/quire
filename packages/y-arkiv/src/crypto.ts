@@ -100,3 +100,23 @@ export function wrapForMember(epochKey: Uint8Array, memberPublicKey: Uint8Array,
 export function unwrapAsMember(wrapped: Uint8Array, memberPrivateKeyHex: `0x${string}`, epoch: number): Promise<Uint8Array> {
   return openWith(memberPrivateKeyHex, wrapped, `wrap/${epoch}`)
 }
+
+/** Largest integer a Yjs client id can safely be (Number.MAX_SAFE_INTEGER). */
+const CLIENT_ID_MASK = (1n << 53n) - 1n
+
+/**
+ * A Yjs client id derived from the writer's address: the first 8 bytes of
+ * keccak256(address || salt), masked to 53 bits. Readers check every edit's
+ * client ids against its on-chain creator, so writing under someone else's
+ * id needs a 2^53 preimage search.
+ */
+export function clientIdFor(address: string, salt: Uint8Array): number {
+  const input = new Uint8Array(20 + salt.length)
+  input.set(hexToBytes(address), 0)
+  input.set(salt, 20)
+  const h = keccak_256(input)
+  let n = 0n
+  for (let i = 0; i < 8; i++) n = (n << 8n) | BigInt(h[i]!)
+  const id = Number(n & CLIENT_ID_MASK)
+  return id === 0 ? 1 : id
+}

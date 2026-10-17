@@ -108,7 +108,7 @@
     "roster": {
       "type": "string",
       "pattern": "^0x[0-9a-f]+$",
-      "description": "AES-256-GCM envelope of {members, revoked} under the current epoch key"
+      "description": "AES-256-GCM envelope of {doc, epoch, members, revoked} under the current epoch key"
     }
   },
   "additionalProperties": false,

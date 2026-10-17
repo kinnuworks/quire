@@ -72,3 +72,24 @@ function runs(items: Item[], provider: ArkivProvider): BlameRun[] {
   }
   return out
 }
+
+export type TimelineEntry = { block: bigint; author: Hex; entity: Hex; added: number; removed: number }
+
+/**
+ * How the text grew: every verified edit the provider applied, in block order, with how many
+ * characters it added and removed. With `fullHistory` that is every edit still on chain. A long run
+ * of small edits over hours is what a person typing looks like; one large edit is a paste. Edits are
+ * flushed every two to four seconds, so the timeline shows rhythm at that grain, not keystrokes.
+ */
+export function compositionTimeline(provider: ArkivProvider): TimelineEntry[] {
+  return [...provider.history]
+    .sort((a, b) => (a.block === b.block ? 0 : a.block < b.block ? -1 : 1))
+    .map((h) => {
+      const u = Y.decodeUpdate(h.update)
+      let added = 0
+      for (const st of u.structs) if (st instanceof Y.Item && st.content instanceof Y.ContentString) added += st.length
+      let removed = 0
+      for (const ranges of u.ds.clients.values()) for (const r of ranges) removed += r.len
+      return { block: h.block, author: h.author, entity: h.entity, added, removed }
+    })
+}

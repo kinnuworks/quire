@@ -1,7 +1,8 @@
 /**
  * Gas drip: sends a small amount of test GLM to a fresh document key.
  *
- * This is the only server Quire runs, and it never touches document data. It
+ * One of two small functions Quire runs (the other is the opt-in query relay,
+ * api/rpc.ts), and it never touches document data. It
  * receives an address, checks the balance is near zero, and sends one
  * transfer. Reading documents never involves it; writers can also fund
  * their key from their own wallet instead.

@@ -106,6 +106,7 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
         </section>
       )}
       {owner && <FindRequest p={p} busy={!!busy} run={run} />}
+      {owner && <RotateKey p={p} busy={!!busy} run={run} />}
 
       <section>
         <h4>Members · epoch {p.acl.epoch}</h4>
@@ -122,12 +123,11 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
                   className="btn btn-outline danger"
                   disabled={!!busy}
                   onClick={() =>
-                    confirm(
-                      `Remove ${m.name}? The key rotates and they stop receiving new edits. Your own earlier entities are deleted too, so the old link no longer opens your earlier text from Arkiv (your new snapshot carries it now, so it reads as vouched for rather than proven edit by edit). Other members' earlier edits stay readable with the old link until they expire or those members shred them.`,
-                    ) &&
+                    confirm(`Remove ${m.name}? The key rotates and they stop receiving new edits. What they wrote while a member stays proven.`) &&
                     run("removing", async () => {
-                      const r = await p.revoke(m.address, { shredOldEpoch: true })
-                      return `Removed. New edits use epoch ${p.acl!.epoch}; deleted ${r.shredded} of your entities from earlier epochs.`
+                      const shredOldEpoch = confirm(SHRED_OLD_QUESTION)
+                      const r = await p.revoke(m.address, { shredOldEpoch })
+                      return `Removed. New edits use epoch ${p.acl!.epoch}.${shredOldEpoch ? ` Deleted ${r.shredded} of your entities from earlier epochs.` : ""}`
                     })
                   }
                 >
@@ -431,6 +431,35 @@ const KEEP = [
   { label: "3 years", s: 3 * 365 * 86400 },
 ]
 
+const SHRED_OLD_QUESTION =
+  "Also delete your own entities from before this rotation? The old link would then no longer open your earlier text from Arkiv's state, but that text would read as vouched for by your new snapshot rather than proven edit by edit. Block history keeps the old ciphertext either way. OK deletes them; Cancel keeps them."
+
+/** Owner: a new key for everyone who stays, so a link that may have leaked opens nothing written from now on. */
+function RotateKey({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (what: string, fn: () => Promise<string | void>) => Promise<void> }) {
+  return (
+    <section>
+      <h4>Rotate the key</h4>
+      <p className="muted small">
+        The link carries only the first key. Rotating seals a new one to each member, so anyone holding just the link, including a link that leaked, reads nothing written from now on. They can still ask to join, and you decide. What was written before stays readable to the old link while it lives, and in block history for good.
+      </p>
+      <button
+        className="btn btn-outline"
+        disabled={busy}
+        onClick={() =>
+          confirm("Rotate the key? Members keep reading and writing; the link alone stops opening new text.") &&
+          run("rotating", async () => {
+            const shredOldEpoch = confirm(SHRED_OLD_QUESTION)
+            const r = await p.rotateKey({ shredOldEpoch })
+            return `Now on epoch ${p.acl!.epoch}.${shredOldEpoch ? ` Deleted ${r.shredded} of your entities from earlier epochs.` : ""}`
+          })
+        }
+      >
+        Rotate the key
+      </button>
+    </section>
+  )
+}
+
 /**
  * Writes kept out. The normal reads ask only for members' entities, so outside writes never even
  * arrive; one extra query, run once when this panel opens, lists them.
@@ -456,7 +485,7 @@ function OutsideWrites({ p }: { p: ArkivProvider }) {
             ? failed
               ? "could not check the chain just now."
               : "checking the chain for entities from outside the member list (one query)."
-            : `${outside.length === 1 ? "entity" : "entities"} on chain for this document from outside the member list${creators.length ? ` (${creators.map((x) => short(x)).join(", ")})` : ""}. None were applied.`}
+            : `${outside.length === 1 ? "entity" : "entities"} on chain for this document from outside the member list${creators.length ? ` (${creators.map((x) => short(x)).join(", ")})` : ""}. None were applied.${p.outsidersTruncated ? " This checked the first 200 entities only, so a busy document may hold more." : ""}`}
         </span>
       </p>
       {p.stats.rejectedWrites > 0 && <p className="muted small">This tab also refused {p.stats.rejectedWrites} {p.stats.rejectedWrites === 1 ? "write" : "writes"} that arrived: from outside the list, under someone else's client id, or malformed.</p>}
@@ -564,7 +593,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
                   p.acl?.keepUntil && head !== null && BigInt(p.acl.keepUntil) > head
                     ? `by block ${p.acl.keepUntil}, about ${Math.ceil(Number(BigInt(p.acl.keepUntil) - head) / 43200)} days from now, because you chose to keep it`
                     : "within 30 days"
-                }, or later if a member chose to keep proof of their edits (up to three years). Without the member list no reader can check those pieces, but anyone holding the link could still decrypt them. Old ciphertext stays in block history.`,
+                } (members who kept proof extended theirs to the same date, never later). Until then anyone holding the link could still decrypt them, though without the member list no reader can check them. And block history keeps every payload for good: deleting removes entities from Arkiv's state, not from the chain's past.`,
               ) &&
               run("deleting", async () => `Deleted ${await p.deleteDocument()} entities. The document no longer opens.`)
             }
@@ -597,28 +626,20 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
         <section>
           <h4>Keep proof of what I wrote</h4>
           <p className="muted small">
-            Readers prove who wrote what from each person's edits, which expire with the document's 30-day lease. This extends every edit your key wrote here, the member list they are checked against, and a snapshot of yours (your edits sit on text others wrote, so they cannot be rebuilt without it), so <code>y-arkiv blame</code> can still prove your text later. That keeps a readable copy of the document alive for as long as you choose, for anyone with the link, even if the owner lets it lapse. The owner can still delete the member list, which stops readers from checking anything.
+            Readers prove who wrote what from each person's edits, which are written for the document's lease. This extends every edit your key wrote here, the member list they are checked against, and a snapshot of yours (your edits sit on text others wrote), so <code>y-arkiv blame</code> keeps proving your text for as long as the document lives. The owner sets that lifetime; proof cannot outlive it.
           </p>
-          <div className="row">
-            {[
-              { label: "1 year", s: 365 * 86400 },
-              { label: "3 years", s: 3 * 365 * 86400 },
-            ].map((k) => (
-              <button
-                key={k.s}
-                className="btn btn-outline"
-                disabled={!!busy}
-                onClick={() =>
-                  run("extending your edits", async () => {
-                    const r = await p.keepMyProof(k.s)
-                    return r.extended ? `Extended ${r.extended} entities until block ${r.until}, about ${k.label} from now.` : `Everything of yours already lives at least ${k.label}.`
-                  })
-                }
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
+          <button
+            className="btn btn-outline"
+            disabled={!!busy}
+            onClick={() =>
+              run("extending your edits", async () => {
+                const r = await p.keepMyProof(3 * 365 * 86400)
+                return r.extended ? `Extended ${r.extended} entities until block ${r.until}, when the document ends.` : "Everything of yours already lives as long as the document."
+              })
+            }
+          >
+            Keep my proof as long as the document
+          </button>
         </section>
       )}
       {p.identity && (
@@ -627,7 +648,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
           <p className="muted small">
             Deletes every edit and join request your key wrote here, in one transaction, after folding the text into a snapshot. Your words stay in the shared text until someone removes them. They then read as claimed rather than proven, because the edits that proved them are gone.
           </p>
-          <button className="btn btn-outline danger" disabled={!!busy} onClick={() => confirm("Delete your edit history for this document?") && run("shredding", async () => `Deleted ${await p.shredMine()} entities.`)}>
+          <button className="btn btn-outline danger" disabled={!!busy} onClick={() => confirm("Delete your edit history for this document? Your edits leave Arkiv's state, and your text then reads as claimed rather than proven. Block history keeps the old ciphertext for good, so anyone with the link and an archive of old blocks could still decrypt it.") && run("shredding", async () => `Deleted ${await p.shredMine()} entities.`)}>
             Shred my edit history
           </button>
         </section>

@@ -165,6 +165,8 @@ export class ArkivProvider extends Observable<string> {
   private readonly claimedVia = new Map<number, Hex>()
   /** Clock ranges per client id that applied snapshots carried, and whose snapshot: newest first. */
   private readonly carried = new Map<number, { from: number; to: number; via: Hex }[]>()
+  /** True if the last outsider scan read one full page and stopped (there may be more). */
+  outsidersTruncated = false
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
@@ -800,6 +802,7 @@ export class ArkivProvider extends Observable<string> {
           typeof entry?.address === "string" &&
           typeof entry.salt === "string" &&
           /^[0-9a-f]{32}$/.test(entry.salt) &&
+          String(Number(client)) === client && // a canonical decimal: "0123" would name 123 twice
           clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client) &&
           (await signedBy(this.link.doc, entry.salt, entry.sig, entry.address as Hex))
         ) {
@@ -1212,24 +1215,31 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /**
-   * Any member: keeps the proof of what you wrote for `seconds` (up to three years). Your edits are
-   * entities only you can extend, and readers prove authorship from them, so this extends every one
-   * of yours still on chain, plus the member list they are checked against (anyone may extend that).
-   * Only extensions that move expiry later are sent: Arkiv reverts the others. Snapshots are not
-   * touched, so this keeps proof, not a readable copy beyond the document's own lease.
+   * Any member: keeps the proof of what you wrote for as long as the owner keeps the document
+   * (`keepUntil`, set with keepFor), or for `seconds` if that is sooner. Your edits are entities only
+   * you can extend, and readers prove authorship from them, so this extends every one of yours still
+   * on chain, the member list they are checked against, and a snapshot of yours (your edits sit on
+   * text others wrote). The owner's lifetime is the ceiling: no member can keep the document readable
+   * for longer than the owner chose. Only extensions that move expiry later are sent: Arkiv reverts
+   * the others.
    */
   async keepMyProof(seconds: number): Promise<{ extended: number; until: bigint }> {
     if (!this.identity || !this.acl || !this.aclKey) throw new Error("open the document with your key first")
     const me = this.identity.address.toLowerCase()
-    const seconds_ = Math.min(seconds, 3 * 365 * 86400)
     return this.serial(async () => {
+      // the owner's keepUntil may have changed while this tab's socket was away: re-read the list (free)
+      await this.refreshAcl()
+      await this.refreshAclExpiry()
       const head = await this.store.head()
-      const until = head + blocks(seconds_)
+      const ceiling = this.acl!.keepUntil ? BigInt(this.acl!.keepUntil) : 0n
+      if (ceiling <= head + blocks(LIFETIME.snapshot)) {
+        throw new Error("The owner keeps this document for its 30-day lease only, and proof cannot outlive the document. Ask the owner to keep it longer (Lifetime tab), then keep your proof.")
+      }
+      const until = head + blocks(Math.min(seconds, 3 * 365 * 86400)) < ceiling ? head + blocks(Math.min(seconds, 3 * 365 * 86400)) : ceiling
+      const seconds_ = Number(until - head) * BLOCK_SECONDS
       const mine = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: [me as Hex] })
       const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me && e.expiresAt < until).map((e) => e.key)
-      // someone else may have moved the member list out already, and an extension that moves expiry
-      // earlier reverts the whole batch: read its current expiry first (by key, not billed)
-      await this.refreshAclExpiry()
+      // the list's expiry was just re-read: an extension that would move it earlier reverts the whole batch
       if (this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
       // extensions carry no payload; a hundred per transaction keeps each one small
       for (let i = 0; i < keys.length; i += 100) {
@@ -1320,10 +1330,25 @@ export class ArkivProvider extends Observable<string> {
   async revoke(address: Hex, options: { shredOldEpoch?: boolean } = {}): Promise<{ shredded: number }> {
     const target = address.toLowerCase()
     if (target === this.link.owner.toLowerCase()) throw new Error("the owner cannot be revoked")
+    return this.rotate(target as Hex, options)
+  }
+
+  /**
+   * Owner: starts a new epoch without removing anyone. Members get the new key in their wraps; the
+   * document link, which carries only the epoch 0 key, then opens nothing written from here on. Use it
+   * when a link may have leaked: people holding it can still ask to join, and the owner decides.
+   */
+  async rotateKey(options: { shredOldEpoch?: boolean } = {}): Promise<{ shredded: number }> {
+    return this.rotate(null, options)
+  }
+
+  private async rotate(target: Hex | null, options: { shredOldEpoch?: boolean }): Promise<{ shredded: number }> {
     const epochKey = randomBytes(32)
     await this.updateAcl(async (acl, head) => {
-      acl.members = acl.members.filter((m) => m.address.toLowerCase() !== target)
-      acl.revoked.push({ address: target as Hex, atBlock: head.toString() })
+      if (target) {
+        acl.members = acl.members.filter((m) => m.address.toLowerCase() !== target)
+        acl.revoked.push({ address: target, atBlock: head.toString() })
+      }
       acl.epoch += 1
       const wraps: Hex[] = []
       for (const m of acl.members) wraps.push(`0x${bytesToHex(await wrapForMember(epochKey, hexToBytes(m.publicKey), acl.epoch))}`)
@@ -1433,10 +1458,15 @@ export class ArkivProvider extends Observable<string> {
     return (await this.outsiderEntities()).map((e) => e.creator.toLowerCase() as Hex)
   }
 
-  /** The entities behind scanOutsiders(), for tools that need their keys. */
+  /**
+   * The entities behind scanOutsiders(), for tools that need their keys. One page of up to 200 and
+   * no more: the document id is public, so anyone can pile junk on it, and following every page would
+   * spend every reader's query budget. `outsidersTruncated` says when the page was full.
+   */
   async outsiderEntities(): Promise<StoredEntity[]> {
     if (!this.acl || this.acl.rosterHidden) return []
-    const all = await queryAll(this.store, { doc: this.link.doc })
+    const all = await this.store.query({ doc: this.link.doc, limit: 200 })
+    this.outsidersTruncated = !!all.cursor
     const members = new Set(memberAddresses(this.acl))
     const acl = this.acl
     return all.entities.filter(

@@ -18,8 +18,8 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 | Kind | `qk` | Creator | Payload (encrypted) | Expiration | Renewal | Flags |
 |---|---|---|---|---|---|---|
 | Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 30 days, or the owner's `keepUntil` | extended by any member's session; changed only by the owner with `patchEntity` | `permissionlessExtension` (it holds no text) |
-| Update | `u` | a member | Yjs update merging one writer's edits from about one block | as long as a new snapshot (30 days or `keepUntil`) | none: folded into a snapshot before it can expire | none |
-| Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or `keepUntil` | its creator extends it, or another member writes a fresh one | none |
+| Update | `u` | a member | Yjs update merging one writer's edits from about one block | as long as a new snapshot (30 days or `keepUntil`) | folded into a snapshot before it can expire; its creator may extend it to `keepUntil` to keep proof (Keep my proof) | none |
+| Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or `keepUntil`; never shorter than the same member's snapshot it replaces | its creator extends it, or another member writes a fresh one; Keep my proof writes one that lasts to `keepUntil` | none |
 | Snapshot chunk | `c` | the snapshot's creator | next part of the state | same as its head | extended together with its head | none |
 | Join request | `j` | anyone with the link | requester's public key and chosen name, sealed to the owner's key | 1 hour | none | none |
 | Published version | `v` (+ `c`) | a member | frozen Yjs state under its own key | 1 year | anyone holding the link can extend | `readonly`, `permissionlessExtension` |
@@ -29,6 +29,7 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 - An update lives as long as a new snapshot would, so it can never expire before a snapshot covers it. Writers also compact about two minutes after they stop typing and when they leave the page, so most documents end every session fully folded into one snapshot.
 - A snapshot is a lease. A member who opens the document past the halfway mark renews it, by extending their own snapshot or writing a fresh one. If nobody opens it for a month, it expires from Arkiv's state. Nobody outside the member list can extend a snapshot, because snapshots and edits carry no permissionless-extension flag. The member list does carry it, so writers can keep a document open while the owner is away. That also means anyone, strangers included, can extend it. It holds member names and public keys (sealed after a rotation) but no text, so extending it keeps nothing readable alive, and the owner can delete it at any time.
 - The owner can keep the document longer (90 days to 3 years). The target is stored in the member list, so every later snapshot honours it. Arkiv only lets an extension move expiry later, so to end a document sooner the owner deletes it, which removes the member list and every entity the owner created in one batch.
+- A writer can keep proof of their own edits (Keep my proof): their edits, the member list and a snapshot of theirs are extended to the owner's `keepUntil`, and never beyond it, so the owner's lifetime stays the ceiling for every readable copy.
 - A join request is answered within minutes or not at all, so it expires after an hour.
 - A published version is meant to outlive the document, and anyone who holds its link can extend it.
 
@@ -41,16 +42,18 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 ## Queries the app runs
 
-Opening a document costs three queries. Live edits after that cost none: they arrive as WebSocket events and are fetched by key with `arkiv_getEntity`, which the public RPC does not bill against the query budget. Background work does cost a little: one query for each compaction (at most every two minutes after typing stops) and one for a resync every 15 minutes, two for the owner, who also re-reads join requests. A long-open writer's tab checks the lease on each resync too, so it renews without a reload.
+Opening a document costs three queries; the app's People tab then spends one more, a single page that lists writes from outside the member list. Live edits after that cost none: they arrive as WebSocket events and are fetched by key with `arkiv_getEntity`, which the public RPC does not bill against the query budget. Background work does cost a little: one query for each compaction (at most every two minutes after typing stops) and one for a resync every 15 minutes, two for the owner, who also re-reads join requests. A long-open writer's tab checks the lease on each resync too, so it renews without a reload.
 
 | # | When | Query | Code |
 |---|---|---|---|
 | 1 | open | `qp = str('quire1') AND qd = bytes32(<doc>) AND qk = str('a') AND $creator = addr(<owner>)` | [`provider.ts` loadAcl](../packages/y-arkiv/src/provider.ts) |
 | 2 | open | `… AND qk = str('s') AND ($creator = addr(<m1>) OR …)`, all pages, ordered by `qs` on the client | `provider.ts` loadState |
-| 3 | open, before compacting | `… AND qk = str('u') AND qs >= u64(<base − 60>) AND ($creator = addr(<m1>) OR …)`, cursor pages pinned with `atBlock` | `provider.ts` loadState, resync |
+| 3 | open, before compacting | `… AND qk = str('u') AND qs >= u64(<base − 60>) AND ($creator = addr(<m1>) OR …)` over current and removed members, cursor pages pinned with `atBlock` (with `fullHistory`, no `qs` bound) | `provider.ts` loadState, resync |
 | 4 | owner opens, and on resync | `… AND qk = str('j')`, the first page of 200 only, so junk requests cannot drain the owner's budget | `provider.ts` loadJoinRequests |
 | 4b | owner looks up one person | `… AND qk = str('j') AND $creator = addr(<address>)` | `provider.ts` findJoinRequest |
-| 5 | shred, delete | `… AND $creator = addr(<me>)` | `provider.ts` shredMine, deleteDocument |
+| 5 | shred, delete, rotation cleanup | `… AND $creator = addr(<me>)` | `provider.ts` shredMine, deleteDocument, rotate |
+| 5b | keep my proof | `… AND qk = str('u') AND $creator = addr(<me>)` | `provider.ts` keepMyProof |
+| 5c | writes kept out | `qp = str('quire1') AND qd = bytes32(<doc>)`, one page of 200, no creator filter | `provider.ts` outsiderEntities |
 | 6 | history check | queries 1 to 3 with `atBlock = <past block>` | `provider.ts` loadAt |
 | 7 | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |
 
@@ -60,7 +63,8 @@ Opening a document costs three queries. Live edits after that cost none: they ar
 |---|---|
 | Create document | ACL create + snapshot head |
 | Compact | chunks first, in transactions of at most 100,000 payload bytes (payloads travel hex-encoded and the RPC refuses requests over about 256 KiB: 120,000 bytes lands, 130,000 does not); then the head, which lists the chunk keys |
-| Remove a member | ACL patch (new epoch, re-wrapped keys, sealed roster) + the new snapshot head under the new key |
+| Remove a member, or rotate the key | ACL patch (new epoch, re-wrapped keys, sealed roster) + the new snapshot head under the new key; optionally, then, deletes of the owner's own older-epoch entities |
+| Keep my proof | extensions of my updates and the ACL, where they move expiry later, up to `keepUntil`; then my snapshot, written to last as long |
 | Renew lease | extensions for my snapshot and its chunks, and the ACL, only where they move expiry later |
 | Shred my edit history | deletes of my updates and join requests |
 | Delete document | deletes of the ACL and every entity the owner created |

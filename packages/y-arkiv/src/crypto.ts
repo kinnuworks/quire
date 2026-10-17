@@ -107,8 +107,10 @@ const CLIENT_ID_MASK = (1n << 53n) - 1n
 /**
  * A Yjs client id derived from the writer's address: the first 8 bytes of
  * keccak256(address || salt), masked to 53 bits. Readers check every edit's
- * client ids against its on-chain creator, so writing under someone else's
- * id needs a 2^53 preimage search.
+ * client ids against its on-chain creator. The derivation alone is a 2^53
+ * search, within reach of a GPU farm; what stops a takeover is that a client id
+ * first seen from one address is never accepted from another (the takeover
+ * rule in provider.ts), and the victim's salt is public only once they write.
  */
 export function clientIdFor(address: string, salt: Uint8Array): number {
   const addr = hexToBytes(address)

@@ -72,7 +72,7 @@ function CreateForm({ id }: { id: string }) {
         <div className="card create-help">
           <p className="error">{error}</p>
           <p className="t-small">
-            This document's key is <span className="t-mono">{pending.address}</span>. Send it a little test GLM (0.01 is plenty) from the{" "}
+            This document's key is <span className="t-mono">{pending.address}</span>. Send it a little test GLM (0.01 covers about 80 edits) from the{" "}
             <a href="https://hub.arkiv.network/faucet" target="_blank" rel="noreferrer">
               Arkiv faucet
             </a>{" "}
@@ -228,8 +228,8 @@ export function Home() {
               <span className="dot" />
               Why it exists
             </span>
-            <h2>Whoever hosts your document can read it.</h2>
-            <p className="lead">In the usual setup, one company holds the only copy. It can read the document, and it can lock you out of it.</p>
+            <h2>Whoever hosts your document decides whether it exists.</h2>
+            <p className="lead">In the usual setup one company holds the only copy. Most can read it; even the encrypted ones can delete it, lock your account or shut down.</p>
           </div>
           <div className="grid grid-2">
             <div className="card card--flat reveal">

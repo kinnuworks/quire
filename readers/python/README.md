@@ -202,19 +202,16 @@ Choices the spec leaves open, made here:
 - an `authors` entry whose address is not a current member (for example a
   revoked one) still counts as claimed attribution; the report marks it
   "revoked" or "no member"
-- with `jsonschema` installed, a snapshot whose `authors` entry lacks `sig`
-  fails the schema and the whole snapshot is ignored; without it only the
-  entry is dropped
+- a snapshot whose `authors` entry lacks `sig` (or any field) breaks the
+  header schema, so the whole snapshot is ignored, with or without
+  `jsonschema` installed: the built-in checks apply the same rules
 - snapshots are applied newest first, so where two snapshots disagree on a
   clock no update wrote, the newest one's struct is kept
 - the `qs` and `base` sanity rule is applied to snapshots, not to versions
 - a refused snapshot's `authors` entries do not count; the read starts over
   without it
-- a version that is not readonly is reported by `--verify` and failed by the
-  audit, but still read
-- a chunk whose flags differ from its head's is rejected. Section 1 says a
-  chunk has its head's flags, but section 5 does not list this among the
-  reader checks
+- a version that is not readonly is refused, as the TypeScript reader does
+- a chunk whose flags differ from its head's is rejected (section 5)
 
 ## Tests
 

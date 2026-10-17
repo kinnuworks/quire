@@ -1,4 +1,4 @@
-export { blame, type BlameRun } from "./blame.js"
+export { blame, type BlameRun, compositionTimeline, type TimelineEntry } from "./blame.js"
 export { vectorStore } from "./vectors.js"
 export { ArkivProvider, extendVersion, loadAt, overridesVerified, prepareDoc } from "./provider.js"
 export type {

@@ -8,6 +8,7 @@
  *   y-arkiv watch  '<link>'                 print each edit as it lands
  *   y-arkiv verify '<link>'                 members, lease, ignored writes, outside writes
  *   y-arkiv blame  '<link>'                 who wrote each run of text, with the entity and block that prove it
+ *   y-arkiv timeline '<link>'               every edit still on chain, in order: who, when, characters added and removed
  *   y-arkiv extend '<version link>'         keep a published version alive (QUIRE_KEY: any funded key)
  *   y-arkiv check-signature <address> '<message>' <signature>
  *                                           check a "Prove this key is yours" signature from the app
@@ -20,7 +21,7 @@ import "./node-quiet.js"
 import { verifyMessage } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
-import { blame } from "./blame.js"
+import { blame, compositionTimeline } from "./blame.js"
 import { ArkivProvider, extendVersion } from "./provider.js"
 import { parseDocLink, parseVersionLink } from "./link.js"
 import { SdkStore } from "./sdk.js"
@@ -56,7 +57,7 @@ async function main() {
   if (!!httpUrl !== !!wsUrl) fail("pass --rpc and --ws together, so every request goes to the node you chose")
   const [cmd, raw] = args
   if (!cmd || !raw) fail(
-      "usage: y-arkiv read|watch|verify|blame '<document link>'\n" +
+      "usage: y-arkiv read|watch|verify|blame|timeline '<document link>'\n" +
         "       y-arkiv extend '<version link>'          (QUIRE_KEY=a funded key)\n" +
         "       y-arkiv check-signature <address> '<message>' <signature>\n" +
         "options: --rpc <url> --ws <url>; QUIRE_KEY to read as a member; ARKIV_ACCESS_KEY for more queries",
@@ -88,7 +89,7 @@ async function main() {
   if (key && !/^0x[0-9a-fA-F]{64}$/.test(key)) fail("QUIRE_KEY must be 0x followed by 64 hex characters")
   const identity = key ? { address: privateKeyToAccount(key).address.toLowerCase() as `0x${string}`, privateKey: key, name: "reader" } : undefined
   // blame reads every update still on chain, not only those after the newest snapshot
-  const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" })
+  const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" || cmd === "timeline" })
   await provider.connect()
 
   if (cmd === "read") {
@@ -117,7 +118,7 @@ async function main() {
       const outsiders = await provider.scanOutsiders()
       const by = [...new Set(outsiders)]
       const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
-      console.log(`outside    ${n(outsiders.length, "entity", "entities")} by ${n(by.length, "non-member", "non-members")}, never fetched or applied${by.length ? `: ${by.join(", ")}` : ""} (1 more query)`)
+      console.log(`outside    ${n(outsiders.length, "entity", "entities")} by ${n(by.length, "non-member", "non-members")}, never fetched or applied${by.length ? `: ${by.join(", ")}` : ""} (1 more query${provider.outsidersTruncated ? "; first 200 entities only, there are more" : ""})`)
     }
     process.exit(0)
   }
@@ -138,6 +139,34 @@ async function main() {
     })
     console.log("")
     for (const [a, t] of total) console.log(`${a}  ${t.proven} characters proven, ${t.claimed} claimed`)
+    console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
+    process.exit(0)
+  }
+  if (cmd === "timeline") {
+    if (provider.acl?.rosterHidden) fail("the roster is sealed under a newer key. Run it again with QUIRE_KEY set to a current member's key; the CLI only reads.")
+    const short = (a: string) => `${a.slice(0, 8)}…${a.slice(-4)}`
+    const entries = compositionTimeline(provider)
+    if (!entries.length) fail("no edits are left on chain for this document: they expired or were shredded, so only snapshots remain")
+    const first = entries[0]!.block
+    console.log("block      +time    author          added removed  entity")
+    for (const e of entries) {
+      const secs = Number(e.block - first) * 2
+      const t = secs < 3600 ? `${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s` : `${(secs / 3600).toFixed(1)}h`
+      console.log(`${String(e.block).padEnd(10)} ${t.padEnd(8)} ${short(e.author)}  ${String(e.added).padStart(5)} ${String(e.removed).padStart(7)}  ${short(e.entity)}`)
+    }
+    const by = new Map<string, { edits: number; added: number; from: bigint; to: bigint }>()
+    for (const e of entries) {
+      const s = by.get(e.author) ?? { edits: 0, added: 0, from: e.block, to: e.block }
+      s.edits++
+      s.added += e.added
+      s.to = e.block
+      by.set(e.author, s)
+    }
+    console.log("")
+    for (const [a, s] of by) {
+      const mins = (Number(s.to - s.from) * 2) / 60
+      console.log(`${a}  ${s.edits} ${s.edits === 1 ? "edit" : "edits"}, ${s.added} characters added, over ${mins < 1 ? "under a minute" : `${mins.toFixed(0)} minutes`} (blocks ${s.from} to ${s.to})`)
+    }
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)
   }

@@ -1572,6 +1572,10 @@ def read_version(link: VersionLink, source: Source, schemas: Schemas | None = No
         # head's epoch (checked in assemble).
         if outer_epoch(head) != 0:
             raise Rejected(f"version outer epoch is {outer_epoch(head)}, must be 0")
+        # Section 4: a version is a promise that nobody can change it; one
+        # written without the readonly flag could be patched later.
+        if not head.readonly:
+            raise Rejected("version is not readonly on chain, so its creator could still change it")
         frame = open_frame(head)
         schemas.check("snapshot", frame.header)
         problem = header_problem("v", frame.header)

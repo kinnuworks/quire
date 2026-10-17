@@ -311,8 +311,12 @@ describe("keep my proof", () => {
     await settle(chain, [a, bea])
     await a.provider.compact()
     await settle(chain, [a, bea])
+    // proof cannot outlive the document: until the owner keeps it longer, keep-proof refuses
+    await expect(bea.provider.keepMyProof(365 * 86400)).rejects.toThrow(/Ask the owner to keep it longer/)
+    await a.provider.keepFor(2 * 365 * 86400)
+    await settle(chain, [a, bea])
     const r = await bea.provider.keepMyProof(365 * 86400)
-    expect(r.extended).toBe(3) // her edit, the member list, and a snapshot of hers that lives as long
+    expect(r.extended).toBe(2) // her 30-day edit and a snapshot of hers; the owner already moved the member list out
     // asking again at once has nothing to move later, so it sends nothing (Arkiv would revert it)
     expect((await bea.provider.keepMyProof(365 * 86400)).extended).toBe(0)
     // a later routine compaction by Bea must not shorten her kept snapshot
@@ -466,7 +470,7 @@ describe("member list expiry seen by another tab", () => {
     await settle(chain, [a, bea])
     // Bea's socket misses it: the owner keeps proof for 3 years, moving the member list far out
     ;(bea.provider as unknown as { unwatch: () => void }).unwatch()
-    await a.provider.keepMyProof(3 * 365 * 86400)
+    await a.provider.keepFor(3 * 365 * 86400)
     chain.mine()
     await expect(bea.provider.keepMyProof(365 * 86400)).resolves.toMatchObject({ extended: expect.any(Number) })
     a.provider.destroy()
@@ -500,6 +504,65 @@ describe("read-only member session", () => {
     expect(doc.getText("t").toString()).toBe("before and after")
     await expect(p.compact()).rejects.toThrow(/read-only/)
     expect(batches.n).toBe(0)
+    a.provider.destroy()
+  })
+})
+
+describe("rotate key", () => {
+  it("after a rotation the link alone opens nothing new; members carry on; a link holder can still ask to join", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    a.doc.getText("t").insert(0, "old ")
+    await a.provider.flush()
+    await settle(chain, [a, bea])
+    await a.provider.rotateKey()
+    await settle(chain, [a, bea])
+    expect(a.provider.acl!.epoch).toBe(1)
+    a.doc.getText("t").insert(4, "new")
+    await a.provider.flush()
+    await settle(chain, [a, bea])
+    expect(bea.doc.getText("t").toString()).toBe("old new")
+    const outsider = await peer(chain, link, undefined)
+    expect(outsider.provider.acl!.rosterHidden).toBe(true)
+    expect(outsider.doc.getText("t").toString()).not.toContain("new")
+    // someone with the old link asks to join and, once added, reads everything
+    const cal = await peer(chain, link, identity("cal"))
+    await admit(chain, a, cal)
+    const calFresh = await peer(chain, link, cal.id)
+    expect(calFresh.doc.getText("t").toString()).toBe("old new")
+    a.provider.destroy()
+  })
+})
+
+describe("composition timeline", () => {
+  it("lists each edit in block order with characters added and removed", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const t = a.doc.getText("t")
+    t.insert(0, "first draft")
+    await a.provider.flush()
+    await settle(chain, [a], 30)
+    t.delete(0, 6)
+    t.insert(0, "second")
+    await a.provider.flush()
+    await settle(chain, [a], 30)
+    await a.provider.compact()
+    await settle(chain, [a])
+    const doc = new Y.Doc()
+    const p = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, fullHistory: true, readOnly: true })
+    await p.connect()
+    const { compositionTimeline } = await import("../src/blame.js")
+    const tl = compositionTimeline(p)
+    expect(tl.map((e) => [e.added, e.removed])).toEqual([
+      [11, 0],
+      [6, 6],
+    ])
+    expect(tl[0]!.block < tl[1]!.block).toBe(true)
+    expect(tl.every((e) => e.author === owner.address)).toBe(true)
     a.provider.destroy()
   })
 })

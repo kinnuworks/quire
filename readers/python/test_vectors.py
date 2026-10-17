@@ -42,11 +42,13 @@ with open(DOCUMENT, encoding="utf-8") as fh:
 OWNER_KEY = VEC["privateKeys"]["owner"]
 BEA_KEY = VEC["privateKeys"]["bea"]
 # Yjs client ids in the vectors, each clientIdFor(address, session salt).
-OWNER_CLIENT = 7322550630947896
-OWNER_SALT = "bc92b85c18495b2d8cc0196dfadedb27"  # visible to every member in the owner's update headers
-BEA_CLIENT = 7727742464255025
-CAL_CLIENT = 1921161367756840  # Cal is revoked; his edits live on only in the snapshot
+OWNER_CLIENT = 5514128972073175
+OWNER_SALT = "89ff1a0a12139420d2a8ba3f5c7d3493"  # visible to every member in the owner's update headers
+BEA_CLIENT = 7254637518696223
+CAL_CLIENT = 8055772141072627  # Cal is revoked; his edits live on only in the snapshot
 REVOKED_AT = 10  # Cal's atBlock in the sealed roster
+KEYS_BY_ADDRESS = {VEC["owner"]: OWNER_KEY, VEC["members"]["bea"]: BEA_KEY}
+OTHER_DOC = "0x" + "cd" * 32
 
 
 def _qs(e) -> int:
@@ -127,6 +129,49 @@ def to_raw(e) -> dict:
     }
 
 
+def sign_salt(private_hex: str, salt: str, doc: str = VEC["doc"]) -> str:
+    """EIP-191 signature (r || s || v, v 27 or 28) over the salt message.
+
+    Signs with `cryptography`, which gives r and s but no recovery id, so v
+    is found by recovering both parities and keeping the one that matches.
+    """
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+    key = quire_read.load_private_key(private_hex)
+    digest = quire_read.eip191_digest(quire_read.salt_message(doc, salt))
+    r, s = utils.decode_dss_signature(key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256()))))
+    s = min(s, quire_read._N - s)  # low s, as personal_sign writes it
+    want = quire_read.public_key_bytes(key)
+    for v in (27, 28):
+        sig = r.to_bytes(32, "big") + s.to_bytes(32, "big") + bytes([v])
+        if quire_read.recover_public_key(digest, sig) == want:
+            return "0x" + sig.hex()
+    raise AssertionError("neither parity recovers the signing key")
+
+
+def author_entry(address: str, salt: str, signer: str | None = None, doc: str = VEC["doc"]) -> dict:
+    """A snapshot `authors` value, signed by `signer` (default: the address's own key)."""
+    return {"address": address, "salt": salt, "sig": sign_salt(signer or KEYS_BY_ADDRESS[address], salt, doc)}
+
+
+@contextlib.contextmanager
+def collide(address: str, salt: str, cid: int):
+    """Make clientIdFor(address, salt) return `cid`, standing in for a
+    53-bit collision nobody can find on demand."""
+    real = quire_read.client_id_for
+
+    def fake(a, s):
+        text = s if isinstance(s, str) else bytes(s).hex()
+        return cid if (str(a).lower(), text) == (address, salt) else real(a, s)
+
+    quire_read.client_id_for = fake
+    try:
+        yield
+    finally:
+        quire_read.client_id_for = real
+
+
 def snapshot_header(data: bytes, base: int, chunks=(), authors=None) -> dict:
     return {
         "id": os.urandom(16).hex(), "base": str(base), "t": 1, "chunks": list(chunks),
@@ -169,13 +214,36 @@ class AuditTests(unittest.TestCase):
         e.payload = e.payload[:100] + b":{^kT%VAE&0JO" + e.payload[113:]
         self.assertEqual(quire_audit.check_payload(e), [])
 
-    def test_permissionless_extension_only_on_versions(self) -> None:
-        for kind in ("a", "u", "s", "j"):
+    def test_permissionless_extension_only_on_versions_and_the_acl(self) -> None:
+        for kind in ("u", "s", "j"):
             entities = quire_audit.load_vectors(DOCUMENT)[1]
             e = next(x for x in entities if x.kind == kind)
-            e.permissionless_extension = True
+            e.permissionless_extension, e.flags_raw = True, 2
             report = quire_audit.audit(entities, VEC["doc"], VEC["owner"])
             self.assertIn(f"flags {quire_audit.KIND_NAMES[kind]} {e.key}", report.failures, kind)
+
+    def test_acl_flags_are_permissionless_extension_only(self) -> None:
+        # Section 1: the ACL has permissionless extension, so any member's
+        # session can extend it, and no other flag.
+        entities = quire_audit.load_vectors(DOCUMENT)[1]
+        acl = next(e for e in entities if e.kind == "a")
+        self.assertEqual((acl.readonly, acl.permissionless_extension, acl.flags_raw), (False, True, 2))
+        self.assertEqual(quire_audit.check_flags(acl), [])
+        cases = {
+            (False, False): ["acl does not allow permissionless extension"],
+            (True, True): ["acl is readonly, expected permissionless extension only"],
+            (True, False): ["acl does not allow permissionless extension",
+                            "acl is readonly, expected permissionless extension only"],
+        }
+        for (ro, pe), want in cases.items():
+            acl.readonly, acl.permissionless_extension = ro, pe
+            acl.flags_raw = quire_audit.raw_flags(ro, pe)
+            self.assertEqual(quire_audit.check_flags(acl), want, (ro, pe))
+            report = quire_audit.audit(entities, VEC["doc"], VEC["owner"])
+            self.assertIn(f"flags acl {acl.key}", report.failures)
+        # Booleans right, raw wrong: the old rule's raw 0 on a correct ACL.
+        acl.readonly, acl.permissionless_extension, acl.flags_raw = False, True, 0
+        self.assertIn("bit 1 disagrees", " ".join(quire_audit.check_flags(acl)))
 
     def test_version_must_be_readonly(self) -> None:
         entities = quire_audit.load_vectors(DOCUMENT)[1]
@@ -205,14 +273,15 @@ class AuditTests(unittest.TestCase):
 
     def test_vectors_carry_creation_flags_like_the_rpc(self) -> None:
         for raw in VEC["entities"]:
+            acl = quire_audit.parse_entity(raw).kind == "a"
             self.assertEqual(
-                raw["creationFlags"], {"readonly": False, "permissionlessExtension": False, "raw": 0}
+                raw["creationFlags"], {"readonly": False, "permissionlessExtension": acl, "raw": 2 if acl else 0}
             )
         for e in quire_audit.load_vectors(DOCUMENT)[1]:
-            self.assertEqual(e.flags_raw, 0)
+            self.assertEqual(e.flags_raw, 2 if e.kind == "a" else 0)
 
     def test_unknown_raw_flag_fails(self) -> None:
-        e = quire_audit.load_vectors(DOCUMENT)[1][0]
+        e = next(x for x in quire_audit.load_vectors(DOCUMENT)[1] if x.kind == "u")
         e.flags_raw = 4
         self.assertTrue(quire_audit.check_flags(e))
 
@@ -474,7 +543,7 @@ class ReaderTests(unittest.TestCase):
         e = make_entity(
             template, key=fake_key(0x5500 + block), kind="s", creator=VEC["owner"], block=block,
             payload=seal("s", epoch, snapshot_header(
-                data, block, authors={str(cid): {"address": VEC["owner"], "salt": salt}}), data, reader.keys[epoch]),
+                data, block, authors={str(cid): author_entry(VEC["owner"], salt)}), data, reader.keys[epoch]),
         )
         return e, self._reader(entities + [e]).read()
 
@@ -511,13 +580,16 @@ class ReaderTests(unittest.TestCase):
 
     def _forged_update(self, client_id: int | None, epoch: int, block: int, text: str,
                        creator: str | None = None, key: str | None = None, salt: str | None = None,
-                       header: dict | None = None, extra=(), schemas=None):
+                       header: dict | None = None, extra=(), schemas=None, signer: str | None = None):
         """An update by `creator` (Bea by default) adding one paragraph.
 
         `client_id=None` uses the creator's own clientIdFor(creator, salt).
+        The salt is signed with `signer`, by default the creator's own key.
         """
         creator = creator or VEC["members"]["bea"]
         salt = salt or os.urandom(16).hex()
+        if header is None:
+            header = {"t": 1, "salt": salt, "sig": sign_salt(signer or KEYS_BY_ADDRESS[creator], salt)}
         if client_id is None:
             client_id = quire_read.client_id_for(creator, salt)
         reader, result = self._member_result()
@@ -531,8 +603,7 @@ class ReaderTests(unittest.TestCase):
         template = bea_update(entities)
         e = make_entity(
             template, key=key or fake_key(0xB0 + block), kind="u", creator=creator, block=block,
-            payload=seal("u", epoch, header if header is not None else {"t": 1, "salt": salt}, update,
-                         reader.keys[epoch]),
+            payload=seal("u", epoch, header, update, reader.keys[epoch]),
         )
         data, _ = quire_audit.load_vectors(DOCUMENT)
         out = quire_read.Reader(
@@ -661,7 +732,9 @@ class ReaderTests(unittest.TestCase):
 
     def test_update_without_a_valid_salt_is_ignored(self) -> None:
         # With schema checks off, the reader's own salt check still applies.
-        cases = {"missing": {"t": 1}, "short": {"t": 1, "salt": "ab" * 15}, "upper": {"t": 1, "salt": "AB" * 16}}
+        sig = sign_salt(BEA_KEY, "ab" * 16)
+        cases = {"missing": {"t": 1, "sig": sig}, "short": {"t": 1, "salt": "ab" * 15, "sig": sig},
+                 "upper": {"t": 1, "salt": "AB" * 16, "sig": sig}}
         for name, header in cases.items():
             e, result = self._forged_update(None, 1, 13, f"Salt {name}.", header=header,
                                             schemas=quire_read.Schemas(enabled=False))
@@ -678,6 +751,9 @@ class ReaderTests(unittest.TestCase):
         frame = reader._content_frame(forged[0])
         cid = quire_read.client_id_for(mallory, frame.header["salt"])
         self.assertEqual(set(quire_read.update_clients(frame.data)), {cid})
+        # Her salt is signed by her own key, so the signature check passes too.
+        self.assertEqual(quire_read.salt_signer(VEC["doc"], frame.header["salt"], frame.header["sig"]), mallory)
+        self.assertIsNone(quire_read.sig_problem(VEC["doc"], mallory, frame.header["salt"], frame.header["sig"]))
         self.assertEqual(dict(result.ignored)[forged[0].key], "creator not in ACL")
 
     def test_update_check_does_not_depend_on_order(self) -> None:
@@ -701,6 +777,7 @@ class ReaderTests(unittest.TestCase):
         cal = result.authors[CAL_CLIENT]
         self.assertEqual((cal.address, cal.proven), (VEC["members"]["cal"], False))
         self.assertEqual(cal.source, f"snapshot {result.newest_snapshot}")
+        self.assertEqual(cal.via, VEC["owner"])  # the snapshot's creator
         # The owner's and Bea's ids are also used by applied updates.
         self.assertTrue(result.authors[OWNER_CLIENT].proven)
         self.assertTrue(result.authors[BEA_CLIENT].proven)
@@ -719,11 +796,12 @@ class ReaderTests(unittest.TestCase):
     def test_valid_snapshot_author_is_accepted_as_claimed(self) -> None:
         salt = os.urandom(16).hex()
         cid = quire_read.client_id_for(VEC["members"]["bea"], salt)
-        e, result = self._snapshot_with_authors({str(cid): {"address": VEC["members"]["bea"], "salt": salt}})
+        e, result = self._snapshot_with_authors({str(cid): author_entry(VEC["members"]["bea"], salt)})
         self.assertEqual(result.newest_snapshot, e.key)
         self.assertEqual(result.dropped_authors, [])
         a = result.authors[cid]
-        self.assertEqual((a.address, a.salt, a.proven, a.source), (VEC["members"]["bea"], salt, False, f"snapshot {e.key}"))
+        self.assertEqual((a.address, a.salt, a.proven, a.source, a.via),
+                         (VEC["members"]["bea"], salt, False, f"snapshot {e.key}", VEC["owner"]))
 
     def test_forged_snapshot_authors_are_dropped(self) -> None:
         # Bea's address under the owner's id, the owner's id with a wrong
@@ -731,9 +809,9 @@ class ReaderTests(unittest.TestCase):
         # snapshot itself is still applied: authors is attribution only.
         bea = VEC["members"]["bea"]
         forged = {
-            str(OWNER_CLIENT): {"address": bea, "salt": OWNER_SALT},
-            "4242": {"address": VEC["owner"], "salt": "00" * 16},
-            "0" + str(BEA_CLIENT): {"address": bea, "salt": "00" * 16},
+            str(OWNER_CLIENT): author_entry(bea, OWNER_SALT),
+            "4242": author_entry(VEC["owner"], "00" * 16),
+            "0" + str(BEA_CLIENT): author_entry(bea, "00" * 16),
         }
         e, result = self._snapshot_with_authors(forged)
         self.assertEqual(result.newest_snapshot, e.key)
@@ -744,8 +822,10 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(result.text, VEC["expected"]["memberText"])
         # The old {clientId: address} shape fails the schema, which ignores
         # the whole snapshot; without schema checks only the entry is dropped.
-        self.assertEqual(quire_read.author_problem(str(OWNER_CLIENT), VEC["owner"]), "entry is not {address, salt}")
-        self.assertIsNone(quire_read.author_problem(str(OWNER_CLIENT), {"address": VEC["owner"], "salt": OWNER_SALT}))
+        doc = VEC["doc"]
+        self.assertEqual(quire_read.author_problem(str(OWNER_CLIENT), VEC["owner"], doc),
+                         "entry is not {address, salt, sig}")
+        self.assertIsNone(quire_read.author_problem(str(OWNER_CLIENT), author_entry(VEC["owner"], OWNER_SALT), doc))
 
     # -------------------------------------------------------- ACL
 
@@ -818,7 +898,8 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("2 x creator not in ACL", out)
         self.assertIn("join requests 2", out)
         self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']} Owner    proven", out)
-        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  claimed", out)
+        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  claimed via {VEC['owner']}", out)
+        self.assertIn("acl flags    permissionless extension (raw 2)  expected permissionless extension only: yes", out)
         self.assertNotIn("dropped:", out)
         self.assertNotIn(": NO", out)
 
@@ -847,7 +928,7 @@ class ReaderTests(unittest.TestCase):
         template = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1])
         ckeys = [fake_key(0xCC00 + i) for i in range(chunks)]
         if authors is None:
-            authors = {str(OWNER_CLIENT): {"address": VEC["owner"], "salt": OWNER_SALT}}
+            authors = {str(OWNER_CLIENT): author_entry(VEC["owner"], OWNER_SALT)}
         header = snapshot_header(data, 13, ckeys, authors)
         head = make_entity(
             template, key=fake_key(0xEE), kind="v", creator=VEC["owner"], block=13,
@@ -885,12 +966,17 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(len(v.chunks), chunks)
 
     def test_version_authors_are_checked(self) -> None:
-        forged = {str(OWNER_CLIENT): {"address": VEC["members"]["bea"], "salt": OWNER_SALT}}
+        forged = {str(OWNER_CLIENT): author_entry(VEC["members"]["bea"], OWNER_SALT)}
         link, entities = self._version(authors=forged)
         v = quire_read.read_version(quire_read.parse_version_link(link), quire_read.VectorSource(entities))
         report = quire_read.version_report(v)
         self.assertIn("authors      0 claimed by the version's creator, 1 dropped", report)
         self.assertIn("dropped: clientIdFor(address, salt) is", report)
+        # A right id whose salt someone else signed is dropped too.
+        wrong = {str(OWNER_CLIENT): author_entry(VEC["owner"], OWNER_SALT, signer=BEA_KEY)}
+        link, entities = self._version(authors=wrong)
+        v = quire_read.read_version(quire_read.parse_version_link(link), quire_read.VectorSource(entities))
+        self.assertIn(f"dropped: sig recovers to {VEC['members']['bea']}", quire_read.version_report(v))
 
     def test_version_with_wrong_key_fails(self) -> None:
         link, entities = self._version()
@@ -936,7 +1022,7 @@ class ReaderTests(unittest.TestCase):
             self.assertIn("permissionless extension: yes", out)
             self.assertIn("membership not checkable", out)
             self.assertIn("epoch        0", out)
-            self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']}  claimed", out)
+            self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']}  claimed via {VEC['owner']}", out)
             code, out = run_cli(quire_audit.main, "--vectors", path)
             self.assertEqual(code, 0, out)
         # A version head without permissionless extension fails the audit.

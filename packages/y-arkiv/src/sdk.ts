@@ -87,7 +87,7 @@ export class SdkStore implements ArkivStore {
 
   constructor(options: SdkStoreOptions = {}) {
     const chain = options.chain ?? tiramisu
-    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey), retryCount: 2 })
+    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey), retryCount: 0 })
     this.reader = createPublicClient({ chain, transport: transport() }) as PublicArkivClient<Transport, Chain>
     this.socket = createPublicClient({
       chain,

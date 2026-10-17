@@ -111,8 +111,10 @@ const CLIENT_ID_MASK = (1n << 53n) - 1n
  * id needs a 2^53 preimage search.
  */
 export function clientIdFor(address: string, salt: Uint8Array): number {
+  const addr = hexToBytes(address)
+  if (addr.length !== 20 || salt.length !== 16) throw new Error("clientIdFor needs a 20-byte address and a 16-byte salt")
   const input = new Uint8Array(20 + salt.length)
-  input.set(hexToBytes(address), 0)
+  input.set(addr, 0)
   input.set(salt, 20)
   const h = keccak_256(input)
   let n = 0n

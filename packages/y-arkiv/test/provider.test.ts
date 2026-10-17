@@ -159,7 +159,7 @@ describe("ArkivProvider", () => {
     await expect(chain.store(owner.address).batch({ patches: [{ key: version.key, payload: new Uint8Array(40), attributes: { doc: link.doc, kind: KIND.version, seq: 1n } }] })).rejects.toThrow(/readonly/)
   })
 
-  it("shredMine deletes everything the member wrote in one batch", async () => {
+  it("shredMine deletes the member's edit history and join request, keeping the text in a snapshot", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
@@ -170,12 +170,15 @@ describe("ArkivProvider", () => {
       await b.provider.flush()
     }
     chain.mine()
-    const batches = chain.stats.batches
     const n = await b.provider.shredMine()
     expect(n).toBe(4) // three updates and the join request, never a snapshot
-    expect(chain.stats.batches - batches).toBe(1)
+    chain.mine()
+    // compacted first, so the words survive in bea's snapshot even with her edit history gone
+    const reader = await peer(chain, link, undefined)
+    expect(text(reader)).toBe("three two one ")
     const left = await chain.store(undefined).query({ doc: link.doc, creators: [b.id!.address] })
-    expect(left.entities).toHaveLength(0)
+    // only her snapshot remains: no edits, no join request
+    expect(left.entities.map((e) => e.attributes.kind)).toEqual(["s"])
   })
 
   it("renews the snapshot lease only once half its life has passed", async () => {

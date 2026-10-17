@@ -17,10 +17,13 @@ export type SessionError = { kind: "budget"; retryAt: number } | { kind: "other"
 
 /** Plain words for a connection error: the query budget gets its own card, anything else one short line. */
 export function describeError(e: unknown): SessionError {
+  // viem wraps whatever our fetch throws, so look through the chain and the message text
   let cause: unknown = e
   for (let i = 0; i < 8 && cause; i++) {
-    const c = cause as { name?: string; retryAfterSeconds?: number; cause?: unknown }
+    const c = cause as { name?: string; retryAfterSeconds?: number; message?: string; cause?: unknown }
     if (c.name === "QueryBudgetError") return { kind: "budget", retryAt: Date.now() + (c.retryAfterSeconds ?? 60) * 1000 }
+    const m = /free query budget[^]*?about (\d+) minutes/.exec(c.message ?? "")
+    if (m) return { kind: "budget", retryAt: Date.now() + Number(m[1]) * 60_000 }
     cause = c.cause
   }
   const err = e as { shortMessage?: string; message?: string }

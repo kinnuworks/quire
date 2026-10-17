@@ -153,9 +153,6 @@ describe("snapshots are padded and chunk headers bind to their head", () => {
     a.doc.getText("t").insert(0, "y".repeat(250_000))
     await a.provider.compact()
     const first = a.provider.snapshot!
-    a.doc.getText("t").insert(0, "z")
-    await a.provider.compact()
-    chain.mine()
     // every chunk names its own snapshot's random id
     const key = deriveEpochZeroKey(link.secret)
     const headFrame = decodeFrame(await open(key, decodeOuter((await chain.store(undefined).get(first.key))!.payload).envelope))
@@ -164,6 +161,12 @@ describe("snapshots are padded and chunk headers bind to their head", () => {
       const f = decodeFrame(await open(key, decodeOuter(e.payload).envelope))
       expect(f.header.of).toBe(headFrame.header.id)
     }
+    a.doc.getText("t").insert(0, "z")
+    await a.provider.compact()
+    chain.mine()
+    // the new snapshot replaced the old one in the same transaction: no pile of full copies
+    expect(await chain.store(undefined).get(first.key)).toBeNull()
+    for (const k of first.chunks) expect(await chain.store(undefined).get(k)).toBeNull()
     // and a reader that finds the second snapshot never mixes in the first snapshot's chunks
     const reader = await peer(chain, link, undefined)
     expect(text(reader).length).toBe(250_001)

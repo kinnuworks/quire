@@ -309,10 +309,12 @@ def check_payload(e: Entity) -> list[str]:
 def check_flags(e: Entity) -> list[str]:
     """Problems with creation flags against the section 1 table.
 
-    A version is readonly with permissionless extension. Every other kind,
-    snapshots included, has no flags. A chunk takes its head's flags, and
-    the head is not visible without decrypting, so a chunk may carry either
-    set: none (a snapshot chunk) or both (a version chunk).
+    A version is readonly with permissionless extension. The ACL has
+    permissionless extension and nothing else, so any member's session can
+    keep it alive. Every other kind (update, snapshot, join) has no flags. A
+    chunk takes its head's flags, and the head is not visible without
+    decrypting, so a chunk may carry either set: none (a snapshot chunk) or
+    both (a version chunk).
 
     `raw` is the chain's flag bitfield (section 5): bit 0 is readonly and
     bit 1 is permissionless extension. When present it must agree with the
@@ -329,6 +331,11 @@ def check_flags(e: Entity) -> list[str]:
     elif e.kind == "c":
         if ro != pe:
             problems.append(f"chunk flags ({flags_text(e)}) match neither a snapshot nor a version head")
+    elif e.kind == "a":
+        if not pe:
+            problems.append("acl does not allow permissionless extension")
+        if ro:
+            problems.append("acl is readonly, expected permissionless extension only")
     else:
         if pe:
             problems.append(f"{name} allows permissionless extension")

@@ -20,6 +20,7 @@ import struct
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Callable, Iterable
 
 from cryptography.exceptions import InvalidTag
@@ -194,6 +195,144 @@ def address_of(public_key: bytes | str) -> str:
     if len(raw) != 65 or raw[0] != 4:
         raise ValueError("expected a 65-byte uncompressed public key")
     return "0x" + keccak256(raw[1:])[-20:].hex()
+
+
+# secp256k1 public key recovery, for the EIP-191 salt signatures of section 5.
+# `cryptography` can verify ECDSA but cannot recover a key, so the curve
+# math is done here with Jacobian coordinates. Only public data goes through
+# it, so it makes no attempt at constant time.
+_P = 2**256 - 2**32 - 977
+_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_G = (
+    0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+    0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
+    1,
+)
+_Jacobian = tuple[int, int, int] | None  # None is the point at infinity
+
+
+def _jdouble(p: _Jacobian) -> _Jacobian:
+    if p is None or p[1] == 0:
+        return None
+    x, y, z = p
+    yy = y * y % _P
+    s = 4 * x * yy % _P
+    m = 3 * x * x % _P  # the curve's a is 0
+    nx = (m * m - 2 * s) % _P
+    ny = (m * (s - nx) - 8 * yy * yy) % _P
+    return nx, ny, 2 * y * z % _P
+
+
+def _jadd(p: _Jacobian, q: _Jacobian) -> _Jacobian:
+    if p is None:
+        return q
+    if q is None:
+        return p
+    x1, y1, z1 = p
+    x2, y2, z2 = q
+    z1z1, z2z2 = z1 * z1 % _P, z2 * z2 % _P
+    u1, u2 = x1 * z2z2 % _P, x2 * z1z1 % _P
+    s1, s2 = y1 * z2 * z2z2 % _P, y2 * z1 * z1z1 % _P
+    if u1 == u2:
+        return _jdouble(p) if s1 == s2 else None
+    h, r = (u2 - u1) % _P, (s2 - s1) % _P
+    hh = h * h % _P
+    hhh = h * hh % _P
+    nx = (r * r - hhh - 2 * u1 * hh) % _P
+    ny = (r * (u1 * hh - nx) - s1 * hhh) % _P
+    return nx, ny, h * z1 * z2 % _P
+
+
+def _jmul(p: _Jacobian, k: int) -> _Jacobian:
+    out: _Jacobian = None
+    while k:
+        if k & 1:
+            out = _jadd(out, p)
+        p = _jdouble(p)
+        k >>= 1
+    return out
+
+
+def _affine(p: _Jacobian) -> tuple[int, int] | None:
+    if p is None:
+        return None
+    x, y, z = p
+    zi = pow(z, -1, _P)
+    return x * zi * zi % _P, y * zi * zi * zi % _P
+
+
+SIG_HEX = re.compile(r"^0x[0-9a-fA-F]{130}$")
+
+
+def recover_public_key(digest: bytes, signature: bytes) -> bytes | None:
+    """The 65-byte uncompressed public key that made `signature` over the
+    32-byte `digest`, or None if there is none.
+
+    `signature` is r (32) || s (32) || v (1), with v 27 or 28 as
+    personal_sign writes it; 0 and 1 are accepted as the same parities.
+    r and s must lie in [1, n - 1]. A high s is accepted: EIP-2's low-s rule
+    is a transaction rule and section 5 does not ask for it.
+    """
+    if len(digest) != 32 or len(signature) != 65:
+        return None
+    r = int.from_bytes(signature[:32], "big")
+    s = int.from_bytes(signature[32:64], "big")
+    v = signature[64]
+    if v in (27, 28):
+        v -= 27
+    if v not in (0, 1) or not (0 < r < _N and 0 < s < _N):
+        return None
+    # x = r: v of 27/28 carries one parity bit, not the x >= n overflow bit.
+    y2 = (pow(r, 3, _P) + 7) % _P
+    y = pow(y2, (_P + 1) // 4, _P)  # p = 3 mod 4
+    if y * y % _P != y2:
+        return None
+    if y & 1 != v:
+        y = _P - y
+    z = int.from_bytes(digest, "big") % _N
+    ri = pow(r, -1, _N)
+    q = _affine(_jadd(_jmul(_G, (-z * ri) % _N), _jmul((r, y, 1), s * ri % _N)))
+    if q is None:
+        return None
+    return b"\x04" + q[0].to_bytes(32, "big") + q[1].to_bytes(32, "big")
+
+
+def eip191_digest(message: bytes) -> bytes:
+    """keccak-256("\\x19Ethereum Signed Message:\\n" || decimal length || message)."""
+    return keccak256(b"\x19Ethereum Signed Message:\n" + str(len(message)).encode() + message)
+
+
+def salt_message(doc: str, salt: str) -> bytes:
+    """Section 5: "quire1:salt:" (UTF-8) || 32-byte doc id || 16-byte salt."""
+    return b"quire1:salt:" + qa._hex_bytes(doc) + bytes.fromhex(salt)
+
+
+@lru_cache(maxsize=4096)
+def _signer(doc: str, salt: str, sig: str) -> str | None:
+    pub = recover_public_key(eip191_digest(salt_message(doc, salt)), bytes.fromhex(sig[2:]))
+    return address_of(pub) if pub else None
+
+
+def salt_signer(doc: str, salt: Any, sig: Any) -> str | None:
+    """The address whose EIP-191 signature `sig` is over this document's
+    salt message, or None if `sig` is malformed or recovers nothing."""
+    if not isinstance(salt, str) or not SALT_HEX.match(salt):
+        return None
+    if not isinstance(sig, str) or not SIG_HEX.match(sig):
+        return None
+    return _signer(doc.lower(), salt, sig.lower())
+
+
+def sig_problem(doc: str, address: str, salt: Any, sig: Any) -> str | None:
+    """Why `sig` is not `address`'s signature over the salt, or None."""
+    if not isinstance(sig, str) or not SIG_HEX.match(sig):
+        return "sig is missing or not 0x and 130 hex characters"
+    signer = salt_signer(doc, salt, sig)
+    if signer is None:
+        return "sig recovers no key"
+    if signer != address.lower():
+        return f"sig recovers to {signer}"
+    return None
 
 
 CLIENT_ID_MASK = (1 << 53) - 1
@@ -583,15 +722,17 @@ class Author:
     """Who a Yjs client id belongs to (section 5).
 
     `proven` is True when an applied update by `address` used the id, which
-    the reader checked against clientIdFor($creator, salt). It is False for
-    an entry taken from a snapshot's `authors` map: the address and salt
-    derive the id, but the snapshot's content under it is one member's word.
+    the reader checked against clientIdFor($creator, salt) and the salt
+    signature. It is False for an entry taken from a snapshot's `authors`
+    map: the address signed the salt and the salt derives the id, but the
+    snapshot's content under it is the word of `via`, the snapshot's creator.
     """
 
     address: str
     salt: str
     proven: bool
     source: str  # "update <key>" or "snapshot <key>"
+    via: str | None = None  # the snapshot's creator, for a claimed entry
 
 
 @dataclass
@@ -612,24 +753,26 @@ class ReadResult:
     dropped_authors: list[str] = field(default_factory=list)  # snapshot `authors` entries that failed
 
 
-def author_problem(cid_text: Any, entry: Any) -> str | None:
+def author_problem(cid_text: Any, entry: Any, doc: str) -> str | None:
     """Why a snapshot `authors` entry does not count, or None if it does.
 
     The key must be a canonical decimal client id and the value an object
-    {address, salt} whose clientIdFor equals that id (section 5).
+    {address, salt, sig} whose clientIdFor equals that id and whose sig
+    recovers to the address (section 5). `doc` is the document id the salt
+    message names: the entity's `qd`.
     """
     text = str(cid_text)
     if not text.isdigit() or str(int(text)) != text:
         return "key is not a decimal client id"
-    if not isinstance(entry, dict) or set(entry) != {"address", "salt"}:
-        return "entry is not {address, salt}"
+    if not isinstance(entry, dict) or set(entry) != {"address", "salt", "sig"}:
+        return "entry is not {address, salt, sig}"
     try:
         derived = client_id_for(str(entry["address"]), entry["salt"])
     except ValueError as exc:
         return str(exc)
     if derived != int(text):
         return f"clientIdFor(address, salt) is {derived}"
-    return None
+    return sig_problem(doc, str(entry["address"]), entry["salt"], entry["sig"])
 
 
 def _block(value: Any) -> int:
@@ -659,6 +802,7 @@ class Reader:
         self.creators: dict[str, str] = {}
         self.authors: dict[int, Author] = {}
         self.dropped_authors: list[str] = []
+        self.acl_entity: Entity | None = None
 
     def _note(self, e: Entity) -> None:
         self.kinds[e.key] = e.kind
@@ -696,6 +840,7 @@ class Reader:
                 continue
             self._note(e)
             self.applied.append(e.key)
+            self.acl_entity = e
             self._unwrap(header)
             return header
         raise RuntimeError("no valid ACL created by the link owner")
@@ -819,24 +964,32 @@ class Reader:
 
     def snapshot_authors(self, snapshots: list[tuple[Entity, bytes, Frame]]) -> None:
         """Section 5: a snapshot's `authors` entry counts only if
-        clientIdFor(address, salt) equals its client id. A valid entry is
-        attribution, shown as claimed; it binds nothing. Entries that fail
-        are dropped and listed for the trust report. Newest snapshot first,
-        so where two entries agree the newest one is named as the source."""
+        clientIdFor(address, salt) equals its client id and `sig` recovers
+        to `address`. A valid entry says who owns the id; the content under
+        it is the snapshot creator's word, so it is shown as claimed, via
+        that creator. A valid entry also attributes the id, so a later
+        update by another address under it is ignored (load_updates).
+        Entries that fail are dropped and listed for the trust report.
+        Newest snapshot first, so where two entries agree the newest one is
+        named as the source; one naming a different address for an id
+        already attributed is dropped."""
         for e, _data, frame in snapshots:
             authors = frame.header.get("authors") or {}
             if not isinstance(authors, dict):
                 self.dropped_authors.append(f"snapshot {e.key}: authors is not an object")
                 continue
             for cid_text, entry in authors.items():
-                problem = author_problem(cid_text, entry)
+                problem = author_problem(cid_text, entry, self.link.doc)
+                cid = int(cid_text) if problem is None else 0
+                held = self.authors.get(cid)
+                if problem is None and held is not None and held.address != str(entry["address"]).lower():
+                    problem = f"already attributed to {held.address} by {held.source}"
                 if problem:
                     self.dropped_authors.append(f"snapshot {e.key}: client id {cid_text}: {problem}")
                     continue
-                cid = int(cid_text)
-                if cid not in self.authors:
+                if held is None:
                     self.authors[cid] = Author(
-                        str(entry["address"]).lower(), entry["salt"], False, f"snapshot {e.key}"
+                        str(entry["address"]).lower(), entry["salt"], False, f"snapshot {e.key}", e.creator
                     )
 
     # Step 4: updates, with the section 5 rules on epochs and client ids.
@@ -866,6 +1019,11 @@ class Reader:
             except ValueError as exc:
                 self._ignore(e, f"update salt: {exc}")
                 continue
+            # The salt must be signed by the creator (EIP-191, section 5).
+            problem = sig_problem(self.link.doc, e.creator, salt, frame.header.get("sig"))
+            if problem:
+                self._ignore(e, f"update {problem}, not to its creator")
+                continue
             # Every client id with structs must be the creator's own. The
             # check needs no reader state, so query order does not matter.
             foreign = sorted(cid for cid in clients if cid != own)
@@ -874,15 +1032,27 @@ class Reader:
                 self._ignore(e, f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
                 continue
             accepted.append((e, frame.data, str(salt), sorted(clients)))
-        # Any order gives the same document; sorting only keeps the applied
-        # list and the report stable across query orders.
+        # Section 5: an update whose client id is already attributed to a
+        # different address, by an earlier update or a valid snapshot
+        # `authors` entry, is ignored. The snapshot entries are already in
+        # self.authors. "Earlier" is taken as createdAt, then entity key, so
+        # the outcome does not depend on query order. Only updates that pass
+        # every other check attribute an id.
         accepted.sort(key=lambda u: (u[0].created_at, u[0].key))
-        for e, _data, salt, cids in accepted:
+        kept: list[tuple[Entity, bytes]] = []
+        for e, data, salt, cids in accepted:
+            taken = [(cid, self.authors[cid]) for cid in cids
+                     if cid in self.authors and self.authors[cid].address != e.creator]
+            if taken:
+                cid, held = taken[0]
+                self._ignore(e, f"Yjs client id {cid} is already attributed to {held.address} by {held.source}")
+                continue
             for cid in cids:
                 held = self.authors.get(cid)
                 if held is None or not held.proven:
                     self.authors[cid] = Author(e.creator, salt, True, f"update {e.key}")
-        return [(e, data) for e, data, _salt, _cids in accepted]
+            kept.append((e, data))
+        return kept
 
     def join_requests(self, acl: dict[str, Any]) -> list[JoinRequest]:
         """Open join requests; only works when member_key is the owner's."""
@@ -1053,15 +1223,20 @@ def version_report(result: VersionResult) -> str:
     authors = header.get("authors") or {}
     if not isinstance(authors, dict):
         authors = {}
-    good = {k: v for k, v in authors.items() if author_problem(k, v) is None}
+    doc_id = str(head.attr("qd")).lower()
+    good = {k: v for k, v in authors.items() if author_problem(k, v, doc_id) is None}
     lines.append(
         f"authors      {len(good)} claimed by the version's creator, {len(authors) - len(good)} dropped"
-        " (an entry counts only if clientIdFor(address, salt) is its client id)"
+        " (an entry counts only if clientIdFor(address, salt) is its client id"
+        " and sig recovers to address)"
     )
     for cid, entry in sorted(authors.items(), key=lambda kv: (len(str(kv[0])), str(kv[0]))):
-        problem = author_problem(cid, entry)
+        problem = author_problem(cid, entry, doc_id)
         who = entry.get("address") if isinstance(entry, dict) else entry
-        lines.append(f"  {cid:<17} {who}  " + ("claimed" if problem is None else f"dropped: {problem}"))
+        lines.append(
+            f"  {cid:<17} {who}  "
+            + (f"claimed via {head.creator}" if problem is None else f"dropped: {problem}")
+        )
     return "\n".join(lines)
 
 
@@ -1108,6 +1283,10 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
         held = "derived from the link" if result.epoch == 0 else "not held"
     lines.append(f"epoch        {result.epoch} (content key {held})")
     lines.append(f"wraps        {len(wraps)} (unlabelled; the count is all a link holder learns)")
+    if reader.acl_entity is not None:
+        ae = reader.acl_entity
+        lines.append(f"acl flags    {qa.flags_text(ae)}  expected permissionless extension only:"
+                     f" {_yes(not qa.check_flags(ae))}")
     lines.append(f"schemas      {reader.schemas.status}")
     lines.append("")
 
@@ -1152,13 +1331,16 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
 
     if result.authors or result.dropped_authors:
         lines.append("")
-        lines.append("client ids   (each is clientIdFor(address, salt); proven by an applied update")
-        lines.append("              from that address, or claimed by a snapshot's authors map)")
+        lines.append("client ids   (each is clientIdFor(address, salt) with the salt signed by the address;")
+        lines.append("              proven by an applied update from that address, or claimed by a")
+        lines.append("              snapshot's authors map, via that snapshot's creator)")
         names = {str(m["address"]).lower(): m.get("name") for m in result.members or []}
         gone = {str(r.get("address", "")).lower() for r in result.revoked or []}
         for cid, a in sorted(result.authors.items()):
             how = "proven " if a.proven else "claimed"
             src = a.source[: a.source.find(" ") + 11] + "..."
+            if not a.proven:
+                src = f"via {a.via} ({src})"
             label = names.get(a.address) or ("revoked" if a.address in gone else "no member")
             lines.append(f"  {cid:<17} {a.address} {label:<8} {how} {src}")
         for dropped in result.dropped_authors:

@@ -148,7 +148,7 @@ pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '#/d/YPp1ObuyhC5aL5SstUY3bL
 python3 readers/python/quire_audit.py --doc 0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578 --owner 0xa3ed39176d6e55cd4b58134c7894b42615e16283
 ```
 
-Expected: `verify` reports the owner found by `$creator`, epoch 0, three members, 1 snapshot and 4 updates applied, 0 ignored, and 3 queries. `read` prints the four lines of the Ward 14 log. The audit ends with `RESULT: PASS`. For the revocation demo, `verify` reports epoch 1 with the roster sealed ("this link sees only a count (2)"), and `read` prints nothing.
+Expected: `verify` reports the owner found by `$creator`, epoch 0, three members, 1 snapshot and 4 updates applied, 0 ignored, and 3 queries, then one more query listing the planted forgery: one entity by `0x42885193a50ab941ea8ea6fd180397c46a59041d`, never fetched or applied. `read` prints the four lines of the Ward 14 log. The audit ends with `RESULT: PASS`. For the revocation demo, `verify` reports epoch 1 with the roster sealed ("this link sees only a count (2)"), and `read` prints nothing.
 
 The full live suite (`pnpm --dir packages/y-arkiv test:live`) passed on Tiramisu. It covers two keys collaborating, a cold reader opening the document in exactly 3 queries, a 250 KB paste written as chunks, a revocation and a published version.
 

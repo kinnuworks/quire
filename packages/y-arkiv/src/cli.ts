@@ -82,6 +82,13 @@ async function main() {
     console.log(`applied    ${provider.stats.snapshotsApplied} snapshots, ${provider.stats.updatesApplied} updates`)
     console.log(`ignored    ${provider.stats.rejectedWrites} entities (outside the member list, or writing under another member's client id)`)
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
+    // the load above asks only for members' entities; one more query lists everyone else's
+    if (!acl.rosterHidden) {
+      const outsiders = await provider.scanOutsiders()
+      const by = [...new Set(outsiders)]
+      const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
+      console.log(`outside    ${n(outsiders.length, "entity", "entities")} by ${n(by.length, "non-member", "non-members")}, never fetched or applied${by.length ? `: ${by.join(", ")}` : ""} (1 more query)`)
+    }
     process.exit(0)
   }
   if (cmd === "watch") {

@@ -271,6 +271,36 @@ describe("pending updates", () => {
     expect(overridesVerified(honest, [update])).toBe(false)
   })
 
+  it("the override detector passes honest rich text and flags a swapped paragraph", async () => {
+    const { overridesVerified } = await import("../src/provider.js")
+    const writer = new Y.Doc()
+    writer.clientID = 78
+    const p = new Y.XmlElement("paragraph")
+    p.insert(0, [new Y.XmlText("hello")])
+    writer.getXmlFragment("default").push([p])
+    const update = Y.encodeStateAsUpdate(writer)
+    const doc = new Y.Doc()
+    Y.applyUpdate(doc, update)
+    expect(overridesVerified(doc, [update])).toBe(false)
+    // another member types into the same paragraph: still the same paragraph at the same clock
+    const other = new Y.Doc()
+    other.clientID = 79
+    Y.applyUpdate(other, update)
+    ;(other.getXmlFragment("default").get(0) as Y.XmlElement).insert(1, [new Y.XmlText(" world")])
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(other))
+    expect(overridesVerified(doc, [update])).toBe(false)
+    // a state that put a heading at the paragraph's clock first
+    const forged = new Y.Doc()
+    forged.clientID = 78
+    const h = new Y.XmlElement("heading")
+    h.insert(0, [new Y.XmlText("hello")])
+    forged.getXmlFragment("default").push([h])
+    const clash = new Y.Doc()
+    Y.applyUpdate(clash, Y.encodeStateAsUpdate(forged))
+    Y.applyUpdate(clash, update)
+    expect(overridesVerified(clash, [update])).toBe(true)
+  })
+
   it("a snapshot that fills a pending update's gap cannot replace that update's text", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)

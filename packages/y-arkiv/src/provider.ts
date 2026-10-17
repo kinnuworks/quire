@@ -1439,12 +1439,26 @@ export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
           break // still pending: nothing has replaced it
         }
         if (!(found instanceof Y.Item) || found.deleted) continue
+        if (found.content.constructor !== struct.content.constructor) return true
         const have = found.content.getContent()[struct.id.clock + i - found.id.clock]
-        if (JSON.stringify(have) !== JSON.stringify(want[i])) return true
+        if (!sameContent(have, want[i])) return true
       }
     }
   }
   return false
+}
+
+/**
+ * One clock's content. A shared type is compared by kind and node name only: its children and
+ * attributes are items of their own, checked at their own clocks, and a decoded type has none.
+ */
+function sameContent(have: unknown, want: unknown): boolean {
+  if (want instanceof Y.AbstractType) {
+    if (!(have instanceof Y.AbstractType) || have.constructor !== want.constructor) return false
+    const name = (t: unknown) => (t instanceof Y.XmlElement ? t.nodeName : t instanceof Y.XmlHook ? t.hookName : "")
+    return name(have) === name(want)
+  }
+  return JSON.stringify(have) === JSON.stringify(want)
 }
 
 /** What a writer signs to prove a client id salt is theirs: "quire1:salt:" || document id (32) || salt (16). */

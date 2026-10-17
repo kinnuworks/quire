@@ -1,6 +1,8 @@
-export { ArkivProvider } from "./provider.js"
+export { ArkivProvider, loadAt } from "./provider.js"
 export type {
+  Authorship,
   FlushInfo,
+  HistoryEntry,
   Identity,
   JoinRequest,
   ProviderOptions,

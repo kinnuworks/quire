@@ -59,6 +59,10 @@ export type RemoteEdit = {
   latencyMs: number | undefined
 }
 
+export type HistoryEntry = { block: bigint; author: Hex; update: Uint8Array; entity: Hex }
+
+export type Authorship = { address: Hex; proven: boolean }
+
 export type FlushInfo = { txHash: Hex; block: bigint; bytes: number; entity: Hex }
 
 export type ProviderStats = {
@@ -102,6 +106,12 @@ export class ArkivProvider extends Observable<string> {
   private readonly epochKeys = new Map<number, Uint8Array>()
   private readonly seen = new Set<string>()
   private readonly authors = new Map<number, Hex>()
+  /** Authorship carried inside snapshots: asserted by whoever compacted, not proven on chain. */
+  private readonly claimedAuthors = new Map<number, Hex>()
+  /** Every edit applied since the newest snapshot, oldest first, for time travel. */
+  readonly history: HistoryEntry[] = []
+  /** The newest snapshot's state: the starting point for time travel. */
+  baseState: Uint8Array | null = null
   private pending: Uint8Array[] = []
   private updatesSinceSnapshot = 0
   private bytesSinceSnapshot = 0
@@ -187,9 +197,16 @@ export class ArkivProvider extends Observable<string> {
     return !!this.acl && this.epochKeys.has(this.acl.epoch)
   }
 
-  /** The address that wrote a Yjs client's edits, as proven by `$creator`. */
-  authorOf(clientId: number): Hex | undefined {
-    return this.authors.get(clientId)
+  /**
+   * Who wrote a Yjs client's edits. `proven` means we applied that client's
+   * update from an entity whose on-chain `$creator` is this address. Otherwise
+   * the name came from a snapshot header and is only as good as its compactor.
+   */
+  authorOf(clientId: number): Authorship | undefined {
+    const proven = this.authors.get(clientId)
+    if (proven) return { address: proven, proven: true }
+    const claimed = this.claimedAuthors.get(clientId)
+    return claimed ? { address: claimed, proven: false } : undefined
   }
 
   members(): Member[] {
@@ -339,6 +356,7 @@ export class ArkivProvider extends Observable<string> {
     if (!frame) return
     this.recordAuthors(frame.data, entity.creator)
     Y.applyUpdate(this.doc, frame.data, this)
+    this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.stats.updatesApplied++
     this.updatesSinceSnapshot++
     this.bytesSinceSnapshot += frame.data.length
@@ -376,11 +394,18 @@ export class ArkivProvider extends Observable<string> {
       parts.push(cf.data)
     }
     const state = concat(parts)
-    this.recordAuthors(state, undefined)
+    const claimed = frame.header.authors
+    if (claimed && typeof claimed === "object") {
+      for (const [client, address] of Object.entries(claimed as Record<string, string>)) {
+        if (/^0x[0-9a-f]{40}$/.test(address)) this.claimedAuthors.set(Number(client), address as Hex)
+      }
+    }
     Y.applyUpdate(this.doc, state, this)
     this.stats.snapshotsApplied++
     const base = BigInt(String(frame.header.base ?? "0"))
     if (!this.snapshot || base >= this.snapshot.base) {
+      this.baseState = state
+      this.history.splice(0, this.history.length, ...this.history.filter((h) => h.block >= base))
       this.snapshot = { key: entity.key, base, expiresAt: entity.expiresAt, chunks }
       this.updatesSinceSnapshot = 0
       this.bytesSinceSnapshot = 0
@@ -496,6 +521,7 @@ export class ArkivProvider extends Observable<string> {
       this.stats.writes++
       const entity = result.created[0]!
       this.seen.add(entity)
+      if (this.identity) this.pushHistory({ block: result.block, author: this.identity.address.toLowerCase() as Hex, update: merged, entity })
       this.updatesSinceSnapshot++
       this.bytesSinceSnapshot += merged.length
       const info: FlushInfo = { txHash: result.txHash, block: result.block, bytes: payload.length, entity }
@@ -540,7 +566,7 @@ export class ArkivProvider extends Observable<string> {
     // anything still buffered is already in the doc state, so the snapshot covers it
     this.pending = []
     const state = Y.encodeStateAsUpdate(this.doc)
-    const creates = await snapshotSpecs(this.store, this.link.doc, epoch, key, state, head, this.now())
+    const creates = await snapshotSpecs(this.store, this.link.doc, epoch, key, state, head, this.now(), KIND.snapshot, this.authorTable())
     const result = await this.store.batch({ ...extra, creates: [...(extra.creates ?? []), ...creates] })
     this.stats.writes++
     const offset = extra.creates?.length ?? 0
@@ -554,6 +580,8 @@ export class ArkivProvider extends Observable<string> {
     }
     this.updatesSinceSnapshot = 0
     this.bytesSinceSnapshot = 0
+    this.baseState = state
+    this.history.length = 0
     this.emit("lease", [this.snapshot])
     const info: FlushInfo = { txHash: result.txHash, block: result.block, bytes: creates.reduce((n, c) => n + c.payload.length, 0), entity: snapKey }
     this.emit("compact", [info])
@@ -719,6 +747,28 @@ export class ArkivProvider extends Observable<string> {
     })
   }
 
+  private pushHistory(entry: HistoryEntry): void {
+    this.history.push(entry)
+    this.history.sort((a, b) => (a.block < b.block ? -1 : a.block > b.block ? 1 : 0))
+    this.emit("history", [this.history])
+  }
+
+  /** client id to address, proven entries first. Stored in snapshot headers. */
+  private authorTable(): Record<string, Hex> {
+    const out: Record<string, Hex> = {}
+    for (const [c, a] of this.claimedAuthors) out[String(c)] = a
+    for (const [c, a] of this.authors) out[String(c)] = a
+    return out
+  }
+
+  /** The document as it stood at `block`, rebuilt locally from the snapshot and the edit log. */
+  stateAt(block: bigint): Y.Doc {
+    const doc = new Y.Doc()
+    if (this.baseState) Y.applyUpdate(doc, this.baseState)
+    for (const h of this.history) if (h.block <= block) Y.applyUpdate(doc, h.update)
+    return doc
+  }
+
   destroy(): void {
     this.doc.off("update", this.onDocUpdate)
     if (this.timer) clearInterval(this.timer)
@@ -757,6 +807,31 @@ export class ArkivProvider extends Observable<string> {
   }
 }
 
+// ------------------------------------------------------------------ time travel
+
+/**
+ * Rebuilds a document exactly as Arkiv held it at a past block, using
+ * `atBlock` reads for the ACL, snapshots and updates. Nothing local is used,
+ * so it doubles as an independent check of what the editor shows.
+ */
+export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, identity?: Identity): Promise<Y.Doc> {
+  const historical: ArkivStore = {
+    ...store,
+    address: undefined,
+    query: (spec) => store.query({ ...spec, atBlock: spec.atBlock ?? block }),
+    watch: () => () => undefined,
+    head: async () => block,
+    get: (key) => store.get(key),
+    batch: () => Promise.reject(new Error("read-only")),
+    predictKeys: () => Promise.reject(new Error("read-only")),
+  }
+  const doc = new Y.Doc()
+  const p = new ArkivProvider(doc, { store: historical, link, identity, flushIntervalMs: 0, autoCompact: false })
+  await p.connect()
+  p.destroy()
+  return doc
+}
+
 // ------------------------------------------------------------------ helpers
 
 async function aclSpec(doc: Hex, metaKey: Uint8Array, acl: Acl, head: bigint): Promise<CreateSpec> {
@@ -778,6 +853,7 @@ async function snapshotSpecs(
   head: bigint,
   now: number,
   kind: Kind = KIND.snapshot,
+  authors: Record<string, Hex> = {},
 ): Promise<CreateSpec[]> {
   const size = MAX_CHUNK_PLAINTEXT - 1024
   const parts: Uint8Array[] = []
@@ -790,7 +866,7 @@ async function snapshotSpecs(
   for (const [i, part] of parts.entries()) {
     const frame =
       i === 0
-        ? { kind, doc: docBytes, epoch, header: { base: head.toString(), t: now, chunks: predicted.slice(1).map((p) => p.key.toLowerCase()), size: state.length }, data: part }
+        ? { kind, doc: docBytes, epoch, header: { base: head.toString(), t: now, chunks: predicted.slice(1).map((p) => p.key.toLowerCase()), size: state.length, authors }, data: part }
         : { kind: KIND.chunk, doc: docBytes, epoch, header: { i, of: headKey }, data: part }
     specs.push({
       payload: encodeOuter(epoch, await seal(key, encodeFrame(frame, randomBytes))),

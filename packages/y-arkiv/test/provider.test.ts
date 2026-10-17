@@ -222,3 +222,41 @@ describe("ArkivProvider", () => {
     expect(a.provider.joinRequests).toHaveLength(0)
   })
 })
+
+describe("history and authorship", () => {
+  it("loadAt rebuilds the document as the chain held it at a past block", async () => {
+    const { loadAt } = await import("../src/provider.js")
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "before")
+    await a.provider.flush()
+    chain.mine()
+    const mark = chain.block
+    a.doc.getText("t").insert(6, " after")
+    await a.provider.flush()
+    chain.mine()
+    const past = await loadAt(chain.store(undefined), link, mark - 1n)
+    expect(past.getText("t").toString()).toBe("before")
+    expect(a.provider.stateAt(mark - 1n).getText("t").toString()).toBe("before")
+    expect(a.provider.stateAt(chain.block).getText("t").toString()).toBe("before after")
+  })
+
+  it("attributes edits to the on-chain creator, and marks snapshot attributions as claimed", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const b = await peer(chain, link, identity("bea"))
+    await admit(chain, a, b)
+    b.doc.getText("t").insert(0, "bea wrote this")
+    await b.provider.flush()
+    await settle(chain, [a, b])
+    expect(a.provider.authorOf(b.doc.clientID)).toEqual({ address: b.id!.address, proven: true })
+    // bea's update falls outside the catch-up window, so only the snapshot speaks for her
+    chain.mine(100)
+    await a.provider.compact()
+    chain.mine()
+    const late = await peer(chain, link, undefined)
+    expect(late.provider.authorOf(b.doc.clientID)).toEqual({ address: b.id!.address, proven: false })
+  })
+})

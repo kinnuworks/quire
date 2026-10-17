@@ -756,6 +756,184 @@ class ReaderTests(unittest.TestCase):
         self.assertIsNone(quire_read.sig_problem(VEC["doc"], mallory, frame.header["salt"], frame.header["sig"]))
         self.assertEqual(dict(result.ignored)[forged[0].key], "creator not in ACL")
 
+    # -------------------------------------------------------- salt signatures
+
+    def test_eip191_digest_and_salt_message(self) -> None:
+        # hashMessage("hello world"), the usual EIP-191 example.
+        self.assertEqual(
+            quire_read.eip191_digest(b"hello world").hex(),
+            "d9eba16ed0ecae432b71fe008c98cc872bb4cc214d3220a36f365326cf807d68",
+        )
+        msg = quire_read.salt_message(VEC["doc"], OWNER_SALT)
+        self.assertEqual(msg, b"quire1:salt:" + bytes.fromhex(VEC["doc"][2:]) + bytes.fromhex(OWNER_SALT))
+        self.assertEqual(len(msg), 60)  # so the prefix ends in "\n60"
+        self.assertEqual(
+            quire_read.eip191_digest(msg),
+            quire_read.keccak256(b"\x19Ethereum Signed Message:\n60" + msg),
+        )
+
+    def test_vector_signatures_recover_to_their_signers(self) -> None:
+        # Every update's sig recovers to its $creator, and every snapshot
+        # authors entry's sig to its address. These came from another
+        # implementation, so they check the curve math independently.
+        reader, _result = self._member_result()
+        seen = 0
+        for e in reader.source.entities:  # type: ignore[attr-defined]
+            if e.kind not in ("u", "s"):
+                continue
+            h = reader._content_frame(e).header
+            if e.kind == "u":
+                self.assertEqual(quire_read.salt_signer(VEC["doc"], h["salt"], h["sig"]), e.creator, e.key)
+                seen += 1
+            for entry in h.get("authors", {}).values():
+                self.assertEqual(quire_read.salt_signer(VEC["doc"], entry["salt"], entry["sig"]), entry["address"])
+                seen += 1
+        self.assertEqual(seen, 5 + 5)
+
+    def test_recovery_agrees_with_cryptography(self) -> None:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+        n = quire_read._N
+        for i in range(8):
+            key = ec.generate_private_key(ec.SECP256K1())
+            digest = os.urandom(32)
+            r, s = utils.decode_dss_signature(key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256()))))
+            want = quire_read.public_key_bytes(key)
+            found = []
+            for v in (27, 28, 0, 1):
+                pub = quire_read.recover_public_key(digest, r.to_bytes(32, "big") + s.to_bytes(32, "big") + bytes([v]))
+                self.assertIsNotNone(pub)
+                found.append(pub == want)
+                # Whatever key comes back, the signature verifies under it.
+                ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256K1(), pub).verify(
+                    utils.encode_dss_signature(r, s), digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+            self.assertEqual(found[0], found[2], i)  # 27 and 0 are one parity
+            self.assertEqual(found.count(True), 2, i)  # exactly one parity is the signer
+            # A high s recovers the same key with the other parity.
+            hi = r.to_bytes(32, "big") + (n - s).to_bytes(32, "big")
+            flip = [quire_read.recover_public_key(digest, hi + bytes([v])) == want for v in (27, 28)]
+            self.assertEqual(flip, [found[1], found[0]], i)
+        bad_digest = os.urandom(32)
+        good = bytes.fromhex(sign_salt(BEA_KEY, OWNER_SALT)[2:])
+        for sig in (bytes(32) + good[32:], good[:32] + bytes(32) + good[64:],
+                    n.to_bytes(32, "big") + good[32:], good[:64] + bytes([29]), good[:64]):
+            self.assertIsNone(quire_read.recover_public_key(bad_digest, sig), sig.hex())
+
+    def test_valid_signature_passes(self) -> None:
+        salt = os.urandom(16).hex()
+        sig = sign_salt(BEA_KEY, salt)
+        self.assertEqual(quire_read.salt_signer(VEC["doc"], salt, sig), VEC["members"]["bea"])
+        self.assertEqual(quire_read.salt_signer(VEC["doc"], salt, sig.upper().replace("0X", "0x")),
+                         VEC["members"]["bea"])  # the schema allows either case
+        e, result = self._forged_update(None, 1, 13, "Bea, signed.", salt=salt)
+        self.assertIn(e.key, result.applied)
+        self.assertTrue(result.text.endswith("Bea, signed."))
+
+    def test_update_signed_by_someone_else_is_ignored(self) -> None:
+        # Bea's update and client id, but the salt signed by the owner's key.
+        e, result = self._forged_update(None, 1, 13, "Bea, owner's signature.", signer=OWNER_KEY)
+        self.assertNotIn(e.key, result.applied)
+        self.assertEqual(dict(result.ignored)[e.key],
+                         f"update sig recovers to {VEC['owner']}, not to its creator")
+        self.assertEqual(result.text, VEC["expected"]["memberText"])
+
+    def test_update_sig_bound_to_document_and_salt(self) -> None:
+        # Bea's own signature, but over another document's id, or another salt.
+        salt = os.urandom(16).hex()
+        cases = {
+            "another document": {"t": 1, "salt": salt, "sig": sign_salt(BEA_KEY, salt, OTHER_DOC)},
+            "another salt": {"t": 1, "salt": salt, "sig": sign_salt(BEA_KEY, os.urandom(16).hex())},
+        }
+        for name, header in cases.items():
+            e, result = self._forged_update(None, 1, 13, name, salt=salt, header=header)
+            self.assertNotIn(e.key, result.applied, name)
+            self.assertIn("update sig recovers to 0x", dict(result.ignored)[e.key], name)
+            self.assertNotIn(VEC["members"]["bea"], dict(result.ignored)[e.key], name)
+
+    def test_update_without_a_valid_sig_is_ignored(self) -> None:
+        salt = os.urandom(16).hex()
+        good = sign_salt(BEA_KEY, salt)
+        cases = {
+            "missing": ({"t": 1, "salt": salt}, "sig is missing"),
+            "short": ({"t": 1, "salt": salt, "sig": good[:-2]}, "sig is missing"),
+            "no 0x": ({"t": 1, "salt": salt, "sig": good[2:] + "00"}, "sig is missing"),
+            "v 29": ({"t": 1, "salt": salt, "sig": good[:-2] + "1d"}, "sig recovers no key"),
+            "r zero": ({"t": 1, "salt": salt, "sig": "0x" + "00" * 32 + good[66:]}, "sig recovers no key"),
+        }
+        for name, (header, reason) in cases.items():
+            # Schema checks off, so the reader's own check is what rejects.
+            e, result = self._forged_update(None, 1, 13, f"Sig {name}.", salt=salt, header=header,
+                                            schemas=quire_read.Schemas(enabled=False))
+            self.assertNotIn(e.key, result.applied, name)
+            self.assertIn(reason, dict(result.ignored)[e.key], name)
+
+    @unittest.skipIf(SCHEMA_SKIP, SCHEMA_SKIP)
+    def test_update_without_sig_fails_schema(self) -> None:
+        salt = os.urandom(16).hex()
+        e, result = self._forged_update(None, 1, 13, "No sig.", salt=salt, header={"t": 1, "salt": salt})
+        self.assertNotIn(e.key, result.applied)
+        self.assertIn("'sig' is a required property", dict(result.ignored)[e.key])
+
+    # -------------------------------------------------------- takeover
+
+    def test_takeover_of_a_snapshot_attributed_id_is_ignored(self) -> None:
+        # Cal's id is attributed only by the newest snapshot's authors entry
+        # (his update is out: he is no longer a member). Bea finds a salt
+        # whose clientIdFor collides with it, signs it, and writes under it.
+        # The derivation and signature checks pass; the takeover rule does not,
+        # even with the update created before the snapshot.
+        salt = os.urandom(16).hex()
+        for block in (2, 13):
+            with collide(VEC["members"]["bea"], salt, CAL_CLIENT):
+                e, result = self._forged_update(None, 1, block, "Bea, under Cal's id.", salt=salt)
+            self.assertNotIn(e.key, result.applied, block)
+            self.assertEqual(
+                dict(result.ignored)[e.key],
+                f"Yjs client id {CAL_CLIENT} is already attributed to {VEC['members']['cal']}"
+                f" by snapshot {result.newest_snapshot}",
+            )
+            self.assertEqual(result.authors[CAL_CLIENT].address, VEC["members"]["cal"])
+            self.assertEqual(result.text, VEC["expected"]["memberText"])
+
+    def test_takeover_of_an_update_attributed_id_is_ignored(self) -> None:
+        # Two members' updates under one client id: whichever was created
+        # first keeps it, and the other is ignored, in any query order.
+        bea, owner = VEC["members"]["bea"], VEC["owner"]
+        bea_salt, owner_salt = os.urandom(16).hex(), os.urandom(16).hex()
+        cid = quire_read.client_id_for(bea, bea_salt)
+        for first, second in ((bea, owner), (owner, bea)):
+            salts = {bea: bea_salt, owner: owner_salt}
+            with collide(owner, owner_salt, cid):
+                early, _ = self._forged_update(None, 1, 12, f"{first} first.", creator=first, salt=salts[first])
+                late, result = self._forged_update(None, 1, 13, f"{second} second.", creator=second,
+                                                   salt=salts[second], extra=[early])
+                self.assertIn(early.key, result.applied)
+                self.assertNotIn(late.key, result.applied)
+                self.assertEqual(dict(result.ignored)[late.key],
+                                 f"Yjs client id {cid} is already attributed to {first} by update {early.key}")
+                self.assertEqual((result.authors[cid].address, result.authors[cid].proven), (first, True))
+                self.assertIn(f"{first} first.", result.text)
+                self.assertNotIn(f"{second} second.", result.text)
+                for seed in range(3):
+                    entities = quire_audit.load_vectors(DOCUMENT)[1] + [late, early]
+                    random.Random(seed).shuffle(entities)
+                    again = self._reader(entities).read()
+                    self.assertEqual(again.applied, result.applied, seed)
+                    self.assertEqual(again.text, result.text, seed)
+
+    def test_same_address_with_two_salts_is_not_a_takeover(self) -> None:
+        # The rule is about a different address; two sessions of one writer
+        # landing on one id (again a collision) are both kept.
+        bea = VEC["members"]["bea"]
+        s1, s2 = os.urandom(16).hex(), os.urandom(16).hex()
+        cid = quire_read.client_id_for(bea, s1)
+        with collide(bea, s2, cid):
+            first, _ = self._forged_update(None, 1, 12, "Session one.", salt=s1)
+            second, result = self._forged_update(None, 1, 13, "Session two.", salt=s2, extra=[first])
+        self.assertIn(first.key, result.applied)
+        self.assertIn(second.key, result.applied)
+
     def test_update_check_does_not_depend_on_order(self) -> None:
         good, _ = self._forged_update(None, 1, 13, "Bea, valid.", key=fake_key(0x02))
         bad, _ = self._forged_update(OWNER_CLIENT, 1, 13, "Bea, as owner.", key=fake_key(0x01))
@@ -826,6 +1004,74 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(quire_read.author_problem(str(OWNER_CLIENT), VEC["owner"], doc),
                          "entry is not {address, salt, sig}")
         self.assertIsNone(quire_read.author_problem(str(OWNER_CLIENT), author_entry(VEC["owner"], OWNER_SALT), doc))
+
+    def test_snapshot_author_with_missing_or_wrong_sig_is_dropped(self) -> None:
+        bea, owner = VEC["members"]["bea"], VEC["owner"]
+        salts = [os.urandom(16).hex() for _ in range(4)]
+        cids = [quire_read.client_id_for(bea, salt) for salt in salts]
+        entries = {
+            str(cids[0]): author_entry(bea, salts[0], signer=OWNER_KEY),  # someone else's signature
+            str(cids[1]): author_entry(bea, salts[1], doc=OTHER_DOC),  # Bea's, for another document
+            str(cids[2]): dict(author_entry(bea, salts[2]), sig="0x" + "11" * 65),  # recovers nothing useful
+            str(cids[3]): author_entry(bea, salts[3]),  # valid
+        }
+        e, result = self._snapshot_with_authors(entries)
+        self.assertEqual(result.newest_snapshot, e.key)  # still applied: authors is attribution only
+        self.assertEqual(result.text, VEC["expected"]["memberText"])
+        dropped = [d for d in result.dropped_authors if e.key in d]
+        self.assertEqual(len(dropped), 3)
+        self.assertIn(f"client id {cids[0]}: sig recovers to {owner}", " ".join(dropped))
+        self.assertIn(f"client id {cids[1]}: sig recovers", " ".join(dropped))
+        self.assertIn(f"client id {cids[2]}: sig recovers", " ".join(dropped))
+        for cid in cids[:3]:
+            self.assertNotIn(cid, result.authors)
+        self.assertEqual((result.authors[cids[3]].address, result.authors[cids[3]].via), (bea, owner))
+        # A missing sig, with schema checks off, drops the entry.
+        salt = os.urandom(16).hex()
+        cid = quire_read.client_id_for(bea, salt)
+        reader, base = self._member_result()
+        data = base.doc.get_update()
+        template = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1])
+        snap = make_entity(
+            template, key=fake_key(0x5D), kind="s", creator=owner, block=13,
+            payload=seal("s", 1, snapshot_header(data, 13, authors={str(cid): {"address": bea, "salt": salt}}),
+                         data, reader.keys[1]),
+        )
+        data_, loaded = quire_audit.load_vectors(DOCUMENT)
+        out = quire_read.Reader(
+            quire_read.parse_link(data_["link"]), quire_read.VectorSource(loaded + [snap]),
+            quire_read.load_private_key(BEA_KEY), schemas=quire_read.Schemas(enabled=False),
+        ).read()
+        self.assertEqual(out.newest_snapshot, snap.key)
+        self.assertIn(f"snapshot {snap.key}: client id {cid}: entry is not {{address, salt, sig}}", out.dropped_authors)
+        self.assertNotIn(cid, out.authors)
+        # With schema checks on, the same header fails the schema and the
+        # whole snapshot is ignored.
+        if not SCHEMA_SKIP:
+            out = self._reader(quire_audit.load_vectors(DOCUMENT)[1] + [snap]).read()
+            self.assertNotIn(snap.key, out.applied)
+            self.assertIn("'sig' is a required property", dict(out.ignored)[snap.key])
+
+    def test_conflicting_snapshot_author_is_dropped(self) -> None:
+        # A valid entry for an id the newest snapshot already gives to
+        # someone else (a collision, forced here) is dropped.
+        bea, cal = VEC["members"]["bea"], VEC["members"]["cal"]
+        salt = os.urandom(16).hex()
+        with collide(bea, salt, CAL_CLIENT):
+            older = 9
+            reader, base = self._member_result()
+            data = base.doc.get_update()
+            template = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1])
+            snap = make_entity(
+                template, key=fake_key(0x5E), kind="s", creator=VEC["owner"], block=older,
+                payload=seal("s", 1, snapshot_header(data, older, authors={str(CAL_CLIENT): author_entry(bea, salt)}),
+                             data, reader.keys[1]),
+            )
+            result = self._reader(quire_audit.load_vectors(DOCUMENT)[1] + [snap]).read()
+        self.assertIn(snap.key, result.applied)
+        self.assertEqual(result.authors[CAL_CLIENT].address, cal)
+        self.assertIn(f"snapshot {snap.key}: client id {CAL_CLIENT}: already attributed to {cal}",
+                      " ".join(result.dropped_authors))
 
     # -------------------------------------------------------- ACL
 

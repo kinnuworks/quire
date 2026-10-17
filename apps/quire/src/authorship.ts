@@ -19,17 +19,18 @@ export function colorOf(address: string): string {
   return `hsl(${h % 360} 62% 52%)`
 }
 
-type Item = { deleted: boolean; countable: boolean; id: { client: number }; right: Item | null }
+type Item = { deleted: boolean; countable: boolean; length: number; id: { client: number; clock: number }; right: Item | null }
 
-function collectClients(node: Y.XmlElement | Y.XmlText | Y.XmlHook, into: Set<number>): void {
+/** Every visible text item under a node, with its clock range: provenance is per range, not per client. */
+function collectItems(node: Y.XmlElement | Y.XmlText | Y.XmlHook, into: Item[]): void {
   if (node instanceof Y.XmlText) {
     let item = (node as unknown as { _start: Item | null })._start
     while (item) {
-      if (!item.deleted && item.countable) into.add(item.id.client)
+      if (!item.deleted && item.countable) into.push(item)
       item = item.right
     }
   } else if (node instanceof Y.XmlElement) {
-    for (const child of node.toArray()) collectClients(child, into)
+    for (const child of node.toArray()) collectItems(child, into)
   }
 }
 
@@ -37,12 +38,16 @@ function collectClients(node: Y.XmlElement | Y.XmlText | Y.XmlHook, into: Set<nu
 export function blockAuthors(doc: Y.Doc, provider: ArkivProvider | null): Authorship[][] {
   const fragment = doc.getXmlFragment("default")
   return fragment.toArray().map((block) => {
-    const clients = new Set<number>()
-    collectClients(block as Y.XmlElement, clients)
+    const items: Item[] = []
+    collectItems(block as Y.XmlElement, items)
+    // one entry per address; it stays proven only if every item it wrote here is proven
     const seen = new Map<string, Authorship>()
-    for (const c of clients) {
-      const a = provider?.authorOf(c)
-      if (a && !seen.has(a.address)) seen.set(a.address, a)
+    for (const it of items) {
+      const a = provider?.authorOfItem(it.id.client, it.id.clock, it.length)
+      if (!a) continue
+      const prev = seen.get(a.address)
+      if (!prev) seen.set(a.address, a)
+      else if (prev.proven && !a.proven) seen.set(a.address, a)
     }
     return [...seen.values()]
   })

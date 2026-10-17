@@ -4,7 +4,7 @@ import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import { useEffect, useRef, useState } from "react"
 import type { DocLink, Identity } from "y-arkiv"
-import { AuthorshipBars } from "../authorship"
+import { AuthorshipBars, setMembers } from "../authorship"
 import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
 import { ActivityPanel, ChainPanel, HistoryPanel, LifetimePanel, PeoplePanel } from "../panels"
 import { identityFor, newIdentity, preferredName, saveIdentity, setPreferredName, shareUrl } from "../session"
@@ -74,6 +74,9 @@ export function DocPage({ link }: { link: DocLink }) {
   useEffect(() => {
     editor?.setEditable(editable && synced)
   }, [editor, editable, synced])
+
+  // members get palette colors in member-list order
+  if (provider?.acl && !provider.acl.rosterHidden) setMembers(provider.acl.members.map((m) => m.address))
 
   useEffect(() => {
     // redraw the authorship bars when they are toggled or authorship changes

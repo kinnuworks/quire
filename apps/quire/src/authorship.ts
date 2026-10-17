@@ -13,10 +13,26 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view"
 import * as Y from "yjs"
 import type { ArkivProvider, Authorship } from "y-arkiv"
 
+/** Members get distinct colors from this palette, in member-list order, so two writers never look alike. */
+const PALETTE = ["#E8743B", "#2F7DE1", "#7B5CD6", "#1F9D6B", "#D6455D", "#C9A227", "#1AA3B8", "#8C6D46"]
+const assigned = new Map<string, string>()
+
+export function setMembers(addresses: string[]): void {
+  assigned.clear()
+  addresses.forEach((a, i) => assigned.set(a.toLowerCase(), PALETTE[i % PALETTE.length]!))
+}
+
+/** Palette color for a member; for anyone else a stable hash color (FNV-1a, then the golden angle). */
 export function colorOf(address: string): string {
-  let h = 0
-  for (let i = 2; i < address.length; i++) h = (h * 31 + address.charCodeAt(i)) >>> 0
-  return `hsl(${h % 360} 62% 52%)`
+  const known = assigned.get(address.toLowerCase())
+  if (known) return known
+  let h = 0x811c9dc5
+  for (let i = 2; i < address.length; i++) {
+    h ^= address.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  const hue = Math.round(((h % 1000) * 137.508) % 360)
+  return `hsl(${hue} 64% 50%)`
 }
 
 type Item = { deleted: boolean; countable: boolean; length: number; id: { client: number; clock: number }; right: Item | null }

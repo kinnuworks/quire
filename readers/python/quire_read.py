@@ -902,6 +902,7 @@ class ReadResult:
     kinds: dict[str, str] = field(default_factory=dict)  # entity key -> kind
     creators: dict[str, str] = field(default_factory=dict)  # entity key -> creator
     dropped_authors: list[str] = field(default_factory=list)  # snapshot `authors` entries that failed
+    ranges: list[TextRange] = field(default_factory=list)  # proven and claimed runs of the document
 
 
 def author_problem(cid_text: Any, entry: Any, doc: str) -> str | None:
@@ -928,7 +929,58 @@ def author_problem(cid_text: Any, entry: Any, doc: str) -> str | None:
 
 def _block(value: Any) -> int:
     """Block heights in headers are decimal strings (section 4)."""
-    return int(str(value), 10)
+    if not isinstance(value, str) or not value.isdigit():
+        raise Rejected(f"block height {value!r} is not a decimal string")
+    return int(value, 10)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+SNAPSHOT_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def header_problem(kind: str, h: dict[str, Any]) -> str | None:
+    """Bad header types (section 5: such an entity MUST be ignored), checked
+    whether or not jsonschema is installed. Salt and sig are checked by
+    their own rules, which give clearer reasons."""
+    if kind == "u":
+        if not _is_int(h.get("t")):
+            return "update header t is not an integer"
+    elif kind in ("s", "v"):
+        if not isinstance(h.get("id"), str) or not SNAPSHOT_ID.match(h["id"]):
+            return "snapshot header id is not 32 lowercase hex characters"
+        if not isinstance(h.get("base"), str) or not h["base"].isdigit():
+            return "snapshot header base is not a decimal string"
+        if not _is_int(h.get("t")):
+            return "snapshot header t is not an integer"
+        chunks = h.get("chunks")
+        if not isinstance(chunks, list) or not all(isinstance(k, str) and qa.HEX32.match(k) for k in chunks):
+            return "snapshot header chunks is not a list of entity keys"
+        if not _is_int(h.get("size")) or h["size"] < 0:
+            return "snapshot header size is not a non-negative integer"
+        if not isinstance(h.get("authors"), dict):
+            return "snapshot header authors is not an object"
+    elif kind == "c":
+        if not _is_int(h.get("i")) or not isinstance(h.get("of"), str):
+            return "chunk header i or of has the wrong type"
+    return None
+
+
+def _why(exc: Exception) -> str:
+    """The reason to record for an entity that raised while being read."""
+    return str(exc) if isinstance(exc, Rejected) else f"malformed ({type(exc).__name__}: {exc})"
+
+
+@dataclass
+class Loaded:
+    """A snapshot that assembled: its head, data, frame and decoded structs."""
+
+    entity: Entity
+    data: bytes
+    frame: Frame
+    structs: list[Struct]
 
 
 class Reader:
@@ -939,6 +991,7 @@ class Reader:
         member_key: ec.EllipticCurvePrivateKey | None = None,
         log: Callable[[str], None] = lambda _m: None,
         schemas: Schemas | None = None,
+        own_salt: str | None = None,
     ) -> None:
         self.link = link
         self.source = source
@@ -954,6 +1007,14 @@ class Reader:
         self.authors: dict[int, Author] = {}
         self.dropped_authors: list[str] = []
         self.acl_entity: Entity | None = None
+        # Section 5: a writing session's own client id. Snapshots carrying
+        # structs under it beyond what this session's updates wrote are
+        # refused. Needs the member key, whose address is the writer's.
+        self.own_client: int | None = None
+        if own_salt is not None:
+            if member_key is None:
+                raise ValueError("own_salt needs the member key")
+            self.own_client = client_id_for(address_of(public_key_bytes(member_key)), own_salt)
 
     def _note(self, e: Entity) -> None:
         self.kinds[e.key] = e.kind
@@ -983,8 +1044,8 @@ class Reader:
             try:
                 header = decrypt_frame(e, mkey, self.link.doc).header
                 self.schemas.check("acl", header)
-            except Rejected as exc:
-                self._ignore(e, str(exc))
+            except Exception as exc:  # a malformed ACL entity is skipped
+                self._ignore(e, _why(exc))
                 continue
             if str(header.get("owner", "")).lower() != self.link.owner:
                 self._ignore(e, "ACL header owner differs from link owner")
@@ -997,8 +1058,8 @@ class Reader:
         raise RuntimeError("no valid ACL created by the link owner")
 
     def _unwrap(self, acl: dict[str, Any]) -> None:
-        epoch = int(acl.get("epoch", 0))
-        if epoch == 0 or self.member_key is None:
+        epoch = acl.get("epoch", 0)
+        if not _is_int(epoch) or epoch == 0 or self.member_key is None:
             return
         # Section 3: `wraps` is an unlabelled list in random order, so try
         # each entry until one opens with our key.
@@ -1023,7 +1084,9 @@ class Reader:
         For epoch 0 the members sit in the ACL header itself; `doc` and
         `epoch` are filled in from the entity so callers see one shape.
         """
-        epoch = int(acl.get("epoch", 0))
+        epoch = acl.get("epoch", 0)
+        if not _is_int(epoch):
+            raise RuntimeError(f"ACL epoch {epoch!r} is not an integer")
         if epoch == 0:
             return {
                 "doc": self.link.doc, "epoch": 0,
@@ -1033,7 +1096,7 @@ class Reader:
         if key is None or not acl.get("roster"):
             return None
         try:
-            plain = open_envelope(key, qa._hex_bytes(acl["roster"]))
+            plain = open_envelope(key, qa._hex_bytes(str(acl["roster"])))
             roster = json.loads(plain.decode("utf-8"))
         except (InvalidTag, ValueError) as exc:
             raise RuntimeError(f"ACL roster does not open with the epoch {epoch} key") from exc
@@ -1055,65 +1118,74 @@ class Reader:
     def _snapshot_data(self, head: Entity, frame: Frame) -> bytes:
         return assemble(head, frame, self.source, self._content_frame, self.schemas, self._note)
 
-    def _too_old(self, e: Entity, frame: Frame, current_epoch: int, last_revocation: int | None) -> str | None:
-        """Section 5: an old-epoch update or snapshot written after the
-        latest revocation could have been read by the removed member."""
-        if frame.epoch < current_epoch and last_revocation is not None and e.created_at > last_revocation:
-            what = "update" if e.kind == "u" else "snapshot"
-            return (
-                f"epoch {frame.epoch} {what} created at block {e.created_at},"
-                f" after the revocation at block {last_revocation}"
-            )
-        return None
+    def _decode_snapshot(self, e: Entity) -> Frame:
+        """Decrypt a snapshot head and apply the header and block rules."""
+        qs = e.attr("qs")
+        if not _is_int(qs):
+            raise Rejected(f"qs {qs!r} is not u64")
+        frame = self._content_frame(e)
+        self.schemas.check("snapshot", frame.header)
+        problem = header_problem("s", frame.header)
+        if problem:
+            raise Rejected(problem)
+        base = _block(frame.header["base"])
+        # Section 5: a writer cannot have seen blocks after its own.
+        if qs > e.created_at:
+            raise Rejected(f"qs {qs} is after createdAt {e.created_at}")
+        if base > e.created_at:
+            raise Rejected(f"base {base} is after createdAt {e.created_at}")
+        return frame
 
-    def load_snapshots(
-        self, members: list[str], current_epoch: int = 0, last_revocation: int | None = None
-    ) -> tuple[list[tuple[Entity, bytes, Frame]], Entity | None, int | None]:
+    def load_snapshots(self, members: list[str], refused: dict[str, str] | None = None) -> tuple[
+        list[Loaded], Entity | None, int | None
+    ]:
+        """Step 3. `refused` names snapshots set aside after the updates were
+        read (see refuse); they are ignored here, so the next one is used."""
+        refused = refused or {}
         decoded: list[tuple[Entity, Frame]] = []
         for e in self.source.by_kind(self.link.doc, "s", members):
             if e.creator not in members:
                 self._ignore(e, "creator not in ACL")
                 continue
+            if e.key in refused:
+                self._ignore(e, refused[e.key])
+                continue
             try:
-                frame = self._content_frame(e)
-                self.schemas.check("snapshot", frame.header)
-                _block(frame.header["base"])
-            except (Rejected, KeyError, ValueError) as exc:
-                self._ignore(e, f"snapshot header: {exc}")
-                continue
-            reason = self._too_old(e, frame, current_epoch, last_revocation)
-            if reason:
-                self._ignore(e, reason)
-                continue
-            decoded.append((e, frame))
+                decoded.append((e, self._decode_snapshot(e)))
+            except Exception as exc:
+                self._ignore(e, f"snapshot header: {_why(exc)}")
         # Arkiv does not promise an order: newest qs first, ties by block
         # and then key so the choice is deterministic.
-        decoded.sort(key=lambda ef: (int(ef[0].attr("qs") or 0), ef[0].created_at, ef[0].key), reverse=True)
-        newest: tuple[Entity, Frame, bytes] | None = None
+        decoded.sort(key=lambda ef: (ef[0].attr("qs"), ef[0].created_at, ef[0].key), reverse=True)
+
+        def load(e: Entity, f: Frame) -> Loaded:
+            data = self._snapshot_data(e, f)
+            return Loaded(e, data, f, update_structs(data))
+
+        newest: Loaded | None = None
         for e, f in decoded:
             try:
-                newest = (e, f, self._snapshot_data(e, f))
+                newest = load(e, f)
                 break
-            except Rejected as exc:
-                self._ignore(e, str(exc))
+            except Exception as exc:
+                self._ignore(e, _why(exc))
         if newest is None:
             return [], None, None
-        head, head_frame, head_data = newest
-        newest_base = _block(head_frame.header["base"])
-        out: list[tuple[Entity, bytes, Frame]] = [(head, head_data, head_frame)]
+        newest_base = _block(newest.frame.header["base"])
+        out = [newest]
         for e, f in decoded:
-            if e is head or any(k == e.key for k, _r in self.ignored):
+            if e is newest.entity or any(k == e.key for k, _r in self.ignored):
                 continue
             if abs(_block(f.header["base"]) - newest_base) > SNAPSHOT_WINDOW:
                 self._ignore(e, "base not within 60 blocks of the newest snapshot")
                 continue
             try:
-                out.append((e, self._snapshot_data(e, f), f))
-            except Rejected as exc:
-                self._ignore(e, str(exc))
-        return out, head, newest_base
+                out.append(load(e, f))
+            except Exception as exc:
+                self._ignore(e, _why(exc))
+        return out, newest.entity, newest_base
 
-    def snapshot_authors(self, snapshots: list[tuple[Entity, bytes, Frame]]) -> None:
+    def snapshot_authors(self, snapshots: list[Loaded]) -> None:
         """Section 5: a snapshot's `authors` entry counts only if
         clientIdFor(address, salt) equals its client id and `sig` recovers
         to `address`. A valid entry says who owns the id; the content under
@@ -1124,12 +1196,9 @@ class Reader:
         Newest snapshot first, so where two entries agree the newest one is
         named as the source; one naming a different address for an id
         already attributed is dropped."""
-        for e, _data, frame in snapshots:
-            authors = frame.header.get("authors") or {}
-            if not isinstance(authors, dict):
-                self.dropped_authors.append(f"snapshot {e.key}: authors is not an object")
-                continue
-            for cid_text, entry in authors.items():
+        for snap in snapshots:
+            e = snap.entity
+            for cid_text, entry in snap.frame.header["authors"].items():
                 problem = author_problem(cid_text, entry, self.link.doc)
                 cid = int(cid_text) if problem is None else 0
                 held = self.authors.get(cid)
@@ -1143,46 +1212,50 @@ class Reader:
                         str(entry["address"]).lower(), entry["salt"], False, f"snapshot {e.key}", e.creator
                     )
 
-    # Step 4: updates, with the section 5 rules on epochs and client ids.
-    def load_updates(
-        self, members: list[str], newest_base: int | None, current_epoch: int, last_revocation: int | None
-    ) -> list[tuple[Entity, bytes]]:
+    # Step 4: updates, with the section 5 rules on blocks and client ids.
+    def _check_update(self, e: Entity) -> tuple[Frame, list[Struct], str, list[int]]:
+        qs = e.attr("qs")
+        if not _is_int(qs):
+            raise Rejected(f"qs {qs!r} is not u64")
+        if qs > e.created_at:
+            raise Rejected(f"qs {qs} is after createdAt {e.created_at}")
+        frame = self._content_frame(e)
+        self.schemas.check("update", frame.header)
+        problem = header_problem("u", frame.header)
+        if problem:
+            raise Rejected(problem)
+        structs = update_structs(frame.data)
+        salt = frame.header.get("salt")
+        try:
+            own = client_id_for(e.creator, salt)  # type: ignore[arg-type]
+        except ValueError as exc:
+            raise Rejected(f"update salt: {exc}") from exc
+        # The salt must be signed by the creator (EIP-191, section 5).
+        problem = sig_problem(self.link.doc, e.creator, salt, frame.header.get("sig"))
+        if problem:
+            raise Rejected(f"update {problem}, not to its creator")
+        # Every client id with structs must be the creator's own. The check
+        # needs no reader state, so query order does not matter.
+        clients = sorted({s.client for s in structs})
+        foreign = [cid for cid in clients if cid != own]
+        if foreign:
+            ids = ", ".join(str(cid) for cid in foreign)
+            raise Rejected(f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
+        return frame, structs, str(salt), clients
+
+    def load_updates(self, members: list[str], newest_base: int | None) -> list[tuple[Entity, bytes, list[Struct]]]:
         min_qs = max(0, newest_base - SNAPSHOT_WINDOW) if newest_base is not None else 0
-        accepted: list[tuple[Entity, bytes, str, list[int]]] = []
+        accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
         for e in self.source.by_kind(self.link.doc, "u", members, min_qs):
             if e.creator not in members:
                 self._ignore(e, "creator not in ACL")
                 continue
             try:
-                frame = self._content_frame(e)
-                self.schemas.check("update", frame.header)
-                clients = update_clients(frame.data)
-            except Rejected as exc:
-                self._ignore(e, str(exc))
+                frame, structs, salt, clients = self._check_update(e)
+            except Exception as exc:
+                self._ignore(e, _why(exc))
                 continue
-            reason = self._too_old(e, frame, current_epoch, last_revocation)
-            if reason:
-                self._ignore(e, reason)
-                continue
-            salt = frame.header.get("salt")
-            try:
-                own = client_id_for(e.creator, salt)  # type: ignore[arg-type]
-            except ValueError as exc:
-                self._ignore(e, f"update salt: {exc}")
-                continue
-            # The salt must be signed by the creator (EIP-191, section 5).
-            problem = sig_problem(self.link.doc, e.creator, salt, frame.header.get("sig"))
-            if problem:
-                self._ignore(e, f"update {problem}, not to its creator")
-                continue
-            # Every client id with structs must be the creator's own. The
-            # check needs no reader state, so query order does not matter.
-            foreign = sorted(cid for cid in clients if cid != own)
-            if foreign:
-                ids = ", ".join(str(cid) for cid in foreign)
-                self._ignore(e, f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
-                continue
-            accepted.append((e, frame.data, str(salt), sorted(clients)))
+            accepted.append((e, frame.data, structs, salt, clients))
         # Section 5: an update whose client id is already attributed to a
         # different address, by an earlier update or a valid snapshot
         # `authors` entry, is ignored. The snapshot entries are already in
@@ -1190,8 +1263,8 @@ class Reader:
         # the outcome does not depend on query order. Only updates that pass
         # every other check attribute an id.
         accepted.sort(key=lambda u: (u[0].created_at, u[0].key))
-        kept: list[tuple[Entity, bytes]] = []
-        for e, data, salt, cids in accepted:
+        kept: list[tuple[Entity, bytes, list[Struct]]] = []
+        for e, data, structs, salt, cids in accepted:
             taken = [(cid, self.authors[cid]) for cid in cids
                      if cid in self.authors and self.authors[cid].address != e.creator]
             if taken:
@@ -1202,8 +1275,40 @@ class Reader:
                 held = self.authors.get(cid)
                 if held is None or not held.proven:
                     self.authors[cid] = Author(e.creator, salt, True, f"update {e.key}")
-            kept.append((e, data))
+            kept.append((e, data, structs))
         return kept
+
+    def refuse(self, snapshots: list[Loaded], verified: Verified) -> dict[str, str]:
+        """Snapshots to set aside once the verified updates are known.
+
+        Section 5: a reader MUST refuse a snapshot carrying structs under its
+        own client id beyond what it wrote. This reader also refuses a
+        snapshot that carries, at a clock a verified update wrote, an item
+        that differs from that update's: Yjs keeps the first struct it sees
+        for an id, but an update waiting on missing earlier clocks is not
+        integrated yet, and when the snapshot fills the gap, its own struct
+        wins. Applying updates first alone does not stop that.
+        """
+        out: dict[str, str] = {}
+        for snap in snapshots:
+            for s in snap.structs:
+                if self.own_client is not None and s.client == self.own_client and s.ref != 10:
+                    mine = verified.covered.get(self.own_client, set())
+                    beyond = next((c for c in range(s.clock, s.end) if c not in mine), None)
+                    if beyond is not None:
+                        out[snap.entity.key] = (
+                            f"snapshot carries structs under this reader's own client id {s.client}"
+                            f" at clock {beyond}, beyond what this reader's updates wrote"
+                        )
+                        break
+                clock = verified.conflict(s)
+                if clock is not None:
+                    out[snap.entity.key] = (
+                        f"snapshot carries an item at client {s.client} clock {clock}"
+                        " that differs from a verified update's"
+                    )
+                    break
+        return out
 
     def join_requests(self, acl: dict[str, Any]) -> list[JoinRequest]:
         """Open join requests; only works when member_key is the owner's."""
@@ -1214,8 +1319,8 @@ class Reader:
             try:
                 frame = open_join(e, self.member_key, self.link.doc)
                 self.schemas.check("join", frame.header)
-            except Rejected as exc:
-                self.log(f"join request {e.key}: {exc}")
+            except Exception as exc:
+                self.log(f"join request {e.key}: {_why(exc)}")
                 continue
             pub = str(frame.header.get("publicKey", ""))
             try:
@@ -1227,8 +1332,8 @@ class Reader:
 
     def read(self) -> ReadResult:
         acl = self.load_acl()
-        epoch = int(acl.get("epoch", 0))
-        roster = self.roster(acl)
+        roster = self.roster(acl)  # also checks that epoch is an integer
+        epoch = acl.get("epoch", 0)
         doc = Doc()
         if roster is None:
             self.log(f"roster of epoch {epoch} is sealed; without a member key nothing is readable")
@@ -1236,13 +1341,30 @@ class Reader:
                 "", acl, epoch, sorted(self.keys), None, None, self.applied, self.ignored,
                 self.authors, None, doc, self.kinds, self.creators,
             )
-        members = sorted({str(m["address"]).lower() for m in roster.get("members", [])})
-        revoked = roster.get("revoked") or []
-        last_revocation = max((_block(r["atBlock"]) for r in revoked), default=None)
+        raw_members = roster.get("members") if isinstance(roster.get("members"), list) else []
+        members = sorted({
+            str(m["address"]).lower() for m in raw_members
+            if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.match(m["address"])
+        })
+        revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
 
-        snapshots, newest, newest_base = self.load_snapshots(members, epoch, last_revocation)
-        self.snapshot_authors(snapshots)
-        updates = self.load_updates(members, newest_base, epoch, last_revocation)
+        # Read snapshots, then updates; if the updates show a snapshot must be
+        # refused, start over without it, so step 3 falls back to the next.
+        base_applied, base_ignored = list(self.applied), list(self.ignored)
+        refused: dict[str, str] = {}
+        while True:
+            self.applied, self.ignored = list(base_applied), list(base_ignored)
+            self.authors, self.dropped_authors = {}, []
+            snapshots, newest, newest_base = self.load_snapshots(members, refused)
+            self.snapshot_authors(snapshots)
+            updates = self.load_updates(members, newest_base)
+            verified = Verified()
+            for _e, _data, structs in updates:
+                verified.add(structs)
+            more = self.refuse(snapshots, verified)
+            if not more:
+                break
+            refused.update(more)
 
         # Report entities the member filter excluded (e.g. forged writes).
         if isinstance(self.source, VectorSource):
@@ -1250,15 +1372,22 @@ class Reader:
                 if e.kind in ("u", "s") and e.creator not in members:
                     self._ignore(e, "creator not in ACL")
 
-        for e, data in [(s[0], s[1]) for s in snapshots] + updates:
-            doc.apply_update(data)
+        # Section 5: verified updates first, then snapshots (newest first),
+        # because Yjs keeps the first struct it sees for an id.
+        for e, data in [(u[0], u[1]) for u in updates] + [(s.entity, s.data) for s in snapshots]:
+            try:
+                doc.apply_update(data)
+            except Exception as exc:
+                self._ignore(e, f"Yjs refused the data: {exc}")
+                continue
             self._note(e)
             self.applied.append(e.key)
         text = fragment_text(doc.get("default", type=XmlFragment))
+        ranges = text_ranges(doc.get_update(), verified, [(s.entity.creator, s.structs) for s in snapshots])
         return ReadResult(
-            text, acl, epoch, sorted(self.keys), roster.get("members", []), revoked,
+            text, acl, epoch, sorted(self.keys), [m for m in raw_members if isinstance(m, dict)], revoked,
             self.applied, self.ignored, self.authors, newest.key if newest else None,
-            doc, self.kinds, self.creators, self.dropped_authors,
+            doc, self.kinds, self.creators, self.dropped_authors, ranges,
         )
 
 
@@ -1274,7 +1403,8 @@ def assemble(
 
     Each chunk must have the head's creator, the head's outer epoch, the
     head's creation flags, `i` equal to its 1-based position and `of` equal
-    to the head's `id`. The data must add up to the head's `size`.
+    to the head's `id`. The data must add up to the head's `size`. The
+    header's types are checked by the caller (header_problem).
     """
     parts = [frame.data]
     chunks = frame.header.get("chunks") or []
@@ -1293,13 +1423,16 @@ def assemble(
             )
         cf = open_frame(chunk)
         schemas.check("chunk", cf.header)
-        if cf.header.get("i") != i or str(cf.header.get("of", "")).lower() != head_id:
+        problem = header_problem("c", cf.header)
+        if problem:
+            raise Rejected(f"chunk {ckey}: {problem}")
+        if cf.header["i"] != i or cf.header["of"].lower() != head_id:
             raise Rejected(f"chunk {ckey} header does not match i/of")
         note(chunk)
         parts.append(cf.data)
     data = b"".join(parts)
     size = frame.header.get("size")
-    if size is not None and int(size) != len(data):
+    if size != len(data):
         raise Rejected(f"snapshot size {len(data)} != header size {size}")
     return data
 
@@ -1348,9 +1481,13 @@ def read_version(link: VersionLink, source: Source, schemas: Schemas | None = No
             raise Rejected(f"version outer epoch is {outer_epoch(head)}, must be 0")
         frame = open_frame(head)
         schemas.check("snapshot", frame.header)
+        problem = header_problem("v", frame.header)
+        if problem:
+            raise Rejected(problem)
         data = assemble(head, frame, source, open_frame, schemas)
-    except Rejected as exc:
-        raise RuntimeError(f"version {link.key}: {exc}") from exc
+        update_structs(data)  # undecodable Yjs data is refused before Yjs sees it
+    except Exception as exc:
+        raise RuntimeError(f"version {link.key}: {_why(exc)}") from exc
     doc = Doc()
     doc.apply_update(data)
     return VersionResult(
@@ -1496,6 +1633,25 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
             lines.append(f"  {cid:<17} {a.address} {label:<8} {how} {src}")
         for dropped in result.dropped_authors:
             lines.append(f"  dropped: {dropped}")
+
+    if result.ranges:
+        lines.append("")
+        lines.append("text ranges  (per client id, clocks [start, end); proven only where every clock")
+        lines.append("              came, with the same item, in a verified update; a merged item")
+        lines.append("              that is only partly covered is claimed)")
+        proven = sum(r.end - r.start for r in result.ranges if r.proven)
+        total = sum(r.end - r.start for r in result.ranges)
+        lines.append(f"  {proven} of {total} clocks proven")
+        for r in result.ranges:
+            who = result.authors.get(r.client)
+            owner = who.address if who else "unattributed"
+            status = "proven " if r.proven else "claimed"
+            via = f" via {', '.join(r.via)}" if not r.proven and r.via else ""
+            excerpt = r.text if len(r.text) <= 40 else r.text[:37] + "..."
+            lines.append(
+                f"  {r.client:<17} {r.start}..{r.end} {status} {owner}{via}"
+                f"  [{'/'.join(r.kinds)}]" + (f" {excerpt!r}" if excerpt else "")
+            )
 
     joins = reader.join_requests(acl) if reader.member_key is not None else []
     if reader.member_key is not None and public_key_hex(reader.member_key).lower() == owner_pub.lower():

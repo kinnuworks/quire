@@ -3,7 +3,7 @@
  * Other implementations test against spec/vectors/document.json, so a stale
  * `expected` there would send them chasing the wrong answer.
  */
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { privateKeyToAccount } from "viem/accounts"
 import { describe, expect, it } from "vitest"
 import * as Y from "yjs"
@@ -52,4 +52,20 @@ describe("conformance vectors", () => {
     const forged = entities.filter((e) => VEC.expected.rejectedCreators.includes(e.creator))
     expect(forged.length).toBeGreaterThan(0)
   })
+})
+
+describe("edge cases (spec/vectors/cases)", () => {
+  const dir = new URL("../../../spec/vectors/cases/", import.meta.url)
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"))
+  it("there are cases to run", () => expect(files.length).toBeGreaterThanOrEqual(7))
+  for (const f of files) {
+    it(f, async () => {
+      const c = JSON.parse(readFileSync(new URL(f, dir), "utf8"))
+      const doc = new Y.Doc()
+      const p = new ArkivProvider(doc, { store: vectorStore(c), link: parseDocLink(c.link)!, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+      await p.connect()
+      expect(text(doc), c.description).toBe(c.expected.text)
+      p.destroy()
+    })
+  }
 })

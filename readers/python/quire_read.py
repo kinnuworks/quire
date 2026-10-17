@@ -958,7 +958,10 @@ def _is_int(value: Any) -> bool:
 
 
 def _is_safe_int(value: Any) -> bool:
-    """An integer a JavaScript reader holds exactly (|n| < 2^53), so both readers agree."""
+    """An integer a JavaScript reader holds exactly (|n| < 2^53), so both readers agree.
+    JSON has one number type, so 1.0 and 1e3 are integers too, as JSON Schema says."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     return _is_int(value) and abs(value) <= 2**53 - 1
 
 

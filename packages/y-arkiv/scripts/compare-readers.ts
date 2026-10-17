@@ -2,8 +2,9 @@
  * Runs the TypeScript reader and the Python reader (readers/python, written
  * as a second implementation of PROTOCOL.md) on the same documents and diffs
  * their verdicts: the text, the entities applied, and the outside writes
- * rejected. Cases: both live demo documents on Tiramisu (arkiv/demo.json) and
- * the conformance vectors as a member and as a link holder.
+ * rejected. Cases: both live demo documents on Tiramisu (arkiv/demo.json), the
+ * conformance vectors as a member and as a link holder, and every edge case in
+ * spec/vectors/cases.
  *
  *   PYTHON=<python with readers/python/requirements.txt> npx tsx scripts/compare-readers.ts [--offline]
  *
@@ -11,7 +12,7 @@
  * readers. Exits 1 if any case disagrees.
  */
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
@@ -61,6 +62,12 @@ const cases: { name: string; ts: () => Promise<Verdict>; py: () => Verdict }[] =
   { name: "vectors, member (Bea)", ts: () => typescript(vectorStore(vectors), vectors.link, vectors.privateKeys.bea), py: () => pythonReader(["--vectors", vectorsPath, "--member-key", vectors.privateKeys.bea]) },
   { name: "vectors, link holder", ts: () => typescript(vectorStore(vectors), vectors.link), py: () => pythonReader(["--vectors", vectorsPath]) },
 ]
+// each edge case: one crafted member entity, read with the link alone
+const casesDir = `${root}spec/vectors/cases/`
+for (const f of readdirSync(casesDir).filter((x) => x.endsWith(".json")).sort()) {
+  const c = JSON.parse(readFileSync(casesDir + f, "utf8"))
+  cases.push({ name: `case ${f.replace(/\.json$/, "")}`, ts: () => typescript(vectorStore(c), c.link), py: () => pythonReader(["--vectors", casesDir + f]) })
+}
 if (!offline) {
   const live = () => new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY })
   cases.push(

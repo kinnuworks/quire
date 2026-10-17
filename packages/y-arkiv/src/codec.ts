@@ -33,7 +33,8 @@ export type Frame = {
 }
 
 const enc = new TextEncoder()
-const dec = new TextDecoder("utf-8", { fatal: true })
+// ignoreBOM keeps a leading byte-order mark, so JSON.parse rejects it the way every other reader does
+const dec = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
 /** Smallest bucket that fits `n` bytes, or `n` itself if it is larger than every bucket. */
 export function bucketFor(n: number): number {

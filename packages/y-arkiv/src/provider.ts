@@ -158,6 +158,8 @@ export class ArkivProvider extends Observable<string> {
   private readonly sigs = new Map<number, Hex>()
   /** For text attributed only through a snapshot: who wrote that snapshot. */
   private readonly claimedVia = new Map<number, Hex>()
+  /** Clock ranges per client id that applied snapshots carried, and whose snapshot: newest first. */
+  private readonly carried = new Map<number, { from: number; to: number; via: Hex }[]>()
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
@@ -396,7 +398,9 @@ export class ArkivProvider extends Observable<string> {
     const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers })
     // order by the writer's block height (qs), newest first; Arkiv does not promise any order.
     // Apply every snapshot close to the newest base, which covers concurrent compactions.
-    const ordered = [...snaps.entities].sort((x, y) => (x.attributes.seq === y.attributes.seq ? 0 : x.attributes.seq > y.attributes.seq ? -1 : 1))
+    // ties broken by creation block, then key, both descending, so every reader picks the same one
+    const desc = (x: bigint | string, y: bigint | string) => (x === y ? 0 : x > y ? -1 : 1)
+    const ordered = [...snaps.entities].sort((x, y) => desc(x.attributes.seq, y.attributes.seq) || desc(x.createdAt, y.createdAt) || desc(x.key, y.key))
     // Apply the newest readable snapshot of EACH member, not just the newest overall: one member's
     // (possibly empty or stale) snapshot must not hide what another member's snapshot holds.
     // Updates are read from the oldest of those bases, so nothing between them is skipped.
@@ -504,6 +508,10 @@ export class ArkivProvider extends Observable<string> {
       }
       return
     }
+    if (e.type === "extended" && e.key === this.aclKey) {
+      if (this.aclExpiresAt === null || e.expiresAt > this.aclExpiresAt) this.aclExpiresAt = e.expiresAt
+      return
+    }
     if (e.type === "extended" && this.snapshot && e.key === this.snapshot.key) {
       this.snapshot.expiresAt = e.expiresAt
       this.emit("lease", [this.snapshot])
@@ -568,7 +576,15 @@ export class ArkivProvider extends Observable<string> {
     const inRange = mine || this.coveredByProven(client, clock, clock + length)
     const address = this.authors.get(client) ?? this.claimedAuthors.get(client)
     if (!address) return undefined
-    return inRange ? { address, proven: true } : { address, proven: false, via: this.claimedVia.get(client) }
+    return inRange ? { address, proven: true } : { address, proven: false, via: this.carrierOf(client, clock) ?? this.claimedVia.get(client) }
+  }
+
+  /**
+   * Which member's snapshot carried this clock: the newest applied snapshot holding an item there.
+   * Claimed text always names its carrier, whether or not that snapshot listed an authors entry.
+   */
+  carrierOf(client: number, clock: number): Hex | undefined {
+    return (this.carried.get(client) ?? []).find((r) => r.from <= clock && clock < r.to)?.via
   }
 
   private coveredByProven(client: number, from: number, to: number): boolean {
@@ -742,7 +758,9 @@ export class ArkivProvider extends Observable<string> {
         return null
       }
       // a chunk must come from the snapshot's own creator and name its snapshot id, or the snapshot is discarded
-      const cf = chunk.creator.toLowerCase() === entity.creator.toLowerCase() ? await this.openEntity(chunk, KIND.chunk, frame.epoch) : null
+      // and carry the same flags as its head
+      const sameFlags = chunk.readonly === entity.readonly && chunk.permissionlessExtension === entity.permissionlessExtension
+      const cf = chunk.creator.toLowerCase() === entity.creator.toLowerCase() && sameFlags ? await this.openEntity(chunk, KIND.chunk, frame.epoch) : null
       if (!cf || cf.header.i !== i + 1 || cf.header.of !== frame.header.id) {
         this.seen.add(entity.key)
         return null
@@ -752,6 +770,11 @@ export class ArkivProvider extends Observable<string> {
     this.seen.add(entity.key)
     this.deferred.delete(entity.key)
     const state = concat(parts)
+    // the header names the assembled size; a mismatch means a missing, extra or swapped part
+    if (state.length !== frame.header.size) {
+      this.reject()
+      return null
+    }
     // a snapshot must not carry structs under this session's own client id beyond what we wrote:
     // that would be someone writing as us, and Yjs would then re-randomise our id and mute us
     const ours = Y.parseUpdateMeta(state).to.get(this.doc.clientID)
@@ -795,6 +818,17 @@ export class ArkivProvider extends Observable<string> {
    */
   private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[], trimHistory: boolean): void {
     this.registerClaims(entity, claims)
+    // remember what this snapshot carried, struct by struct; snapshots commit newest first on load,
+    // and a live one is newer than all of them, so it goes to the front
+    const via = entity.creator.toLowerCase() as Hex
+    for (const st of Y.decodeUpdate(state).structs) {
+      if (!(st instanceof Y.Item)) continue
+      const list = this.carried.get(st.id.client) ?? []
+      const range = { from: st.id.clock, to: st.id.clock + st.length, via }
+      if (trimHistory) list.unshift(range)
+      else list.push(range)
+      this.carried.set(st.id.client, list)
+    }
     this.appliedKeys.add(entity.key)
     this.stats.snapshotsApplied++
     if (!this.snapshot || base >= this.snapshot.base) {
@@ -961,6 +995,12 @@ export class ArkivProvider extends Observable<string> {
    * Re-reads the member list by key (arkiv_getEntity, not billed as a query) in case a patch was
    * missed during a socket gap. True if the epoch moved.
    */
+  private async refreshAclExpiry(): Promise<void> {
+    if (!this.aclKey) return
+    const acl = await this.fetch(this.aclKey)
+    if (acl) this.aclExpiresAt = acl.expiresAt
+  }
+
   private async refreshAcl(): Promise<boolean> {
     if (!this.acl || !this.aclKey) return false
     const acl = await this.fetch(this.aclKey)
@@ -1040,7 +1080,7 @@ export class ArkivProvider extends Observable<string> {
     return this.stats.updatesApplied - before
   }
 
-  private async writeSnapshot(extra: BatchSpec = {}): Promise<FlushInfo> {
+  private async writeSnapshot(extra: BatchSpec = {}, minLifetimeSeconds = 0): Promise<FlushInfo> {
     this.assertWriter()
     const { epoch, key } = this.currentContentKey()
     await this.resync()
@@ -1050,9 +1090,11 @@ export class ArkivProvider extends Observable<string> {
     const held = this.pending
     this.pending = []
     const state = Y.encodeStateAsUpdate(this.doc)
-    const lifetime = this.snapshotLifetime(head)
     // replace my previous snapshot rather than pile up a new full copy every session
-    const previous = this.snapshot && this.snapshot.creator === this.identity!.address.toLowerCase() ? [this.snapshot.key, ...this.snapshot.chunks] : []
+    const mineBefore = this.snapshot && this.snapshot.creator === this.identity!.address.toLowerCase() ? this.snapshot : null
+    const previous = mineBefore ? [mineBefore.key, ...mineBefore.chunks] : []
+    // never shorter than the snapshot it replaces: one kept for proof (keepMyProof) stays kept
+    const lifetime = Math.max(this.snapshotLifetime(head), minLifetimeSeconds, mineBefore ? Number(mineBefore.expiresAt - head) * BLOCK_SECONDS : 0)
     let written
     try {
       written = await writeSnapshotEntities(this.store, this.link.doc, epoch, key, state, head, this.now(), KIND.snapshot, this.authorTable(state), lifetime, {
@@ -1108,6 +1150,8 @@ export class ArkivProvider extends Observable<string> {
     const due = (expiresAt: bigint | null) => expiresAt !== null && expiresAt - head < BigInt(Math.floor(Number(life) * LEASE_RENEW_FRACTION))
     const me = this.identity.address.toLowerCase()
     const snapshotDue = due(this.snapshot.expiresAt)
+    // only re-read the list's expiry when it looks due: someone may have extended it already
+    if (due(this.aclExpiresAt)) await this.refreshAclExpiry()
     const aclDue = due(this.aclExpiresAt)
     if (!snapshotDue && !aclDue) return false
     if (snapshotDue && (this.snapshot.creator !== me || this.updatesSinceSnapshot > 0)) {
@@ -1175,6 +1219,9 @@ export class ArkivProvider extends Observable<string> {
       const until = head + blocks(seconds_)
       const mine = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: [me as Hex] })
       const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me && e.expiresAt < until).map((e) => e.key)
+      // someone else may have moved the member list out already, and an extension that moves expiry
+      // earlier reverts the whole batch: read its current expiry first (by key, not billed)
+      await this.refreshAclExpiry()
       if (this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
       // extensions carry no payload; a hundred per transaction keeps each one small
       for (let i = 0; i < keys.length; i += 100) {
@@ -1182,6 +1229,12 @@ export class ArkivProvider extends Observable<string> {
         this.stats.writes++
       }
       if (keys.includes(this.aclKey!)) this.aclExpiresAt = until
+      // your edits sit on text others wrote, which lapses with the 30-day lease; without it they could
+      // not be rebuilt. So a snapshot of yours, holding the whole document, lives as long as they do.
+      if ((this.role === "owner" || this.role === "writer") && (!this.snapshot || this.snapshot.creator !== me || this.snapshot.expiresAt < until)) {
+        await this.writeSnapshot({}, seconds_)
+        keys.push(this.snapshot!.key)
+      }
       return { extended: keys.length, until }
     })
   }
@@ -1482,8 +1535,10 @@ export class ArkivProvider extends Observable<string> {
       if (cf.header.i !== i + 1 || cf.header.of !== first.header.id) throw new Error("version chunk does not belong to this version")
       parts.push(cf.data)
     }
+    const state = concat(parts)
+    if (state.length !== first.header.size) throw new Error("version size does not match its header")
     const doc = new Y.Doc()
-    Y.applyUpdate(doc, concat(parts))
+    Y.applyUpdate(doc, state)
     return { doc, creator: entity.creator, block: entity.createdAt }
   }
 }

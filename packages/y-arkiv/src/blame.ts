@@ -64,7 +64,7 @@ function runs(items: Item[], provider: ArkivProvider): BlameRun[] {
       const who = provider.authorOfItem(it.id.client, clock)
       const run: BlameRun = where
         ? { text: str[i]!, address: who?.address ?? null, proven: true, entity: where.entity, block: where.block }
-        : { text: str[i]!, address: who?.address ?? null, proven: false, via: who?.via }
+        : { text: str[i]!, address: who?.address ?? null, proven: false, via: who?.via ?? provider.carrierOf(it.id.client, clock) }
       const last = out[out.length - 1]
       if (last && last.address === run.address && last.proven === run.proven && last.entity === run.entity && last.via === run.via) last.text += run.text
       else out.push(run)

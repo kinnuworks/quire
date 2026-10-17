@@ -293,28 +293,42 @@ describe("revocation with a dropped socket", () => {
 })
 
 describe("keep my proof", () => {
-  it("a writer's edits outlive the 30-day lease, so blame still proves them after it", async () => {
+  it("in a real editor document, a writer's words inside someone else's paragraph stay proven after the lease", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
     const bea = await peer(chain, link, identity("bea"))
     await admit(chain, a, bea)
-    bea.doc.getText("t").insert(0, "my own words")
+    // the owner creates the paragraph (Tiptap's structure); Bea types inside it, so her edit depends on his items
+    const p = new Y.XmlElement("paragraph")
+    p.insert(0, [new Y.XmlText("Owner opens. ")])
+    a.doc.getXmlFragment("default").push([p])
+    await a.provider.flush()
+    await settle(chain, [a, bea])
+    const text = (bea.doc.getXmlFragment("default").get(0) as Y.XmlElement).get(0) as Y.XmlText
+    text.insert(text.length, "Bea's own words.")
     await bea.provider.flush()
     await settle(chain, [a, bea])
     await a.provider.compact()
     await settle(chain, [a, bea])
     const r = await bea.provider.keepMyProof(365 * 86400)
-    expect(r.extended).toBe(2) // Bea's one edit and the member list
+    expect(r.extended).toBe(3) // her edit, the member list, and a snapshot of hers that lives as long
     // asking again at once has nothing to move later, so it sends nothing (Arkiv would revert it)
     expect((await bea.provider.keepMyProof(365 * 86400)).extended).toBe(0)
-    // 40 days pass with nobody opening the document: the snapshots lapse, Bea's edit and the list do not
+    // a later routine compaction by Bea must not shorten her kept snapshot
+    text.insert(text.length, " More.")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await bea.provider.compact()
+    await settle(chain, [a, bea])
+    // 40 days pass with nobody opening the document: the owner's 30-day pieces lapse, Bea's do not
     chain.mine((40 * 86400) / 2)
     const doc = new Y.Doc()
-    const p = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
-    await p.connect()
-    const runs = blame(doc, p).flat()
-    expect(runs.find((x) => x.text.includes("my own words"))).toMatchObject({ proven: true, address: bea.id!.address })
+    const reader = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
+    await reader.connect()
+    const runs = blame(doc, reader).flat()
+    expect(runs.map((x) => x.text).join("")).toContain("Owner opens. Bea's own words.")
+    expect(runs.find((x) => x.text.includes("Bea's own words."))).toMatchObject({ proven: true, address: bea.id!.address })
     a.provider.destroy()
     bea.provider.destroy()
   })
@@ -401,6 +415,53 @@ describe("revocation with shredOldEpoch", () => {
     // a member opening fresh still reads the whole document from the new-epoch snapshot
     const fresh = await peer(chain, link, bea.id)
     expect(fresh.doc.getText("t").toString()).toContain("owner's early text")
+    a.provider.destroy()
+  })
+})
+
+describe("claimed text names its carrier", () => {
+  it("text slipped under another member's client id, with no authors entry, is claimed via the snapshot's writer", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    const mal = await peer(chain, link, identity("mallory"))
+    await admit(chain, a, bea)
+    await admit(chain, a, mal)
+    bea.doc.getText("t").insert(0, "Bea writes.")
+    await bea.provider.flush()
+    await settle(chain, [a, bea, mal])
+    // Mallory continues Bea's client id at clocks Bea never used, and leaves the authors table empty
+    const evil = new Y.Doc()
+    Y.applyUpdate(evil, Y.encodeStateAsUpdate(mal.doc))
+    evil.clientID = bea.doc.clientID // after applying, or Yjs would pick a fresh id on the clash
+    evil.getText("t").insert(evil.getText("t").length, " I resign.")
+    await forgeSnapshot(chain, mal.id!.address, link, Y.encodeStateAsUpdate(evil))
+    const doc = new Y.Doc()
+    const p = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
+    await p.connect()
+    const runs = blame(doc, p).flat()
+    expect(runs.find((r) => r.text.includes("I resign"))).toMatchObject({ address: bea.id!.address, proven: false, via: mal.id!.address })
+    expect(runs.find((r) => r.text.includes("Bea writes"))).toMatchObject({ proven: true })
+    a.provider.destroy()
+  })
+})
+
+describe("member list expiry seen by another tab", () => {
+  it("keepMyProof re-reads the list's expiry, so a stale view cannot make the batch revert", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "mine")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // Bea's socket misses it: the owner keeps proof for 3 years, moving the member list far out
+    ;(bea.provider as unknown as { unwatch: () => void }).unwatch()
+    await a.provider.keepMyProof(3 * 365 * 86400)
+    chain.mine()
+    await expect(bea.provider.keepMyProof(365 * 86400)).resolves.toMatchObject({ extended: expect.any(Number) })
     a.provider.destroy()
   })
 })

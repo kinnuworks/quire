@@ -1281,6 +1281,18 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(len(reasons), 1, result.ignored)
         self.assertNotIn("MALFORMED", result.text)
 
+    def test_edge_cases(self) -> None:
+        # spec/vectors/cases: one crafted member entity each, with the text
+        # every reader must produce (number forms, BOM, size, ties, qs).
+        folder = os.path.join(VECTORS, "cases")
+        cases = sorted(f for f in os.listdir(folder) if f.endswith(".json"))
+        self.assertGreaterEqual(len(cases), 7)
+        for name in cases:
+            with self.subTest(case=name):
+                data, entities = quire_audit.load_vectors(os.path.join(folder, name))
+                result = quire_read.Reader(quire_read.parse_link(data["link"]), quire_read.VectorSource(entities)).read()
+                self.assertEqual(result.text, data["expected"]["text"], data["description"])
+
     def test_an_empty_newer_snapshot_cannot_erase_the_document(self) -> None:
         # Section 5 step 3: each member's newest snapshot is applied, so Bea's
         # empty one, newer than everything, replaces only her own contribution.

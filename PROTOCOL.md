@@ -46,9 +46,11 @@ All derivations use HKDF-SHA256 with salt `"quire/v1"` (UTF-8) and a 32-byte out
 |---|---|---|
 | meta key | link secret | `meta` |
 | epoch 0 content key | link secret | `epoch/0` |
-| wrapping key for epoch *n* | ECDH x-coordinate, secp256k1 | `wrap/<n>` |
+| wrapping key for epoch *n* | the 32-byte x-coordinate of the secp256k1 ECDH point | `wrap/<n>` |
 
 The meta key encrypts ACL and join request payloads. Content keys encrypt updates, snapshots and chunks. A version has its own random 32-byte key, which is used directly.
+
+Only the current epoch's key is wrapped. That is enough, because a revocation writes a snapshot under the new key in the same batch (section 6): everything older is inside that snapshot, so a member never needs an earlier epoch's key.
 
 When a member is removed, the owner MUST start a new epoch *n* + 1 with a random content key. For each remaining member, the owner computes ECDH between a fresh ephemeral secp256k1 key and the member's public key. The epoch key is then encrypted under the derived wrapping key and stored in the ACL as `ephemeral public key (65 bytes, uncompressed) || envelope`.
 
@@ -60,7 +62,7 @@ outer    = 0x51 'Q' | version 0x01 | epoch (u32, big endian)
 envelope = AES-256-GCM: iv (12) || ciphertext || tag (16)
 ```
 
-The envelope is the arkiv-encryption v0.1.0 layout. Its plaintext is a frame:
+The envelope is the arkiv-encryption v0.1.0 layout: AES-256-GCM with a random 12-byte IV and no associated data. Its plaintext is a frame:
 
 ```
 frame = 'Q' 'F' | version 0x01 | kind (1 ASCII byte) | doc id (32) | epoch (u32 BE)
@@ -70,11 +72,15 @@ frame = 'Q' 'F' | version 0x01 | kind (1 ASCII byte) | doc id (32) | epoch (u32 
 
 The frame MUST be padded with random bytes to the smallest of 256, 1024, 4096, 16384, 65536 or 98304 bytes that fits. Readers MUST check that the frame's kind, doc id and epoch equal the entity's `qk`, `qd` and the outer epoch, and MUST discard the entity otherwise. This stops a ciphertext from being replayed into another document or kind.
 
+ACL and join payloads always use epoch 0 in the outer header and the frame, because they are encrypted with the meta key. The content epoch lives in the ACL header's `epoch` field.
+
+Block heights inside headers (`base`, `addedAtBlock`, `atBlock`) are decimal strings.
+
 Headers by kind:
 
 | Kind | Header fields | Data |
 |---|---|---|
-| ACL | `v`, `owner`, `epoch`, `members[] {address, publicKey, name, role, addedAtBlock}`, `wraps {address: hex}`, `revoked[]` | empty |
+| ACL | `v` (1), `owner`, `epoch`, `members[] {address, publicKey, name, role, addedAtBlock}`, `wraps {lowercase address: hex}`, `revoked[] {address, atBlock}` | empty |
 | update | `t`: writer's clock in ms | a Yjs v1 update |
 | snapshot | `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: address}` | the first part of a Yjs v1 state update |
 | chunk | `i` (1-based index), `of` (head entity key) | the next part |
@@ -101,6 +107,25 @@ qp = str('quire1') AND qd = bytes32(0x<doc>) AND qk = str('u') AND qs >= u64(<fr
 ```
 
 A single entity is fetched with `arkiv_getEntity(<key>)`.
+
+Both methods return entities in this shape. Numbers are hex quantities, and the payload is hex:
+
+```json
+{
+  "key": "0x…", "owner": "0x…", "creator": "0x…",
+  "createdAt": "0x1a2b", "expiresAt": "0x3c4d",
+  "creationFlags": { "readonly": false, "permissionlessExtension": true, "raw": 2 },
+  "payload": "0x5101…",
+  "attributes": [
+    { "name": "qp", "type": "str", "value": "quire1" },
+    { "name": "qd", "type": "bytes32", "value": "0x…" },
+    { "name": "qk", "type": "str", "value": "u" },
+    { "name": "qs", "type": "u64", "value": "0x2f" }
+  ]
+}
+```
+
+The conformance vectors in `spec/vectors/document.json` use the same shape.
 
 ## 6. Writing
 

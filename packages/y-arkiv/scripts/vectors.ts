@@ -92,17 +92,30 @@ await settle(a.p, b.p, c.p)
 para(c.doc, "Cal adds a line before being removed.")
 await c.p.flush()
 await settle(a.p, b.p, c.p)
+const reader0 = { doc: new Y.Doc() }
+Y.applyUpdate(reader0.doc, Y.encodeStateAsUpdate(a.doc))
 await a.p.revoke(cal.address)
 await settle(a.p, b.p, c.p)
 para(a.doc, "Written in epoch 1, after Cal left.")
 await a.p.flush()
 await settle(a.p, b.p, c.p)
-// a forged update: valid ciphertext copied from a member, written by an outsider
-const sample = (await chain.store(undefined).query({ doc: DOC, kind: KIND.update })).entities[0]!
-await chain.store(mallory.address).batch({
-  creates: [{ payload: sample.payload, attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],
-})
-chain.mine()
+// a forged update: Mallory holds the link, so she can encrypt a perfectly valid
+// epoch 0 update with new text. Only the $creator filter keeps it out.
+{
+  const forged = new Y.Doc()
+  Y.applyUpdate(forged, Y.encodeStateAsUpdate(reader0.doc))
+  const before = Y.encodeStateVector(forged)
+  para(forged, "MALLORY WAS HERE")
+  const update = Y.encodeStateAsUpdate(forged, before)
+  const { encodeFrame, encodeOuter } = await import("../src/codec.js")
+  const { randomBytes, seal } = await import("../src/crypto.js")
+  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 0, header: { t: 0 }, data: update }, randomBytes)
+  const payload = encodeOuter(0, await seal(deriveEpochZeroKey(SECRET), frame))
+  await chain.store(mallory.address).batch({
+    creates: [{ payload, attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],
+  })
+  chain.mine()
+}
 
 const all = []
 for (const kind of Object.values(KIND)) {
@@ -116,7 +129,12 @@ for (const kind of Object.values(KIND)) {
       expiresAt: e.expiresAt.toString(),
       readonly: e.readonly,
       permissionlessExtension: e.permissionlessExtension,
-      attributes: { qp: "quire1", qd: e.attributes.doc, qk: e.attributes.kind, qs: e.attributes.seq.toString() },
+      attributes: [
+        { name: "qp", type: "str", value: "quire1" },
+        { name: "qd", type: "bytes32", value: e.attributes.doc },
+        { name: "qk", type: "str", value: e.attributes.kind },
+        { name: "qs", type: "u64", value: `0x${e.attributes.seq.toString(16)}` },
+      ],
       payload: bytesToHex(e.payload),
     })
   }
@@ -132,7 +150,7 @@ writeFileSync(
   JSON.stringify(
     {
       description:
-        "A Quire document: owner adds Bea and Cal, everyone writes, the owner compacts, removes Cal (epoch 1) and writes again; Mallory forges an update. Keys are synthetic test values.",
+        "A Quire document: owner adds Bea and Cal, everyone writes, the owner compacts, removes Cal (epoch 1) and writes again; Mallory, who holds the link but is not a member, writes a valid encrypted epoch 0 update with new text. Keys are synthetic test values. Entities use the arkiv_query JSON shape: attributes as [{name, type, value}], u64 as 0x hex.",
       link: formatDocLink(link),
       linkSecret: bytesToHex(SECRET),
       doc: DOC,

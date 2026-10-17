@@ -17,17 +17,18 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 | Kind | `qk` | Creator | Payload (encrypted) | Expiration | Renewal | Flags |
 |---|---|---|---|---|---|---|
-| Member list (ACL) | `a` | document owner | members, public keys, wrapped epoch keys | 30 days | extended with the snapshot lease; changed only by `patchEntity` | `permissionlessExtension` |
-| Update | `u` | a member | Yjs update merging one writer's edits from about one block | 7 days | none: expires once snapshots cover it | none |
-| Snapshot | `s` | a member | full Yjs state (first part) | 30 days | Lifetime Extension by any active member past the halfway mark | `permissionlessExtension` |
-| Snapshot chunk | `c` | the snapshot's creator | next part of the state | same as its head | extended together with its head | `permissionlessExtension` |
-| Join request | `j` | anyone with the link | requester's public key and chosen name | 1 hour | none | none |
-| Published version | `v` (+ `c`) | a member | frozen Yjs state under its own key | 1 year | anyone can extend | `readonly`, `permissionlessExtension` |
+| Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 30 days, or the owner's `keepUntil` | extended by the owner's sessions; changed only by `patchEntity` | none |
+| Update | `u` | a member | Yjs update merging one writer's edits from about one block | as long as a new snapshot (30 days or `keepUntil`) | none: folded into a snapshot before it can expire | none |
+| Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or `keepUntil` | its creator extends it, or another member writes a fresh one | none |
+| Snapshot chunk | `c` | the snapshot's creator | next part of the state | same as its head | extended together with its head | none |
+| Join request | `j` | anyone with the link | requester's public key and chosen name, sealed to the owner's key | 1 hour | none | none |
+| Published version | `v` (+ `c`) | a member | frozen Yjs state under its own key | 1 year | anyone holding the link can extend | `readonly`, `permissionlessExtension` |
 
 ### Why these lifetimes
 
-- An update only has to live until a snapshot includes it. Seven days covers a collaborator who is offline for a long weekend. Readers who come back later load the snapshot instead.
-- A snapshot is a lease. Each session that opens the document renews it once half of its 30 days have passed, so a document stays alive while people use it. If nobody opens it for a month, it fades away on its own. The owner can also set the lifetime directly (1 day to 1 year).
+- An update lives as long as a new snapshot would, so it can never expire before a snapshot covers it. Writers also compact about 30 seconds after they stop typing and when they leave the page, so most documents end every session fully folded into one snapshot.
+- A snapshot is a lease. A member who opens the document past the halfway mark renews it, by extending their own snapshot or writing a fresh one. If nobody opens it for a month, it expires and the chain forgets it. Nobody outside the member list can extend it, because a document's own entities carry no permissionless-extension flag.
+- The owner can keep the document longer (90 days to 3 years). The target is stored in the member list, so every later snapshot honours it. Arkiv only lets an extension move expiry later, so to end a document sooner the owner deletes it, which removes the member list and every entity the owner created in one batch.
 - A join request is answered within minutes or not at all, so it expires after an hour.
 - A published version is meant to outlive the document, and anyone who holds its link can extend it.
 
@@ -44,10 +45,10 @@ Opening a document costs three queries. Live edits after that cost none: they ar
 | # | When | Query | Code |
 |---|---|---|---|
 | 1 | open | `qp = str('quire1') AND qd = bytes32(<doc>) AND qk = str('a') AND $creator = addr(<owner>)` | [`provider.ts` loadAcl](../packages/y-arkiv/src/provider.ts) |
-| 2 | open | `… AND qk = str('s') AND ($creator = addr(<m1>) OR …)`, limit 20 | `provider.ts` loadState |
+| 2 | open | `… AND qk = str('s') AND ($creator = addr(<m1>) OR …)`, all pages, ordered by `qs` on the client | `provider.ts` loadState |
 | 3 | open, before compacting | `… AND qk = str('u') AND qs >= u64(<base − 60>) AND ($creator = addr(<m1>) OR …)`, cursor pages pinned with `atBlock` | `provider.ts` loadState, resync |
 | 4 | owner opens | `… AND qk = str('j')`, limit 50 | `provider.ts` loadJoinRequests |
-| 5 | shred | `… AND $creator = addr(<me>)` | `provider.ts` shredMine |
+| 5 | shred, delete | `… AND $creator = addr(<me>)` | `provider.ts` shredMine, deleteDocument |
 | 6 | history check | queries 1 to 3 with `atBlock = <past block>` | `provider.ts` loadAt |
 | 7 | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |
 
@@ -55,8 +56,9 @@ Opening a document costs three queries. Live edits after that cost none: they ar
 
 | Operation | One atomic `executeBatch` containing |
 |---|---|
-| Create document | ACL create + snapshot create(s) |
-| Compact | snapshot head + chunks, keys predicted with `predictEntityKeys` |
-| Remove a member | ACL patch (new epoch, re-wrapped keys) + new snapshot under the new key |
-| Renew lease | extensions for snapshot, its chunks and the ACL |
-| Shred my writing | deletes of every entity I created for the document |
+| Create document | ACL create + snapshot head |
+| Compact | chunks first, in transactions of at most 100,000 payload bytes (the RPC refuses bodies over about 256 KiB); then the head, which lists the chunk keys |
+| Remove a member | ACL patch (new epoch, re-wrapped keys, sealed roster) + the new snapshot head under the new key |
+| Renew lease | extensions for my snapshot and its chunks, and the ACL if I am the owner, only where they move expiry later |
+| Shred my edit history | deletes of my updates and join requests |
+| Delete document | deletes of the ACL and every entity the owner created |

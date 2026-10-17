@@ -48,14 +48,16 @@ async function main() {
     console.log(`document   ${link.doc}`)
     console.log(`owner      ${acl.owner} (ACL entity ${provider.aclKey}, found by $creator)`)
     console.log(`epoch      ${acl.epoch}${provider.canRead ? "" : " (this link cannot read the current epoch)"}`)
+    if (acl.rosterHidden) console.log(`members    sealed under epoch ${acl.epoch}; this link sees only a count (${acl.wraps.length})`)
     for (const m of acl.members) console.log(`member     ${m.address}  ${m.role}`)
     for (const r of acl.revoked) console.log(`removed    ${r.address}  at block ${r.atBlock}`)
+    if (acl.keepUntil) console.log(`keep until block ${acl.keepUntil}`)
     if (provider.snapshot) {
       const left = Number(provider.snapshot.expiresAt - head) * 2
       console.log(`snapshot   ${provider.snapshot.key}, lease ${(left / 86400).toFixed(1)} days left, ${provider.snapshot.chunks.length} chunks`)
     }
     console.log(`applied    ${provider.stats.snapshotsApplied} snapshots, ${provider.stats.updatesApplied} updates`)
-    console.log(`ignored    ${provider.stats.rejectedWrites} entities from non-members`)
+    console.log(`ignored    ${provider.stats.rejectedWrites} entities (outside the member list, or writing under another member's client id)`)
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)
   }

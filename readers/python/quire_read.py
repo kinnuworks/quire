@@ -1287,6 +1287,10 @@ class Reader:
             raise Rejected(f"qs {qs!r} is not u64")
         if qs > e.created_at:
             raise Rejected(f"qs {qs} is after createdAt {e.created_at}")
+        # Section 5: nor more than the catch-up margin before it, or live and
+        # cold readers (who read from qs >= base - 60) would differ.
+        if qs + SNAPSHOT_WINDOW < e.created_at:
+            raise Rejected(f"qs {qs} is more than {SNAPSHOT_WINDOW} blocks before createdAt {e.created_at}")
         frame = self._content_frame(e)
         self.schemas.check("update", frame.header)
         problem = header_problem("u", frame.header)

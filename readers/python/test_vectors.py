@@ -1171,6 +1171,19 @@ class ReaderTests(unittest.TestCase):
             if not applied:
                 self.assertEqual(dict(result.ignored)[e.key], "qs 14 is after createdAt 13")
 
+    def test_update_with_qs_backdated_past_the_margin_is_ignored(self) -> None:
+        # Section 5: cold readers fetch updates with qs >= base - 60, so an
+        # update whose qs is more than 60 blocks before its createdAt would
+        # be applied live and missed cold. Every reader ignores it.
+        e, _ = self._forged_update(None, 1, 200, "Backdated.")
+        for qs, applied in ((139, False), (140, True)):
+            e.attributes = [quire_audit.Attribute(a.name, a.type, qs if a.name == "qs" else a.value)
+                            for a in e.attributes]
+            result = self._read(quire_audit.load_vectors(DOCUMENT)[1] + [e])
+            self.assertEqual(e.key in result.applied, applied, qs)
+            if not applied:
+                self.assertEqual(dict(result.ignored)[e.key], "qs 139 is more than 60 blocks before createdAt 200")
+
     def test_snapshot_with_qs_or_base_after_created_at_is_ignored(self) -> None:
         _reader, base_result = self._member_result()
         data = base_result.doc.get_update()

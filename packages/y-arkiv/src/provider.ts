@@ -191,7 +191,20 @@ export class ArkivProvider extends Observable<string> {
     super()
     this.doc = doc
     this.link = options.link
-    this.store = options.store
+    // every query page is counted here, so stats.queries is what the RPC billed, cursor pages included
+    const inner = options.store
+    const stats = () => this.stats
+    this.store = {
+      get address() {
+        return inner.address
+      },
+      head: () => inner.head(),
+      batch: (spec) => inner.batch(spec),
+      predictKeys: (n) => inner.predictKeys(n),
+      query: (spec) => (stats().queries++, inner.query(spec)),
+      get: (key, block) => inner.get(key, block),
+      watch: (onEvent, onError) => inner.watch(onEvent, onError),
+    }
     this.identity = options.identity
     this.now = options.now ?? Date.now
     this.autoCompact = options.autoCompact ?? true
@@ -335,7 +348,6 @@ export class ArkivProvider extends Observable<string> {
   }
 
   private async loadAcl(): Promise<void> {
-    this.stats.queries++
     const page = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], limit: 20 })
     // the first entity that is really the owner's ACL; an RPC that ignores the creator filter cannot slip in another
     for (const entity of page.entities) {
@@ -381,7 +393,6 @@ export class ArkivProvider extends Observable<string> {
     // without the roster we do not know whose entities to trust, and could not decrypt them anyway
     if (!this.acl || this.acl.rosterHidden) return
     const writers = memberAddresses(this.acl)
-    this.stats.queries++
     const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers })
     // order by the writer's block height (qs), newest first; Arkiv does not promise any order.
     // Apply every snapshot close to the newest base, which covers concurrent compactions.
@@ -410,7 +421,6 @@ export class ArkivProvider extends Observable<string> {
     // the verified-clock check then refuses are taken back below.
     const before = { authors: new Map(this.claimedAuthors), via: new Map(this.claimedVia) }
     for (const st of states) st.registerClaims()
-    this.stats.queries++
     // removed members too: what they wrote while they belonged still counts (wroteAsMember)
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl), seqGte: from })
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
@@ -447,7 +457,6 @@ export class ArkivProvider extends Observable<string> {
    * `j` entities; following every page would let them drain the owner's query budget.
    */
   private async loadJoinRequests(): Promise<void> {
-    this.stats.queries++
     const page = await this.store.query({ doc: this.link.doc, kind: KIND.join, limit: 200 })
     for (const e of page.entities) await this.applyJoinEntity(e)
   }
@@ -458,7 +467,6 @@ export class ArkivProvider extends Observable<string> {
    */
   async findJoinRequest(address: Hex): Promise<JoinRequest | null> {
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null
-    this.stats.queries++
     const page = await this.store.query({ doc: this.link.doc, kind: KIND.join, creators: [address], limit: 20 })
     for (const e of page.entities) await this.applyJoinEntity(e)
     return this.joinRequests.find((j) => j.address === address.toLowerCase()) ?? null
@@ -652,6 +660,9 @@ export class ArkivProvider extends Observable<string> {
     // qs is the writer's view of the chain head; it cannot be later than the block the entity landed in.
     // A far-future qs would otherwise push the edit into every catch-up window forever.
     if (entity.attributes.seq > entity.createdAt) return this.reject()
+    // nor more than the catch-up margin behind it: a backdated qs would put the edit outside every cold
+    // reader's window (qs >= base - 60) while live readers apply it, so the two would show different text
+    if (entity.attributes.seq + CATCH_UP_MARGIN_BLOCKS < entity.createdAt) return this.reject()
     // the edit's client id must derive from its creator's address with a salt the creator signed
     if (!(await this.checkAuthors(frame.data, entity.creator, frame.header.salt, frame.header.sig))) return this.reject()
     const svBefore = Y.decodeStateVector(Y.encodeStateVector(this.doc))
@@ -1020,7 +1031,6 @@ export class ArkivProvider extends Observable<string> {
     if (this.acl.rosterHidden) return 0
     const base = this.snapshot?.base ?? 0n
     const from = base > CATCH_UP_MARGIN_BLOCKS ? base - CATCH_UP_MARGIN_BLOCKS : 0n
-    this.stats.queries++
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl), seqGte: from })
     const before = this.stats.updatesApplied
     const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
@@ -1163,7 +1173,6 @@ export class ArkivProvider extends Observable<string> {
     return this.serial(async () => {
       const head = await this.store.head()
       const until = head + blocks(seconds_)
-      this.stats.queries++
       const mine = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: [me as Hex] })
       const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me && e.expiresAt < until).map((e) => e.key)
       if (this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
@@ -1187,7 +1196,6 @@ export class ArkivProvider extends Observable<string> {
     if (this.role !== "owner" || !this.identity) throw new Error("only the owner deletes the document")
     const me = this.identity.address
     return this.serial(async () => {
-      this.stats.queries++
       const mine = await queryAll(this.store, { doc: this.link.doc, creators: [me] })
       const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me.toLowerCase() && !e.readonly).map((e) => e.key)
       await this.store.batch({ deletes: keys })
@@ -1240,7 +1248,15 @@ export class ArkivProvider extends Observable<string> {
    * wrapped only for the members who remain, and a fresh snapshot under that
    * key is written in the same atomic batch as the ACL change.
    */
-  async revoke(address: Hex): Promise<void> {
+  /**
+   * Owner: removes a member. The key rotates and the roster is sealed under it, in one transaction
+   * with a snapshot under the new key. With `shredOldEpoch`, the owner's own entities from earlier
+   * epochs are then deleted, so the old link no longer opens the owner's earlier text from Arkiv's
+   * state (block history keeps it). The owner's earlier text is then vouched for by the new snapshot
+   * rather than proven edit by edit. Other members' earlier entities stay until they expire or those
+   * members shred them.
+   */
+  async revoke(address: Hex, options: { shredOldEpoch?: boolean } = {}): Promise<{ shredded: number }> {
     const target = address.toLowerCase()
     if (target === this.link.owner.toLowerCase()) throw new Error("the owner cannot be revoked")
     const epochKey = randomBytes(32)
@@ -1253,6 +1269,26 @@ export class ArkivProvider extends Observable<string> {
       acl.wraps = shuffle(wraps)
       this.epochKeys.set(acl.epoch, epochKey)
       return { snapshot: { epoch: acl.epoch, key: epochKey } }
+    })
+    if (!options.shredOldEpoch || !this.identity || !this.acl) return { shredded: 0 }
+    const epoch = this.acl.epoch
+    const me = this.identity.address.toLowerCase()
+    return this.serial(async () => {
+      const mine = await queryAll(this.store, { doc: this.link.doc, creators: [me as Hex] })
+      // updates, snapshots and chunks written under an older key; never the member list or a published version
+      const old = mine.entities.filter((e) => {
+        if (e.owner.toLowerCase() !== me || !([KIND.update, KIND.snapshot, KIND.chunk] as Kind[]).includes(e.attributes.kind)) return false
+        try {
+          return decodeOuter(e.payload).epoch < epoch
+        } catch {
+          return false
+        }
+      })
+      for (let i = 0; i < old.length; i += 100) {
+        await this.store.batch({ deletes: old.slice(i, i + 100).map((e) => e.key) })
+        this.stats.writes++
+      }
+      return { shredded: old.length }
     })
   }
 
@@ -1316,7 +1352,6 @@ export class ArkivProvider extends Observable<string> {
     if (this.role === "owner" || this.role === "writer") await this.compact()
     return this.serial(async () => {
       const mine = await queryAll(this.store, { doc: this.link.doc, creators: [me] })
-      this.stats.queries++
       // only your own edits and join requests: snapshots you wrote carry everyone's text and stay
       const keys = mine.entities
         .filter((e) => e.owner.toLowerCase() === me.toLowerCase() && (e.attributes.kind === KIND.update || e.attributes.kind === KIND.join))
@@ -1340,7 +1375,6 @@ export class ArkivProvider extends Observable<string> {
   /** The entities behind scanOutsiders(), for tools that need their keys. */
   async outsiderEntities(): Promise<StoredEntity[]> {
     if (!this.acl || this.acl.rosterHidden) return []
-    this.stats.queries++
     const all = await queryAll(this.store, { doc: this.link.doc })
     const members = new Set(memberAddresses(this.acl))
     const acl = this.acl

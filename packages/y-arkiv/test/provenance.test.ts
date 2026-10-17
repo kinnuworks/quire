@@ -217,9 +217,9 @@ describe("lease", () => {
 })
 
 /** A member writes an update entity with any Yjs bytes, under their own signed salt. */
-async function rawUpdate(chain: MemoryChain, who: { address: Hex; privateKey: Hex }, link: DocLink, salt: Uint8Array, data: Uint8Array): Promise<Hex> {
+async function rawUpdate(chain: MemoryChain, who: { address: Hex; privateKey: Hex }, link: DocLink, salt: Uint8Array, data: Uint8Array, seq?: bigint): Promise<Hex> {
   const store = chain.store(who.address)
-  const head = await store.head()
+  const head = seq ?? (await store.head())
   const sig = await privateKeyToAccount(who.privateKey).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(link.doc), ...salt]) } })
   const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header: { t: Date.now(), salt: bytesToHex(salt), sig }, data }, randomBytes)
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame))
@@ -346,6 +346,61 @@ describe("removed members", () => {
     expect(doc.getText("t").toString()).toBe("before ")
     expect(blame(doc, p).flat()).toEqual([expect.objectContaining({ text: "before ", address: bea.id!.address, proven: true })])
     expect((await p.outsiderEntities()).map((e) => e.key)).toEqual([late])
+    a.provider.destroy()
+  })
+})
+
+describe("qs lower bound", () => {
+  it("an update whose qs is backdated past the catch-up margin counts for no reader, live or cold", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    chain.mine(200)
+    const salt = randomBytes(16)
+    const d = new Y.Doc()
+    d.clientID = clientIdFor(bea.id!.address, salt)
+    d.getText("t").insert(0, "backdated")
+    const head = await chain.store(undefined).head()
+    await rawUpdate(chain, bea.id!, link, salt, Y.encodeStateAsUpdate(d), head - 61n)
+    await settle(chain, [a, bea])
+    expect(a.doc.getText("t").toString()).not.toContain("backdated") // live
+    const cold = await peer(chain, link, undefined)
+    expect(cold.doc.getText("t").toString()).not.toContain("backdated")
+    // 60 blocks behind is still within the margin
+    const d2 = new Y.Doc()
+    const salt2 = randomBytes(16)
+    d2.clientID = clientIdFor(bea.id!.address, salt2)
+    d2.getText("t").insert(0, "late but fine")
+    await rawUpdate(chain, bea.id!, link, salt2, Y.encodeStateAsUpdate(d2), (await chain.store(undefined).head()) - 60n)
+    await settle(chain, [a, bea])
+    expect(a.doc.getText("t").toString()).toContain("late but fine")
+    a.provider.destroy()
+  })
+})
+
+describe("revocation with shredOldEpoch", () => {
+  it("the old link no longer opens the owner's earlier entities; members still read everything", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    const cal = await peer(chain, link, identity("cal"))
+    await admit(chain, a, bea)
+    await admit(chain, a, cal)
+    a.doc.getText("t").insert(0, "owner's early text ")
+    await a.provider.flush()
+    await settle(chain, [a, bea, cal])
+    const r = await a.provider.revoke(cal.id!.address, { shredOldEpoch: true })
+    await settle(chain, [a, bea, cal])
+    expect(r.shredded).toBeGreaterThanOrEqual(2) // the first snapshot and the early edit at least
+    // what is left in state from the owner under the epoch 0 key, which the link alone opens
+    const left = (await chain.store(undefined).query({ doc: link.doc, creators: [owner.address] })).entities
+    expect(left.filter((e) => e.attributes.kind !== KIND.acl && decodeOuter(e.payload).epoch === 0)).toHaveLength(0)
+    // a member opening fresh still reads the whole document from the new-epoch snapshot
+    const fresh = await peer(chain, link, bea.id)
+    expect(fresh.doc.getText("t").toString()).toContain("owner's early text")
     a.provider.destroy()
   })
 })

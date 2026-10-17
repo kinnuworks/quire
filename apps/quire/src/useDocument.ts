@@ -128,15 +128,24 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       },
     )
     // fold the last edits into a snapshot when the tab is hidden or closed, so nothing outlives its cover
+    let hiddenAt = 0
     const onHide = () => {
-      if (document.visibilityState === "hidden") void p.close().catch(() => undefined)
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now()
+        void p.close().catch(() => undefined)
+      } else if (hiddenAt && Date.now() - hiddenAt > 60_000) catchUp()
     }
+    // the socket may have dropped while the network or the tab was away: catch up at once (free reads by
+    // key, plus one query), instead of waiting for the 15-minute resync
+    const catchUp = () => void p.resync({ joins: true }).then(() => bump(), () => undefined)
     document.addEventListener("visibilitychange", onHide)
     window.addEventListener("pagehide", onHide)
+    window.addEventListener("online", catchUp)
     return () => {
       if (retry) clearTimeout(retry)
       document.removeEventListener("visibilitychange", onHide)
       window.removeEventListener("pagehide", onHide)
+      window.removeEventListener("online", catchUp)
       void p.close().catch(() => undefined).finally(() => p.destroy())
       setProvider(null)
     }

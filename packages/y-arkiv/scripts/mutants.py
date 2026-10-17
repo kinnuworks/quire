@@ -16,6 +16,7 @@ MUTANTS = [
     (P, "takeover rule", "if (holder && holder !== author.toLowerCase()) return false", "if (false) return false"),
     (P, "update member filter", "if (!this.acl || !wroteAsMember(this.acl, entity.creator, entity.createdAt)) {\n      this.seen.add(entity.key)\n      return this.reject()", "if (!this.acl) {\n      this.seen.add(entity.key)\n      return this.reject()"),
     (P, "future qs on updates", "if (entity.attributes.seq > entity.createdAt) return this.reject()", "if (false) return this.reject()"),
+    (P, "backdated qs on updates", "if (entity.attributes.seq + CATCH_UP_MARGIN_BLOCKS < entity.createdAt) return this.reject()", "if (false) return this.reject()"),
     (P, "own client id in snapshots", "if (this.identity && ours !== undefined && ours >", "if (false && ours !== undefined && ours >"),
     (P, "whole-item provenance", "this.coveredByProven(client, clock, clock + length)", "this.coveredByProven(client, clock, clock + 1)"),
     (P, "verified clocks checked on load", "const verified = this.history.slice(historyBefore).map((h) => h.update)", "const verified: Uint8Array[] = []"),

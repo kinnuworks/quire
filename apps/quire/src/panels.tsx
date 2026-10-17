@@ -121,7 +121,15 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
                 <button
                   className="btn btn-outline danger"
                   disabled={!!busy}
-                  onClick={() => confirm(`Remove ${m.name}? The key rotates and they stop receiving new edits.`) && run("removing", async () => (await p.revoke(m.address), `Removed. New edits use epoch ${p.acl!.epoch}.`))}
+                  onClick={() =>
+                    confirm(
+                      `Remove ${m.name}? The key rotates and they stop receiving new edits. Your own earlier entities are deleted too, so the old link no longer opens your earlier text from Arkiv (your new snapshot carries it now, so it reads as vouched for rather than proven edit by edit). Other members' earlier edits stay readable with the old link until they expire or those members shred them.`,
+                    ) &&
+                    run("removing", async () => {
+                      const r = await p.revoke(m.address, { shredOldEpoch: true })
+                      return `Removed. New edits use epoch ${p.acl!.epoch}; deleted ${r.shredded} of your entities from earlier epochs.`
+                    })
+                  }
                 >
                   Remove
                 </button>

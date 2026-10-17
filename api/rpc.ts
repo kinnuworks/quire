@@ -14,8 +14,15 @@
  */
 
 const RPC = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
-// only queries for one Quire document: the relay is not a general way to spend our key
-const QUIRE_QUERY = /^qp = str\('quire1'\) AND qd = bytes32\(0x[0-9a-fA-F]{64}\)/
+// exactly the query shapes Quire sends (toExpression in y-arkiv), matched whole: one document, an
+// optional kind, an optional qs bound, an optional set of creators. Nothing can be appended.
+const ADDR = "addr\\(0x[0-9a-fA-F]{40}\\)"
+export const QUIRE_QUERY = new RegExp(
+  "^qp = str\\('quire1'\\) AND qd = bytes32\\(0x[0-9a-fA-F]{64}\\)" +
+    "( AND qk = str\\('[ausjcv]'\\))?" +
+    "( AND qs >= u64\\([0-9]{1,20}\\))?" +
+    `( AND (\\$creator = ${ADDR}|\\(\\$creator = ${ADDR}( OR \\$creator = ${ADDR}){1,63}\\)))?$`,
+)
 const MAX_BODY = 8_192
 // per-instance memory, like the drip: a soft limit, not a guarantee across cold starts
 const PER_IP = 120 // queries per IP per 10 minutes: opening a document costs 3

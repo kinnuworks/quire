@@ -11,7 +11,7 @@ import * as Y from "yjs"
 import { recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { Observable } from "lib0/observable"
-import { type Acl, emptyAcl, fromHeader, isMember, type Member, memberAddresses, toHeader } from "./acl.js"
+import { type Acl, emptyAcl, fromHeader, isMember, type Member, memberAddresses, toHeader, updateAuthors, wroteAsMember } from "./acl.js"
 import { decodeFrame, decodeOuter, encodeFrame, encodeOuter, equalBytes, type Frame } from "./codec.js"
 import {
   addressOfPublicKey,
@@ -411,7 +411,8 @@ export class ArkivProvider extends Observable<string> {
     const before = { authors: new Map(this.claimedAuthors), via: new Map(this.claimedVia) }
     for (const st of states) st.registerClaims()
     this.stats.queries++
-    const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: writers, seqGte: from })
+    // removed members too: what they wrote while they belonged still counts (wroteAsMember)
+    const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl), seqGte: from })
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
     // binding depends on order, so every reader uses the same one: creation block, then key
     const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
@@ -636,7 +637,7 @@ export class ArkivProvider extends Observable<string> {
 
   private async applyUpdateEntityInner(entity: StoredEntity, live: boolean): Promise<void> {
     if (this.seen.has(entity.key)) return
-    if (!this.acl || !isMember(this.acl, entity.creator)) {
+    if (!this.acl || !wroteAsMember(this.acl, entity.creator, entity.createdAt)) {
       this.seen.add(entity.key)
       return this.reject()
     }
@@ -1020,7 +1021,7 @@ export class ArkivProvider extends Observable<string> {
     const base = this.snapshot?.base ?? 0n
     const from = base > CATCH_UP_MARGIN_BLOCKS ? base - CATCH_UP_MARGIN_BLOCKS : 0n
     this.stats.queries++
-    const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: memberAddresses(this.acl), seqGte: from })
+    const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl), seqGte: from })
     const before = this.stats.updatesApplied
     const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
     for (const u of byAge) await this.applyUpdateEntity(u, false)
@@ -1342,7 +1343,14 @@ export class ArkivProvider extends Observable<string> {
     this.stats.queries++
     const all = await queryAll(this.store, { doc: this.link.doc })
     const members = new Set(memberAddresses(this.acl))
-    return all.entities.filter((e) => e.attributes.kind !== KIND.join && !members.has(e.creator.toLowerCase() as Hex) && !(e.attributes.kind === KIND.acl && e.creator.toLowerCase() === this.link.owner.toLowerCase()))
+    const acl = this.acl
+    return all.entities.filter(
+      (e) =>
+        e.attributes.kind !== KIND.join &&
+        !members.has(e.creator.toLowerCase() as Hex) &&
+        // a removed member's edits from before their removal count, so they are not outside writes
+        !(e.attributes.kind === KIND.update && wroteAsMember(acl, e.creator, e.createdAt)),
+    )
   }
 
   /**

@@ -76,6 +76,22 @@ export function memberAddresses(acl: Acl): Hex[] {
   return acl.members.map((m) => m.address.toLowerCase() as Hex)
 }
 
+/**
+ * Whether an entity created at `createdAt` by `address` was written by a member: a current member,
+ * or a removed one whose entity landed at or before their removal block. Removing someone must not
+ * erase the proof of what they wrote while they belonged; anything they create later still does not count.
+ */
+export function wroteAsMember(acl: Acl, address: Hex | undefined, createdAt: bigint): boolean {
+  if (isMember(acl, address)) return true
+  const a = address?.toLowerCase()
+  return acl.revoked.some((r) => r.address.toLowerCase() === a && /^[0-9]+$/.test(String(r.atBlock)) && createdAt <= BigInt(r.atBlock))
+}
+
+/** Everyone whose updates can count: members, and removed members for what they wrote before removal. */
+export function updateAuthors(acl: Acl): Hex[] {
+  return [...new Set([...memberAddresses(acl), ...acl.revoked.map((r) => r.address.toLowerCase() as Hex)])]
+}
+
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 

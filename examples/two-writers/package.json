@@ -1,0 +1,19 @@
+{
+  "name": "y-arkiv-example-two-writers",
+  "private": true,
+  "type": "module",
+  "description": "Two writers, one reader and a revocation on y-arkiv, in one file",
+  "scripts": {
+    "start": "tsx main.ts",
+    "live": "tsx main.ts --live"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "0.8.1",
+    "viem": "^2.57.7",
+    "y-arkiv": "workspace:*",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
+}

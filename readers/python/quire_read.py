@@ -1069,6 +1069,7 @@ class Reader:
         self.creators: dict[str, str] = {}
         self.authors: dict[int, Author] = {}
         self.dropped_authors: list[str] = []
+        self.revoked_at: dict[str, int] = {}  # removed member -> removal block, from the roster
         self.acl_entity: Entity | None = None
         # Section 5: a writing session's own client id. Snapshots carrying
         # structs under it beyond what this session's updates wrote are
@@ -1310,11 +1311,21 @@ class Reader:
             raise Rejected(f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
         return frame, structs, str(salt), clients
 
+    def wrote_as_member(self, e: Entity, members: list[str]) -> bool:
+        """Section 5: written by a member, or by a removed member at or before
+        their removal block. Removal does not erase what they wrote while
+        they belonged; anything they create later does not count."""
+        if e.creator in members:
+            return True
+        at = self.revoked_at.get(e.creator)
+        return at is not None and e.created_at <= at
+
     def load_updates(self, members: list[str], window_base: int | None) -> list[tuple[Entity, bytes, list[Struct]]]:
         min_qs = max(0, window_base - SNAPSHOT_WINDOW) if window_base is not None else 0
         accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
-        for e in self.source.by_kind(self.link.doc, "u", members, min_qs):
-            if e.creator not in members:
+        authors = sorted(set(members) | set(self.revoked_at))
+        for e in self.source.by_kind(self.link.doc, "u", authors, min_qs):
+            if not self.wrote_as_member(e, members):
                 self._ignore(e, "creator not in ACL")
                 continue
             try:
@@ -1414,6 +1425,11 @@ class Reader:
             if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.match(m["address"])
         })
         revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
+        self.revoked_at = {
+            str(r["address"]).lower(): int(r["atBlock"])
+            for r in revoked
+            if isinstance(r.get("address"), str) and isinstance(r.get("atBlock"), str) and r["atBlock"].isdigit()
+        }
 
         # Read snapshots, then updates; if the updates show a snapshot must be
         # refused, start over without it; its creator then contributes no snapshot.
@@ -1437,6 +1453,8 @@ class Reader:
         if self.scan_outsiders:
             seen = {k for k, _r in self.ignored}
             for e in self.source.outsiders(self.link.doc, members):
+                if e.kind == "u" and self.wrote_as_member(e, members):
+                    continue  # a removed member's edit from before their removal
                 if e.key not in seen and not (e.kind == "a" and e.creator == self.link.owner):
                     self._ignore(e, "creator not in ACL")
 

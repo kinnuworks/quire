@@ -89,6 +89,13 @@ def newest_snapshot(entities):
     return max((e for e in entities if e.kind == "s"), key=_qs)
 
 
+def without_cal_update(entities):
+    """The vectors as if Cal's one update had expired: his line then exists
+    only in snapshots, which is how these tests reach snapshot-only text.
+    (While it lives it counts: he wrote it before his removal block.)"""
+    return [e for e in entities if not (e.kind == "u" and e.creator == VEC["members"]["cal"])]
+
+
 def owner_late_update(entities):
     """The owner's last update; its structs do not start at clock 0."""
     return max((e for e in entities if e.kind == "u" and e.creator == VEC["owner"]), key=lambda e: e.created_at)
@@ -736,12 +743,30 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(result.text, VEC["expected"]["memberText"])
 
     def test_member_writing_under_a_revoked_members_client_id_is_ignored(self) -> None:
-        # Cal's updates are out of the read, and nothing is bound any more:
-        # the check alone keeps Bea from writing as Cal.
+        # Cal's own update, written before his removal, binds his id; the
+        # derivation check alone already keeps Bea from writing as Cal.
         e, result = self._forged_update(CAL_CLIENT, 1, 13, "Bea writes as Cal.")
         self.assertNotIn(e.key, result.applied)
         self.assertEqual(result.authors[CAL_CLIENT].address, VEC["members"]["cal"])
-        self.assertFalse(result.authors[CAL_CLIENT].proven)
+        self.assertTrue(result.authors[CAL_CLIENT].proven)
+
+    def test_removed_members_earlier_edit_counts_and_later_one_does_not(self) -> None:
+        # Section 5: Cal was removed at block 10. His update from block 9 was
+        # written by a member and stays proven; one he creates at block 13,
+        # with a valid salt and signature under the epoch 0 key he still has,
+        # is ignored like any outsider's.
+        reader, result = self._member_result()
+        cal_update = next(e for e in reader.source.entities if e.kind == "u" and e.creator == VEC["members"]["cal"])  # type: ignore[attr-defined]
+        self.assertLessEqual(cal_update.created_at, REVOKED_AT)
+        self.assertIn(cal_update.key, result.applied)
+        self.assertTrue(result.authors[CAL_CLIENT].proven)
+        # the member filter decides before any signature check, so a placeholder sig is enough here
+        salt = os.urandom(16).hex()
+        e, later = self._forged_update(None, 0, 13, "Cal, after removal.", creator=VEC["members"]["cal"], salt=salt,
+                                       header={"t": 1, "salt": salt, "sig": "0x" + "11" * 65})
+        self.assertNotIn(e.key, later.applied)
+        self.assertEqual(dict(later.ignored)[e.key], "creator not in ACL")
+        self.assertNotIn("Cal, after removal.", later.text)
 
     def test_update_under_own_derived_client_id_is_applied(self) -> None:
         e, result = self._forged_update(None, 1, 13, "Bea writes as herself.")
@@ -913,15 +938,16 @@ class ReaderTests(unittest.TestCase):
     # -------------------------------------------------------- takeover
 
     def test_takeover_of_a_snapshot_attributed_id_is_ignored(self) -> None:
-        # Cal's id is attributed only by the newest snapshot's authors entry
-        # (his update is out: he is no longer a member). Bea finds a salt
-        # whose clientIdFor collides with it, signs it, and writes under it.
-        # The derivation and signature checks pass; the takeover rule does not,
-        # even with the update created before the snapshot.
+        # With Cal's update expired, his id is attributed only by the newest
+        # snapshot's authors entry. Bea finds a salt whose clientIdFor
+        # collides with it, signs it, and writes under it. The derivation and
+        # signature checks pass; the takeover rule does not, even with the
+        # update created before the snapshot.
         salt = os.urandom(16).hex()
         for block in (2, 13):
             with collide(VEC["members"]["bea"], salt, CAL_CLIENT):
-                e, result = self._forged_update(None, 1, block, "Bea, under Cal's id.", salt=salt)
+                e, _full = self._forged_update(None, 1, block, "Bea, under Cal's id.", salt=salt)
+                result = self._read(without_cal_update(quire_audit.load_vectors(DOCUMENT)[1]) + [e])
             self.assertNotIn(e.key, result.applied, block)
             self.assertEqual(
                 dict(result.ignored)[e.key],
@@ -985,7 +1011,8 @@ class ReaderTests(unittest.TestCase):
     # -------------------------------------------------------- snapshot authors
 
     def test_vector_snapshot_authors_are_claimed(self) -> None:
-        _reader, result = self._member_result()
+        _reader = self._reader(without_cal_update(quire_audit.load_vectors(DOCUMENT)[1]))
+        result = _reader.read()
         self.assertEqual(result.dropped_authors, [])
         cal = result.authors[CAL_CLIENT]
         self.assertEqual((cal.address, cal.proven), (VEC["members"]["cal"], False))
@@ -1301,6 +1328,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(opened(genuine, forged_state), "Hello fakes")  # genuine update pending
         # The same happens to the vectors' owner update without the refusal.
         forged, _start, entities = self._forged_owner_snapshot()
+        entities = without_cal_update(entities)  # the owner's update waits on Cal's line
         original = quire_read.Reader.refuse
         quire_read.Reader.refuse = lambda self, snapshots, verified: {}
         try:
@@ -1338,14 +1366,15 @@ class ReaderTests(unittest.TestCase):
         self.assertIn(snap.key, self._read(ents, own_salt=os.urandom(16).hex()).applied)
 
     def test_vector_text_ranges(self) -> None:
-        _reader, result = self._member_result()
+        _reader = self._reader(without_cal_update(quire_audit.load_vectors(DOCUMENT)[1]))
+        result = _reader.read()
         by_client = defaultdict(list)
         for r in result.ranges:
             by_client[r.client].append(r)
         # Owner and Bea: everything arrived in verified updates.
         for cid in (OWNER_CLIENT, BEA_CLIENT):
             self.assertTrue(all(r.proven for r in by_client[cid]), cid)
-        # Cal's update is out (he is no longer a member): his line is claimed,
+        # Cal's update has expired here: his line is claimed,
         # through every snapshot that carries it, newest first.
         cal = by_client[CAL_CLIENT]
         self.assertEqual([r.proven for r in cal], [False])
@@ -1482,13 +1511,13 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("hashes to owner: yes", out)
         self.assertIn("epoch        1", out)
         self.assertIn("members      2", out)
-        self.assertIn("2 x creator not in ACL", out)
+        self.assertIn("1 x creator not in ACL", out)
         self.assertIn("join requests 2", out)
         self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']} Owner    proven", out)
-        via = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1]).creator
-        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  claimed via {via}", out)
-        # Text ranges: Cal's line is claimed, through the snapshots that carry it.
-        self.assertRegex(out, rf"{CAL_CLIENT}\s+0\.\.\d+ claimed {VEC['members']['cal']} via ")
+        # Cal was removed, but his line was written before that, so it stays proven
+        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  proven  update", out)
+        self.assertRegex(out, rf"{CAL_CLIENT}\s+0\.\.\d+ proven\s+{VEC['members']['cal']}")
+        self.assertIn("129 of 129 clocks proven", out)
         self.assertRegex(out, rf"{OWNER_CLIENT}\s+0\.\.\d+ proven ")
         self.assertIn("acl flags    permissionless extension (raw 2)  expected permissionless extension only: yes", out)
         self.assertNotIn("dropped:", out)

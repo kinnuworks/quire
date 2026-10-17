@@ -131,7 +131,7 @@ The SDK's `client.getEntity(key)` is documented in its own JSDoc as using `arkiv
 
 **What we did.** Every live edit is fetched with raw `arkiv_getEntity`, so live collaboration costs no query budget at all ([sdk.ts `get`](../packages/y-arkiv/src/sdk.ts)).
 
-**Free is not unlimited.** Every response in the same probe, `arkiv_getEntity` included, carries a second header: `ratelimit: limit=600, remaining=588, reset=57`. That is a request-rate limit per minute, separate from the cost budget, and the docs do not mention it. We stay under it by design: an owner's session fetches at most 240 entities per minute from addresses outside the member list (the cap that stops a flood of junk join requests), and a writer at two-second blocks produces about 30 edits a minute. The docs should state both limits and say which one a 429 refers to.
+**Free is not unlimited.** Every response in the same probe, `arkiv_getEntity` included, carries a second header: `ratelimit: limit=600, remaining=588, reset=57`. That is a request-rate limit per minute, separate from the cost budget, and the docs do not mention it. We stay under it by design: an owner's session fetches at most 240 entities per minute from addresses outside the member list (the cap that stops a flood of junk join requests), and a writer typing without pause flushes every two to four seconds, about 20 edits a minute. The docs should state both limits and say which one a 429 refers to.
 
 ## 6. `createEntity` resolves seconds after the chain announced the entity
 

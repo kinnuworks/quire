@@ -621,3 +621,27 @@ describe("read-only owner session", () => {
     p.destroy()
   })
 })
+
+describe("membership is tied to time", () => {
+  it("an edit written before its creator was added never counts, even after the owner adds them", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const mal = await peer(chain, link, identity("mallory"))
+    // Mallory holds the link and writes a valid edit while she is nobody
+    const salt = randomBytes(16)
+    const d = new Y.Doc()
+    d.clientID = clientIdFor(mal.id!.address, salt)
+    d.getText("t").insert(0, "EARLY")
+    await rawUpdate(chain, mal.id!, link, salt, Y.encodeStateAsUpdate(d))
+    await settle(chain, [a, mal])
+    // later the owner adds her, and she writes for real
+    await admit(chain, a, mal)
+    mal.doc.getText("t").insert(0, "after joining ")
+    await mal.provider.flush()
+    await settle(chain, [a, mal])
+    const cold = await peer(chain, link, undefined)
+    expect(cold.doc.getText("t").toString()).toBe("after joining ")
+    a.provider.destroy()
+  })
+})

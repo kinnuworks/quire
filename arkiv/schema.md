@@ -37,7 +37,7 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 - Each edit's Yjs client id must equal `clientIdFor($creator, salt)`, with the salt signed by the creator, so no member can write under another member's name.
 - Trust comes from `$creator`. The ACL is found with `$creator = owner` (from the link), and updates and snapshots are accepted only if their `$creator` is in the ACL. A copy of a valid ciphertext written by anyone else is never applied (`stats.rejectedWrites` in the app).
-- `$owner` controls writes. Only the owner can patch the ACL, and only an entity's own creator can delete it ("Shred my writing").
+- `$owner` controls writes. Only the owner can patch the ACL, and only an entity's own creator can delete it ("Shred my edit history").
 - Each person uses a fresh key per document, so their `$creator` addresses in two documents cannot be linked.
 
 ## Queries the app runs

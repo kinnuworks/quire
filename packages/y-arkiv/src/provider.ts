@@ -11,7 +11,7 @@ import * as Y from "yjs"
 import { recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { Observable } from "lib0/observable"
-import { type Acl, emptyAcl, fromHeader, isMember, type Member, memberAddresses, toHeader, updateAuthors, wroteAsMember } from "./acl.js"
+import { type Acl, emptyAcl, fromHeader, isMember, type Member, memberAddresses, memberAt, toHeader, updateAuthors, wroteAsMember } from "./acl.js"
 import { decodeFrame, decodeOuter, encodeFrame, encodeOuter, equalBytes, type Frame } from "./codec.js"
 import {
   addressOfPublicKey,
@@ -764,7 +764,7 @@ export class ArkivProvider extends Observable<string> {
     // seen before: an applied one still counts as this member's choice (with its base), so a reload
     // after an ACL patch does not fall back to an older one; anything else stays as it was
     if (this.seen.has(entity.key)) return this.snapshotBases.get(entity.key) ?? null
-    if (!this.acl || !isMember(this.acl, entity.creator)) {
+    if (!this.acl || !memberAt(this.acl, entity.creator, entity.createdAt)) {
       this.seen.add(entity.key)
       this.reject()
       return null

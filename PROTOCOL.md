@@ -112,6 +112,8 @@ Headers by kind:
 
 Readers MUST ignore an update that puts content at a clock an earlier accepted update already wrote, with a different item there (earlier means smaller `createdAt`, then smaller entity key): one writer's two conflicting edits cannot both count.
 
+Membership is tied to time: an update or snapshot counts as a member's only if its `createdAt` is at or after that member's `addedAtBlock`, so an edit written before someone joined never becomes theirs, even if the owner adds them later. Readers trust the owner's current list for who was added when and who was removed; the owner can rewrite that history, and readers cannot tell.
+
 Readers MUST ignore updates and snapshots whose `$creator` is not in the ACL, even if they decrypt, with one exception: an update by an address in `revoked` whose `createdAt` is at or before that entry's `atBlock` was written by a member, and readers MUST apply it like a member's. Removing someone does not erase the proof of what they wrote while they belonged; anything they create later is ignored. Step 4 therefore queries updates from current and removed members.
 
 Client ids are derived from addresses. A writer picks a random 16-byte `salt` per session and uses the Yjs client id `clientIdFor(address, salt)`: the first 8 bytes of keccak-256 over the 20 address bytes followed by the 16 salt bytes, read big-endian and masked to 53 bits (a result of 0 becomes 1). Every update carries its `salt` in the header, and `sig`: an EIP-191 personal signature by the writer over the bytes `"quire1:salt:"` (UTF-8) followed by the 32-byte document id and the 16-byte salt. Readers MUST ignore an update whose `sig` does not recover to its `$creator`.

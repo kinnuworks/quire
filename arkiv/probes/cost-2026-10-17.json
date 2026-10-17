@@ -1,0 +1,19 @@
+{
+  "probe": "cost per write on Tiramisu, measured as the balance a fresh key spent (scripts/cost-probe.ts)",
+  "method": "a key funded with 0.02 GLM creates a document, writes five updates of about 47 characters each, then one snapshot; the fee for each step is the drop in its balance",
+  "measuredAt": "2026-10-17T23:53:01.539Z",
+  "gasPriceGwei": 1.000000002,
+  "GLM": {
+    "createDocument": "0.000222336000444672",
+    "update": "0.000117312000234624",
+    "snapshot": "0.000127312000254624"
+  },
+  "updatesMeasured": [
+    "0.000117312000234624",
+    "0.000117312000234624",
+    "0.000117312000234624",
+    "0.000117312000234624",
+    "0.000117312000234624"
+  ],
+  "note": "each update is one entity in one of six padded sizes, so the fee does not depend on how much was typed"
+}

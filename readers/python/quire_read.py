@@ -1089,6 +1089,7 @@ class Reader:
         self.authors: dict[int, Author] = {}
         self.dropped_authors: list[str] = []
         self.revoked_at: dict[str, int] = {}  # removed member -> removal block, from the roster
+        self.added_at: dict[str, int] = {}  # member -> block they were added, from the roster
         self.acl_entity: Entity | None = None
         # Section 5: a writing session's own client id. Snapshots carrying
         # structs under it beyond what this session's updates wrote are
@@ -1238,6 +1239,9 @@ class Reader:
             if e.creator not in members:
                 self._ignore(e, "creator not in ACL")
                 continue
+            if not self.member_at(e):
+                self._ignore(e, "created before its creator was added")
+                continue
             try:
                 decoded.append((e, self._decode_snapshot(e)))
             except Exception as exc:
@@ -1341,12 +1345,19 @@ class Reader:
             raise Rejected(f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
         return frame, structs, str(salt), clients
 
+    def member_at(self, e: Entity) -> bool:
+        """A current member, and the entity landed at or after the block they
+        were added: an edit from before someone joined does not become theirs
+        when the owner adds them later."""
+        added = self.added_at.get(e.creator)
+        return added is not None and e.created_at >= added
+
     def wrote_as_member(self, e: Entity, members: list[str]) -> bool:
         """Section 5: written by a member, or by a removed member at or before
         their removal block. Removal does not erase what they wrote while
         they belonged; anything they create later does not count."""
         if e.creator in members:
-            return True
+            return self.member_at(e)
         at = self.revoked_at.get(e.creator)
         return at is not None and e.created_at <= at
 
@@ -1356,7 +1367,7 @@ class Reader:
         authors = sorted(set(members) | set(self.revoked_at))
         for e in self.source.by_kind(self.link.doc, "u", authors, min_qs):
             if not self.wrote_as_member(e, members):
-                self._ignore(e, "creator not in ACL")
+                self._ignore(e, "created before its creator was added" if e.creator in members else "creator not in ACL")
                 continue
             try:
                 frame, structs, salt, clients = self._check_update(e)
@@ -1464,6 +1475,11 @@ class Reader:
             if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.fullmatch(m["address"])
         })
         revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
+        self.added_at = {
+            str(m["address"]).lower(): int(m["addedAtBlock"])
+            for m in raw_members
+            if isinstance(m, dict) and isinstance(m.get("address"), str) and isinstance(m.get("addedAtBlock"), str) and m["addedAtBlock"].isdigit()
+        }
         self.revoked_at = {
             str(r["address"]).lower(): int(r["atBlock"])
             for r in revoked

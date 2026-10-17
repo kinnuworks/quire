@@ -72,6 +72,16 @@ export function isMember(acl: Acl, address: Hex | undefined): boolean {
   return acl.members.some((m) => m.address.toLowerCase() === a)
 }
 
+/**
+ * A current member whose entity landed at or after the block they were added: an edit from before
+ * someone joined does not become theirs, even if the owner adds them later.
+ */
+export function memberAt(acl: Acl, address: Hex | undefined, createdAt: bigint): boolean {
+  const a = address?.toLowerCase()
+  const m = acl.members.find((x) => x.address.toLowerCase() === a)
+  return !!m && /^[0-9]+$/.test(String(m.addedAtBlock)) && createdAt >= BigInt(m.addedAtBlock)
+}
+
 export function memberAddresses(acl: Acl): Hex[] {
   return acl.members.map((m) => m.address.toLowerCase() as Hex)
 }
@@ -82,7 +92,7 @@ export function memberAddresses(acl: Acl): Hex[] {
  * erase the proof of what they wrote while they belonged; anything they create later still does not count.
  */
 export function wroteAsMember(acl: Acl, address: Hex | undefined, createdAt: bigint): boolean {
-  if (isMember(acl, address)) return true
+  if (memberAt(acl, address, createdAt)) return true
   const a = address?.toLowerCase()
   return acl.revoked.some((r) => r.address.toLowerCase() === a && /^[0-9]+$/.test(String(r.atBlock)) && createdAt <= BigInt(r.atBlock))
 }

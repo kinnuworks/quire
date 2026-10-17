@@ -785,9 +785,18 @@ class ReaderTests(unittest.TestCase):
         # Under first-come binding an update created before every real owner
         # update could take the owner's id. With derived ids, block order
         # plays no part.
-        e, result = self._forged_update(OWNER_CLIENT, 1, 2, "Bea, early, as the owner.")
+        # block 4: after Bea was added (3), before any real owner update (6)
+        e, result = self._forged_update(OWNER_CLIENT, 1, 4, "Bea, early, as the owner.")
         self.assertNotIn(e.key, result.applied)
         self.assertIn("is not clientIdFor", dict(result.ignored)[e.key])
+
+    def test_edit_from_before_its_creator_was_added_is_ignored(self) -> None:
+        # Bea was added at block 3. A valid update of hers that landed at
+        # block 2 was written by a non-member, and adding her later does not
+        # make it hers.
+        e, result = self._forged_update(None, 1, 2, "Bea, before she was added.")
+        self.assertNotIn(e.key, result.applied)
+        self.assertEqual(dict(result.ignored)[e.key], "created before its creator was added")
 
     def test_update_without_a_valid_salt_is_ignored(self) -> None:
         # With schema checks off, the reader's own salt check still applies.
@@ -944,7 +953,7 @@ class ReaderTests(unittest.TestCase):
         # signature checks pass; the takeover rule does not, even with the
         # update created before the snapshot.
         salt = os.urandom(16).hex()
-        for block in (2, 13):
+        for block in (4, 13):  # 4: after Bea was added (3), before the snapshot
             with collide(VEC["members"]["bea"], salt, CAL_CLIENT):
                 e, _full = self._forged_update(None, 1, block, "Bea, under Cal's id.", salt=salt)
                 result = self._read(without_cal_update(quire_audit.load_vectors(DOCUMENT)[1]) + [e])

@@ -44,7 +44,7 @@ export function App() {
     return (
       <main className="center">
         <h1>This browser has no key for that document</h1>
-        <p>Open the full invite link again. Quire keeps document secrets in the browser that opened them and nowhere else.</p>
+        <p>That address is the document's id without its key: the app removes the key from the address bar once it has read it. Ask whoever shared it for the full invite link (it starts with #/d/), or open it in the browser where you first did. Quire keeps document secrets in the browser that opened them and nowhere else.</p>
         <a href="#/">Back to start</a>
       </main>
     )

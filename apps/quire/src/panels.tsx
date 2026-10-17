@@ -287,7 +287,7 @@ export function ChainPanel({ session }: { session: DocumentSession }) {
           </div>
         </div>
       ) : (
-        <p className="muted">Write something, then look here.</p>
+        <p className="muted">{target ? "Reading that entity from Arkiv… (if this stays, the free query budget may be used up for now)" : "Write something, then look here."}</p>
       )}
       <section>
         <h4>The query readers run</h4>

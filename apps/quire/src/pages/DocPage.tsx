@@ -167,7 +167,7 @@ export function DocPage({ link }: { link: DocLink }) {
           <input className="switch" type="checkbox" checked={blame} onChange={(e) => setBlame(e.target.checked)} />
           Who wrote what
         </label>
-        <button className="btn btn-sm btn-candy" onClick={copyInvite} title="The link carries the document key. Share it only with people who should read it.">
+        <button className="btn btn-sm btn-candy" onClick={copyInvite} title="The link carries the document key: anyone who sees it can read the document. Send it over an end-to-end encrypted channel such as Signal, not email or a work chat.">
           {copied ? "Copied" : "Copy invite link"}
         </button>
       </header>
@@ -179,7 +179,7 @@ export function DocPage({ link }: { link: DocLink }) {
           <span>
             {provider?.canRead
               ? "You are reading this document."
-              : `This document's text and member list are sealed under a key this link does not carry. You can see that it exists and has ${provider?.acl?.wraps.length ?? 0} members, and nothing else.`}
+              : `The owner has rotated this document's key since this link was made, so the link alone opens nothing new: you can see that the document exists and has ${provider?.acl?.wraps.length ?? 0} members. Ask to join, and once the owner adds you, you read everything.`}
           </span>
           {joinState === "idle" && (
             <button className="btn btn-sm btn-ink" onClick={() => join(false)}>

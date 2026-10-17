@@ -155,7 +155,7 @@ function HeroVisual() {
           <span className="live-dot" />
           <div>
             <b>Edit from Bea</b>
-            <div className="t-micro">arrived one block after she typed</div>
+            <div className="t-micro">arrived a few seconds after she typed</div>
           </div>
         </div>
       </div>
@@ -374,7 +374,7 @@ export function Home() {
               <div className="chips">
                 <span className="chip">Entity Expiration</span>
                 <span className="chip">Lifetime Extension</span>
-                <span className="chip">Shred my writing</span>
+                <span className="chip">Shred my edit history</span>
               </div>
             </div>
             <div className="stage stage--soft" aria-hidden="true">

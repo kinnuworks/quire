@@ -34,7 +34,7 @@ export type CreateSpec = {
   readonly?: boolean
   permissionlessExtension?: boolean
   /** Lets one batch reference keys it is about to mint (see predictKeys). */
-  salt?: Hex
+  salt?: bigint
 }
 
 export type BatchSpec = {
@@ -73,7 +73,7 @@ export interface ArkivStore {
   readonly address: Hex | undefined
   head(): Promise<bigint>
   batch(spec: BatchSpec): Promise<BatchResult>
-  predictKeys(count: number): Promise<{ key: Hex; salt: Hex }[]>
+  predictKeys(count: number): Promise<{ key: Hex; salt: bigint }[]>
   query(spec: QuerySpec): Promise<QueryPage>
   /** One entity by key, or null if it is gone. Uses the cheapest read the network offers. */
   get(key: Hex): Promise<StoredEntity | null>

@@ -176,7 +176,6 @@ export class MemoryChain {
   /** A store that writes as `address`. */
   store(address: Hex | undefined): ArkivStore {
     const chain = this
-    let nonce = 0
     return {
       address,
       head: async () => chain.block,
@@ -187,8 +186,7 @@ export class MemoryChain {
       predictKeys: async (count) => {
         if (!address) throw new ChainError("read-only store")
         return Array.from({ length: count }, () => {
-          const salt = `0x${bytesToHex(randomBytes(32))}` as Hex
-          nonce++
+          const salt = BigInt(`0x${bytesToHex(randomBytes(16))}`)
           return { key: keyFor(address, salt), salt }
         })
       },
@@ -203,7 +201,7 @@ function blocksOf(seconds: number): bigint {
   return BigInt(Math.ceil(seconds / BLOCK_SECONDS))
 }
 
-function keyFor(sender: Hex, salt: Hex): Hex {
+function keyFor(sender: Hex, salt: bigint): Hex {
   // deterministic and collision-free enough for a test chain
-  return `0x${(sender.slice(2, 22) + salt.slice(2, 46)).padEnd(64, "0")}` as Hex
+  return `0x${(sender.slice(2, 26).toLowerCase() + salt.toString(16).padStart(32, "0")).padEnd(64, "0").slice(0, 64)}` as Hex
 }

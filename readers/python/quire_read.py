@@ -536,42 +536,137 @@ class _Cursor:
             raise Rejected(f"unknown lib0 any type {t}")
 
 
-def _content_length(c: _Cursor, ref: int) -> int:
-    """Skip one item's content (Yjs v1 encoding) and return its length."""
+REF_NAMES = {
+    0: "gc", 1: "deleted", 2: "json", 3: "binary", 4: "string", 5: "embed",
+    6: "format", 7: "type", 8: "any", 9: "subdoc", 10: "skip",
+}
+_ID = tuple[int, int]
+
+
+@dataclass
+class Struct:
+    """One struct of a Yjs v1 update, as written.
+
+    `units` holds one entry per clock for content that has an identity to
+    compare (a UTF-16 code unit of a string, one JSON or Any element, or the
+    whole content of a length-1 item); it is None for GC, deleted content and
+    Skip. `text` is the string for string content.
+    """
+
+    client: int
+    clock: int
+    length: int
+    ref: int
+    origin: _ID | None = None
+    right_origin: _ID | None = None
+    parent: Any = None  # ("name", str) or ("id", client, clock), only when written
+    parent_sub: str | None = None
+    units: list[bytes] | None = None
+    text: str | None = None
+
+    @property
+    def end(self) -> int:
+        return self.clock + self.length
+
+    def unit_key(self, k: int) -> tuple[Any, ...]:
+        """A canonical description of the item at clock `clock + k`.
+
+        Within a struct, the item at offset k > 0 has origin (client,
+        clock + k - 1), the struct's right origin, and no written parent.
+        Those are fixed when the item is created, so the same item encodes
+        to the same key whether it arrives alone, split or merged.
+        """
+        assert self.units is not None
+        if k == 0:
+            return (self.ref, self.origin, self.right_origin, self.parent, self.parent_sub, self.units[0])
+        return (self.ref, (self.client, self.clock + k - 1), self.right_origin, None, None, self.units[k])
+
+
+def _content(c: _Cursor, ref: int) -> tuple[int, list[bytes] | None, str | None]:
+    """Read one item's content (Yjs v1): (length, units, text)."""
+    start = c.pos
     if ref == 1:  # deleted
-        return c.uint()
+        return c.uint(), None, None
     if ref == 2:  # JSON
         n = c.uint()
-        for _ in range(n):
-            c.string()
-        return n
-    if ref == 3:  # binary
-        c.take(c.uint())
-        return 1
+        return n, [c.string().encode("utf-8") for _ in range(n)], None
     if ref == 4:  # string; length counts UTF-16 code units
-        return len(c.string().encode("utf-16-le")) // 2
-    if ref == 5:  # embed
-        c.string()
-        return 1
-    if ref == 6:  # format
-        c.string()
-        c.string()
-        return 1
-    if ref == 7:  # type
-        type_ref = c.uint()
-        if type_ref in (3, 5):  # XmlElement name, XmlHook key
-            c.string()
-        return 1
+        text = c.string()
+        raw = text.encode("utf-16-le", "surrogatepass")
+        return len(raw) // 2, [raw[i : i + 2] for i in range(0, len(raw), 2)], text
     if ref == 8:  # any
         n = c.uint()
+        units = []
         for _ in range(n):
+            at = c.pos
             c.skip_any()
-        return n
-    if ref == 9:  # subdocument
+            units.append(c.data[at : c.pos])
+        return n, units, None
+    if ref == 3:  # binary
+        c.take(c.uint())
+    elif ref == 5:  # embed
+        c.string()
+    elif ref == 6:  # format
+        c.string()
+        c.string()
+    elif ref == 7:  # type
+        if c.uint() in (3, 5):  # XmlElement name, XmlHook key
+            c.string()
+    elif ref == 9:  # subdocument
         c.string()
         c.skip_any()
-        return 1
-    raise Rejected(f"unknown Yjs content ref {ref}")
+    else:
+        raise Rejected(f"unknown Yjs content ref {ref}")
+    return 1, [c.data[start : c.pos]], None
+
+
+def update_structs(update: bytes) -> list[Struct]:
+    """Every struct in a Yjs v1 update, Skip structs included.
+
+    Raises Rejected for anything that does not decode exactly, so a
+    malformed update is ignored rather than handed to Yjs.
+    """
+    c = _Cursor(update)
+    out: list[Struct] = []
+    try:
+        for _ in range(c.uint()):
+            n_structs, client, clock = c.uint(), c.uint(), c.uint()
+            for _ in range(n_structs):
+                info = c.u8()
+                ref = info & 0x1F
+                if ref == 10:  # skip
+                    length = c.uint()
+                    out.append(Struct(client, clock, length, 10))
+                    clock += length
+                    continue
+                if ref == 0:  # GC
+                    length = c.uint()
+                    out.append(Struct(client, clock, length, 0))
+                    clock += length
+                    continue
+                s = Struct(client, clock, 0, ref)
+                if info & 0x80:
+                    s.origin = (c.uint(), c.uint())
+                if info & 0x40:
+                    s.right_origin = (c.uint(), c.uint())
+                if not info & 0xC0:  # parent info is present
+                    s.parent = ("name", c.string()) if c.uint() == 1 else ("id", c.uint(), c.uint())
+                    if info & 0x20:
+                        s.parent_sub = c.string()
+                s.length, s.units, s.text = _content(c, ref)
+                if s.length == 0:
+                    raise Rejected("Yjs struct of length 0")
+                out.append(s)
+                clock += s.length
+        for _ in range(c.uint()):  # delete set
+            c.uint()
+            for _ in range(c.uint()):
+                c.uint(), c.uint()
+    except UnicodeDecodeError as exc:
+        raise Rejected("Yjs update has a string that is not UTF-8") from exc
+    if c.pos != len(update):
+        raise Rejected("trailing bytes after Yjs update")
+    return out
 
 
 def update_clients(update: bytes) -> dict[int, list[tuple[int, int]]]:
@@ -584,40 +679,96 @@ def update_clients(update: bytes) -> dict[int, list[tuple[int, int]]]:
     covers runs that start at clock 0, so an update continuing a client at
     clock 35 would show no client.
     """
-    c = _Cursor(update)
     out: dict[int, list[tuple[int, int]]] = {}
-    for _ in range(c.uint()):
-        n_structs, client, clock = c.uint(), c.uint(), c.uint()
-        for _ in range(n_structs):
-            out.setdefault(client, [])
-            info = c.u8()
-            ref = info & 0x1F
-            if ref == 10:  # skip
-                clock += c.uint()
+    for s in update_structs(update):
+        out.setdefault(s.client, [])
+        if s.ref != 10:
+            out[s.client].append((s.clock, s.end))
+    return out
+
+
+class Verified:
+    """What the verified updates wrote, per (client, clock) (section 5).
+
+    `covered` is every clock a verified update carried a struct for (Skips
+    excluded). `keys` holds the canonical unit key for clocks with content.
+    """
+
+    def __init__(self) -> None:
+        self.covered: dict[int, set[int]] = defaultdict(set)
+        self.keys: dict[tuple[int, int], tuple[Any, ...]] = {}
+
+    def add(self, structs: list[Struct]) -> None:
+        for s in structs:
+            if s.ref == 10:
                 continue
-            if ref == 0:  # GC
-                length = c.uint()
-            else:
-                if info & 0x80:  # origin
-                    c.uint(), c.uint()
-                if info & 0x40:  # right origin
-                    c.uint(), c.uint()
-                if not info & 0xC0:  # parent info is present
-                    if c.uint() == 1:
-                        c.string()
-                    else:
-                        c.uint(), c.uint()
-                    if info & 0x20:
-                        c.string()
-                length = _content_length(c, ref)
-            out[client].append((clock, clock + length))
-            clock += length
-    for _ in range(c.uint()):  # delete set
-        c.uint()
-        for _ in range(c.uint()):
-            c.uint(), c.uint()
-    if c.pos != len(update):
-        raise Rejected("trailing bytes after Yjs update")
+            self.covered[s.client].update(range(s.clock, s.end))
+            if s.units is not None:
+                for k in range(s.length):
+                    self.keys[(s.client, s.clock + k)] = s.unit_key(k)
+
+    def conflict(self, s: Struct) -> int | None:
+        """The first clock where `s` carries content that differs from a
+        verified update's item at that clock, or None. Deleted and GC
+        structs never conflict: any member may delete any text."""
+        if s.units is None:
+            return None
+        for k in range(s.length):
+            want = self.keys.get((s.client, s.clock + k))
+            if want is not None and want != s.unit_key(k):
+                return s.clock + k
+        return None
+
+    def proves(self, s: Struct) -> bool:
+        """True if every clock of `s` came, with the same item, from a
+        verified update: the whole range of a merged item must be covered."""
+        if s.units is None:
+            return all(clk in self.covered[s.client] for clk in range(s.clock, s.end))
+        return all(self.keys.get((s.client, s.clock + k)) == s.unit_key(k) for k in range(s.length))
+
+
+@dataclass
+class TextRange:
+    """A run of structs of one client in the opened document, all proven or
+    all claimed, for the trust report."""
+
+    client: int
+    start: int
+    end: int
+    proven: bool
+    kinds: list[str]
+    text: str
+    via: list[str] = field(default_factory=list)  # creators of snapshots that carried it
+
+
+def text_ranges(state: bytes, verified: Verified, carriers: list[tuple[str, list[Struct]]]) -> list[TextRange]:
+    """Split the document's structs into proven and claimed runs.
+
+    `carriers` lists (snapshot creator, structs) for each applied snapshot,
+    newest first, to name who a claimed run came through. GC structs and
+    Skips are left out; deleted content is listed, so a deletion is visible.
+    """
+    out: list[TextRange] = []
+    for s in sorted(update_structs(state), key=lambda s: (s.client, s.clock)):
+        if s.ref in (0, 10):
+            continue
+        proven = verified.proves(s)
+        kind = REF_NAMES.get(s.ref, str(s.ref))
+        last = out[-1] if out else None
+        if last and last.client == s.client and last.end == s.clock and last.proven == proven:
+            last.end = s.end
+            if kind not in last.kinds:
+                last.kinds.append(kind)
+            last.text += s.text or ""
+        else:
+            last = TextRange(s.client, s.clock, s.end, proven, [kind], s.text or "")
+            out.append(last)
+        if not proven:
+            for creator, structs in carriers:
+                if creator not in last.via and any(
+                    t.client == s.client and t.clock < s.end and s.clock < t.end and t.ref != 10 for t in structs
+                ):
+                    last.via.append(creator)
     return out
 
 

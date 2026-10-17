@@ -335,7 +335,8 @@ export class ArkivProvider extends Observable<string> {
   }
 
   private async loadState(): Promise<void> {
-    if (!this.acl) return
+    // without the roster we do not know whose entities to trust, and could not decrypt them anyway
+    if (!this.acl || this.acl.rosterHidden) return
     const writers = memberAddresses(this.acl)
     this.stats.queries++
     const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers })
@@ -824,7 +825,7 @@ export class ArkivProvider extends Observable<string> {
    * or a late joiner would never see an edit this session missed live.
    */
   async resync(): Promise<number> {
-    if (!this.acl) return 0
+    if (!this.acl || this.acl.rosterHidden) return 0
     const base = this.snapshot?.base ?? 0n
     const from = base > CATCH_UP_MARGIN_BLOCKS ? base - CATCH_UP_MARGIN_BLOCKS : 0n
     this.stats.queries++

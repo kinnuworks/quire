@@ -1,0 +1,28 @@
+{
+  "createdAt": "2026-10-17T18:40:29.829Z",
+  "funder": "0x7ad475ff24a9d6d06b69f460005300fa914d8e11",
+  "open": {
+    "link": "#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283",
+    "doc": "0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578",
+    "owner": "0xa3ed39176d6e55cd4b58134c7894b42615e16283",
+    "members": {
+      "Asha": "0xa3ed39176d6e55cd4b58134c7894b42615e16283",
+      "Bea": "0xe03ca1f7480b05da8928270fc5a79413025ef6be",
+      "Ravi": "0xba964589a3bd9363c102dc9eabdd8863a90f109d"
+    },
+    "revoked": []
+  },
+  "revoked": {
+    "link": "#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada",
+    "doc": "0x60567bef1262ba3a45e570aa02ac713c1f4f2a78b6c4de80ba5542bb3771975d",
+    "owner": "0x0ea55b2eeecddc4e701417001460b596c12a2ada",
+    "members": {
+      "Asha": "0x0ea55b2eeecddc4e701417001460b596c12a2ada",
+      "Bea": "0xbc9375026f9818a3ad5216509a8cd111527cee1a",
+      "Ravi": "0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375"
+    },
+    "revoked": [
+      "0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375"
+    ]
+  }
+}

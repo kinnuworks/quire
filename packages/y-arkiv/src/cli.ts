@@ -12,6 +12,7 @@
  *                                  check a "Prove this key is yours" signature from the app
  *
  *   --rpc <url> --ws <url>         use your own Arkiv node instead of the public endpoint
+ *   ARKIV_ACCESS_KEY=…             raise the public endpoint's query budget
  */
 import { verifyMessage } from "viem"
 import * as Y from "yjs"
@@ -47,6 +48,8 @@ async function main() {
   }
   const httpUrl = flag("--rpc")
   const wsUrl = flag("--ws")
+  // half a custom node would still send document ids to the public WebSocket endpoint
+  if (!!httpUrl !== !!wsUrl) fail("pass --rpc and --ws together, so every request goes to the node you chose")
   const [cmd, raw] = args
   if (!cmd || !raw) fail("usage: quire <read|watch|verify|blame|extend|check-signature> '<link>' [--rpc url --ws url]")
   if (cmd === "check-signature") {
@@ -63,13 +66,13 @@ async function main() {
     if (!version) fail("that is not a Quire version link")
     const key = process.env.QUIRE_KEY as `0x${string}` | undefined
     if (!key) fail("set QUIRE_KEY to a funded Tiramisu key; any key works, versions allow anyone to extend them")
-    const until = await extendVersion(new SdkStore({ privateKey: key, httpUrl, wsUrl }), version, 3 * 365 * 86400)
+    const until = await extendVersion(new SdkStore({ privateKey: key, httpUrl, wsUrl, accessKey: process.env.ARKIV_ACCESS_KEY }), version, 3 * 365 * 86400)
     console.log(`version ${version.key} now lives until block ${until}`)
     process.exit(0)
   }
   const link = parseDocLink(fragment)
   if (!link) fail("that is not a Quire document link")
-  const store = new SdkStore({ httpUrl, wsUrl })
+  const store = new SdkStore({ httpUrl, wsUrl, accessKey: process.env.ARKIV_ACCESS_KEY })
   const doc = new Y.Doc()
   // blame reads every update still on chain, not only those after the newest snapshot
   const provider = new ArkivProvider(doc, { store, link, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" })

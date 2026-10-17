@@ -69,7 +69,8 @@ export default async function handler(req: Req, res: Res) {
 
   const ip = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]!.trim() || "unknown"
   const now = Date.now()
-  for (const [k, t] of recent) if (now - t > 60_000) recent.delete(k)
+  // IPs are held for a minute; addresses for five, longer than a proof of work stays fresh, so one proof cannot be replayed
+  for (const [k, t] of recent) if (now - t > (k.startsWith("0x") ? 300_000 : 60_000)) recent.delete(k)
   if ((recent.get(ip) ?? 0) > now - 10_000 || recent.has(address.toLowerCase())) {
     return res.status(429).json({ error: "One request every 10 seconds, please." })
   }
@@ -77,22 +78,32 @@ export default async function handler(req: Req, res: Res) {
   if (sent.length >= GLOBAL_CAP) {
     return res.status(429).json({ error: "The drip is busy. Try again in a few minutes, or fund this key from your own wallet or the faucet at https://hub.arkiv.network/faucet." })
   }
+  // reserve the slot before any await, so parallel requests cannot all pass the checks above
+  recent.set(ip, now)
+  recent.set(address.toLowerCase(), now)
+  sent.push(now)
+  const release = () => {
+    const i = sent.indexOf(now)
+    if (i >= 0) sent.splice(i, 1)
+  }
 
   try {
     const reader = createPublicClient({ chain: tiramisu, transport: http(RPC) })
-    if ((await reader.getBalance({ address })) >= ONLY_BELOW) return res.status(200).json({ skipped: "already funded" })
+    if ((await reader.getBalance({ address })) >= ONLY_BELOW) {
+      release()
+      return res.status(200).json({ skipped: "already funded" })
+    }
     const account = privateKeyToAccount(key)
     const left = await reader.getBalance({ address: account.address })
     if (left < AMOUNT * 2n) {
+      release()
       return res.status(503).json({ error: `The drip is out of test GLM (${formatEther(left)} left). Fund this key from your own wallet or the faucet at https://hub.arkiv.network/faucet.`, sponsor: account.address })
     }
     const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), account })
     const hash = await wallet.sendTransaction({ to: address as `0x${string}`, value: AMOUNT })
-    recent.set(ip, now)
-    recent.set(address.toLowerCase(), now)
-    sent.push(now)
     return res.status(200).json({ hash })
   } catch (e) {
+    release()
     return res.status(502).json({ error: `The testnet did not accept the transfer: ${(e as Error).message.split("\n")[0]}` })
   }
 }

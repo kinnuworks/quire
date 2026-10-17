@@ -145,7 +145,7 @@ describe("frame binding", () => {
     const a = await peer(chain, link, owner)
     const open = (e: StoredEntity, kind: string, hint?: number) => (a.provider as unknown as { openEntity: (e: StoredEntity, k: string, h?: number) => Promise<unknown> }).openEntity(e, kind, hint)
     const entity = (payload: Uint8Array, kind: string): StoredEntity => ({ key: `0x${"11".repeat(32)}`, creator: owner.address, owner: owner.address, createdAt: 1n, expiresAt: 999n, attributes: { doc: link.doc, kind: kind as never, seq: 1n }, payload, readonly: false, permissionlessExtension: false })
-    const good = await framePayload(link, KIND.update, { t: 0 }, new Uint8Array([1]))
+    const good = await framePayload(link, KIND.update, { t: 0, salt: "00".repeat(16), sig: `0x${"11".repeat(65)}` }, new Uint8Array([1]))
     expect(await open(entity(good, KIND.update), KIND.update)).not.toBeNull()
     // kind: an update frame relabelled as a snapshot
     expect(await open(entity(good, KIND.snapshot), KIND.snapshot)).toBeNull()
@@ -156,7 +156,7 @@ describe("frame binding", () => {
     const skew = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 3, header: {}, data: new Uint8Array([1]) }, randomBytes)))
     expect(await open(entity(skew, KIND.update), KIND.update)).toBeNull()
     // epoch hint: a chunk read for an epoch-5 head must be in epoch 5
-    const chunk = await framePayload(link, KIND.chunk, { i: 1, of: "x" }, new Uint8Array([1]))
+    const chunk = await framePayload(link, KIND.chunk, { i: 1, of: "00".repeat(16) }, new Uint8Array([1]))
     expect(await open(entity(chunk, KIND.chunk), KIND.chunk, 5)).toBeNull()
   })
 })

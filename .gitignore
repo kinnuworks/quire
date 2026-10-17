@@ -11,3 +11,6 @@ PLAN.md
 .claude
 .env*
 SUBMISSION.md
+
+# scratch scripts (repros, one-off checks)
+packages/y-arkiv/scripts/_*

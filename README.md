@@ -73,9 +73,9 @@ pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '<document link>'
 python3 readers/python/quire_audit.py --doc <0x document id>
 ```
 
-The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 93 tests of its own, covering forged writes, forged snapshots and swapped authorship. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library.
+The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 94 tests of its own, covering forged writes, forged snapshots, swapped authorship and malformed headers. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library.
 
-The TypeScript suite has 85 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 29 security rules in turn and shows that a test fails every time.
+The TypeScript suite has 88 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 32 security rules in turn and shows that a test fails every time.
 
 ## How it uses Arkiv
 
@@ -98,6 +98,7 @@ The TypeScript suite has 85 tests (plus 2 that run only against Tiramisu), inclu
 - creator and owner address
 - creation and expiry block
 - the four attributes and the flags
+- the epoch number at the front of each payload, so anyone can count how many times a document's key was rotated, and when
 - a payload in one of six fixed sizes (join requests, sealed to the owner's key, are 65 bytes longer)
 
 **What it does not show:** text, titles, member names, the member list (after the first revocation, link holders see only a member count), or who an address belongs to. Each member gets a fresh key per document, so their addresses in two documents are unrelated on chain.
@@ -151,6 +152,8 @@ pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '#/d/YPp1ObuyhC5aL5SstUY3bL
 pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
 python3 readers/python/quire_audit.py --doc 0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578 --owner 0xa3ed39176d6e55cd4b58134c7894b42615e16283
 ```
+
+The public endpoint gives each IP address about 100 free queries per window; if a run stops with a budget message, wait the minutes it names or set `ARKIV_ACCESS_KEY`. `quire_read.py --link '<link>' --verify` prints the Python reader's own trust report, including the same outside write.
 
 Expected: `verify` reports the owner found by `$creator`, epoch 0, three members, 1 snapshot and 4 updates applied, 0 ignored, and 3 queries, then one more query listing the planted forgery: one entity by `0x42885193a50ab941ea8ea6fd180397c46a59041d`, never fetched or applied. `read` prints the four lines of the Ward 14 log. `blame` attributes all four paragraphs, every character proven, to Asha, Bea and Ravi, each with the block and entity of the edit. The audit ends with `RESULT: PASS`. For the revocation demo, `verify` reports epoch 1 with the roster sealed ("this link sees only a count (2)"), and `read` prints nothing.
 

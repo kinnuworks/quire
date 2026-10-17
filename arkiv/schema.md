@@ -41,14 +41,15 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 ## Queries the app runs
 
-Opening a document costs three queries. Live edits after that cost none: they arrive as WebSocket events and are fetched by key with `arkiv_getEntity`, which the public RPC does not bill against the query budget. Background work does cost a little: one query for each compaction (at most every two minutes after typing stops) and one for a resync every 15 minutes.
+Opening a document costs three queries. Live edits after that cost none: they arrive as WebSocket events and are fetched by key with `arkiv_getEntity`, which the public RPC does not bill against the query budget. Background work does cost a little: one query for each compaction (at most every two minutes after typing stops) and one for a resync every 15 minutes, two for the owner, who also re-reads join requests. A long-open writer's tab checks the lease on each resync too, so it renews without a reload.
 
 | # | When | Query | Code |
 |---|---|---|---|
 | 1 | open | `qp = str('quire1') AND qd = bytes32(<doc>) AND qk = str('a') AND $creator = addr(<owner>)` | [`provider.ts` loadAcl](../packages/y-arkiv/src/provider.ts) |
 | 2 | open | `… AND qk = str('s') AND ($creator = addr(<m1>) OR …)`, all pages, ordered by `qs` on the client | `provider.ts` loadState |
 | 3 | open, before compacting | `… AND qk = str('u') AND qs >= u64(<base − 60>) AND ($creator = addr(<m1>) OR …)`, cursor pages pinned with `atBlock` | `provider.ts` loadState, resync |
-| 4 | owner opens, and on resync | `… AND qk = str('j')`, all pages | `provider.ts` loadJoinRequests |
+| 4 | owner opens, and on resync | `… AND qk = str('j')`, the first page of 200 only, so junk requests cannot drain the owner's budget | `provider.ts` loadJoinRequests |
+| 4b | owner looks up one person | `… AND qk = str('j') AND $creator = addr(<address>)` | `provider.ts` findJoinRequest |
 | 5 | shred, delete | `… AND $creator = addr(<me>)` | `provider.ts` shredMine, deleteDocument |
 | 6 | history check | queries 1 to 3 with `atBlock = <past block>` | `provider.ts` loadAt |
 | 7 | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |

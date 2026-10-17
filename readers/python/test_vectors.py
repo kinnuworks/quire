@@ -95,7 +95,8 @@ def owner_late_update(entities):
 
 
 def bea_update(entities):
-    return next(e for e in entities if e.kind == "u" and e.creator == VEC["members"]["bea"])
+    """Bea's genuine epoch 0 update (her other one, in epoch 1, has a malformed header)."""
+    return min((e for e in entities if e.kind == "u" and e.creator == VEC["members"]["bea"]), key=lambda e: e.created_at)
 
 
 def run_cli(main, *args: str) -> tuple[int, str]:
@@ -1060,7 +1061,9 @@ class ReaderTests(unittest.TestCase):
         for cid in cids[:3]:
             self.assertNotIn(cid, result.authors)
         self.assertEqual((result.authors[cids[3]].address, result.authors[cids[3]].via), (bea, owner))
-        # A missing sig, with schema checks off, drops the entry.
+        # A missing sig breaks the header schema, so the whole snapshot is
+        # ignored, with schema checks off too: the verdict never depends on
+        # whether jsonschema is installed.
         salt = os.urandom(16).hex()
         cid = quire_read.client_id_for(bea, salt)
         reader, base = self._member_result()
@@ -1076,8 +1079,8 @@ class ReaderTests(unittest.TestCase):
             quire_read.parse_link(data_["link"]), quire_read.VectorSource(loaded + [snap]),
             quire_read.load_private_key(BEA_KEY), schemas=quire_read.Schemas(enabled=False),
         ).read()
-        self.assertEqual(out.newest_snapshot, snap.key)
-        self.assertIn(f"snapshot {snap.key}: client id {cid}: entry is not {{address, salt, sig}}", out.dropped_authors)
+        self.assertNotIn(snap.key, out.applied)
+        self.assertIn("does not have exactly address, salt and sig", dict(out.ignored)[snap.key])
         self.assertNotIn(cid, out.authors)
         # With schema checks on, the same header fails the schema and the
         # whole snapshot is ignored.
@@ -1229,6 +1232,14 @@ class ReaderTests(unittest.TestCase):
             XmlElement("paragraph", None, [XmlText("FORGED: the owner never wrote this.")]))
         forged = self._snapshot(d.get_update(), creator=VEC["members"]["bea"], block=13, key=fake_key(0xF0F))
         return forged, start, entities
+
+    def test_the_vectors_malformed_header_is_ignored(self) -> None:
+        # The vectors carry one epoch 1 update by Bea whose header has t as a
+        # string. It decrypts and Bea is a member, but section 5 says ignore it.
+        result = self._member_result()[1]
+        reasons = [r for _k, r in result.ignored if "t is not an integer" in r or "'0' is not of type 'integer'" in r]
+        self.assertEqual(len(reasons), 1, result.ignored)
+        self.assertNotIn("MALFORMED", result.text)
 
     def test_an_empty_newer_snapshot_cannot_erase_the_document(self) -> None:
         # Section 5 step 3: each member's newest snapshot is applied, so Bea's

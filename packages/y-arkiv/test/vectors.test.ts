@@ -67,6 +67,8 @@ describe("conformance vectors", () => {
   it("the rejected creators' entities are never applied", async () => {
     const { doc } = await read(VEC.privateKeys.bea)
     expect(text(doc)).not.toMatch(/mallory/i)
+    // and Bea's update with a malformed header, though she is a member and it decrypts
+    expect(text(doc)).not.toContain("MALFORMED")
     const forged = entities.filter((e) => VEC.expected.rejectedCreators.includes(e.creator))
     expect(forged.length).toBeGreaterThan(0)
   })

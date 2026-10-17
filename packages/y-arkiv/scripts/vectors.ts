@@ -124,6 +124,25 @@ await settle(a.p, b.p, c.p)
   })
   chain.mine()
 }
+// a malformed header: Bea, a member, writes a valid epoch 1 edit whose header has t as a string.
+// Readers MUST ignore it (section 5), whatever their schema tooling.
+{
+  const { clientIdFor, randomBytes, seal } = await import("../src/crypto.js")
+  const { encodeFrame, encodeOuter } = await import("../src/codec.js")
+  const salt = randomBytesFixed(16, 0x6d)
+  const d = new Y.Doc()
+  d.clientID = clientIdFor(bea.address, salt)
+  Y.applyUpdate(d, Y.encodeStateAsUpdate(b.doc))
+  const sv = Y.encodeStateVector(d)
+  para(d, "MALFORMED HEADER, NEVER APPLIED")
+  const sig = await privateKeyToAccount(BEA_KEY).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(DOC), ...salt]) } })
+  const epochKey = (b.p as unknown as { epochKeys: Map<number, Uint8Array> }).epochKeys.get(1)!
+  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 1, header: { t: "0", salt: bytesToHex(salt), sig }, data: Y.encodeStateAsUpdate(d, sv) }, randomBytes)
+  await chain.store(bea.address).batch({
+    creates: [{ payload: encodeOuter(1, await seal(epochKey, frame)), attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],
+  })
+  chain.mine()
+}
 
 const all = []
 for (const kind of Object.values(KIND)) {
@@ -157,7 +176,7 @@ writeFileSync(
   JSON.stringify(
     {
       description:
-        "A Quire document: owner adds Bea and Cal, everyone writes, the owner compacts, removes Cal (epoch 1) and writes again; Mallory, who holds the link but is not a member, writes a valid encrypted epoch 0 update with new text. Keys are synthetic test values. Entities use the arkiv_query JSON shape: attributes as [{name, type, value}], u64 as 0x hex.",
+        "A Quire document: owner adds Bea and Cal, everyone writes, the owner compacts, removes Cal (epoch 1) and writes again; Mallory, who holds the link but is not a member, writes a valid encrypted epoch 0 update with new text; Bea writes one epoch 1 update whose header has t as a string, which readers must ignore. Keys are synthetic test values. Entities use the arkiv_query JSON shape: attributes as [{name, type, value}], u64 as 0x hex.",
       link: formatDocLink(link),
       linkSecret: bytesToHex(SECRET),
       doc: DOC,

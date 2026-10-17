@@ -30,6 +30,7 @@ describe("JSON Schema matches the reference implementation", () => {
     // the ACL first, so later epochs can be unwrapped with Bea's synthetic key
     const ordered = [...vec.entities].sort((a, b) => (kind(a) === "a" ? -1 : kind(b) === "a" ? 1 : 0))
     let checked = 0
+    let malformed = 0
     for (const e of ordered) {
       const k = kind(e)
       const { epoch, envelope } = decodeOuter(hexToBytes(e.payload))
@@ -41,7 +42,10 @@ describe("JSON Schema matches the reference implementation", () => {
         plain = await open(key, envelope)
       }
       const frame = decodeFrame(plain)
-      expect(byKind[k]!(frame.header), `${k}: ${JSON.stringify(byKind[k]!.errors)}`).toBe(true)
+      const valid = byKind[k]!(frame.header)
+      // the vectors carry exactly one malformed header on purpose: Bea's update with t as a string
+      if (!valid && k === "u" && typeof frame.header.t === "string") malformed++
+      else expect(valid, `${k}: ${JSON.stringify(byKind[k]!.errors)}`).toBe(true)
       checked++
       if (k === "a" && frame.header.epoch) {
         const epoch = frame.header.epoch as number
@@ -63,5 +67,6 @@ describe("JSON Schema matches the reference implementation", () => {
       }
     }
     expect(checked).toBe(vec.entities.length)
+    expect(malformed).toBe(1)
   })
 })

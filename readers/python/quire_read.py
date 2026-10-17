@@ -791,6 +791,12 @@ class Source:
     def entity(self, key: str) -> Entity | None:
         raise NotImplementedError
 
+    def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
+        """Every entity for `doc` whose creator is not a member, join
+        requests aside (strangers send those by design). The member-filtered
+        reads never fetch these; listing them shows what was kept out."""
+        raise NotImplementedError
+
 
 class VectorSource(Source):
     """Applies the section 5 query filters to a vectors file in memory."""
@@ -822,6 +828,13 @@ class VectorSource(Source):
 
     def entity(self, key: str) -> Entity | None:
         return next((e for e in self.entities if e.key == key.lower()), None)
+
+    def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
+        return [
+            e for e in self.entities
+            if e.attr("qp") == "quire1" and str(e.attr("qd")).lower() == doc.lower()
+            and e.kind != "j" and e.creator not in members
+        ]
 
 
 class RpcSource(Source):
@@ -855,6 +868,11 @@ class RpcSource(Source):
     def entity(self, key: str) -> Entity | None:
         raw = qa.get_entity(self.url, key)
         return qa.parse_entity(raw) if raw else None
+
+    def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
+        # one query with no kind or creator filter
+        everything = self._run(f"qp = str('quire1') AND qd = bytes32({doc.lower()})")
+        return [e for e in everything if e.kind != "j" and e.creator not in members]
 
 
 # ---------------------------------------------------------------- reader
@@ -939,33 +957,74 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_safe_int(value: Any) -> bool:
+    """An integer a JavaScript reader holds exactly (|n| < 2^53), so both readers agree."""
+    return _is_int(value) and abs(value) <= 2**53 - 1
+
+
 SNAPSHOT_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
+HEADER_FIELDS = {
+    "u": ("t", "salt", "sig"),
+    "s": ("id", "base", "t", "chunks", "size", "authors"),
+    "v": ("id", "base", "t", "chunks", "size", "authors"),
+    "c": ("i", "of"),
+}
+SALT_HEX = re.compile(r"^[0-9a-f]{32}$")
+SIG_HEX = re.compile(r"^0x[0-9a-fA-F]{130}$")
+ADDRESS_LOWER = re.compile(r"^0x[0-9a-f]{40}$")
+
+
 def header_problem(kind: str, h: dict[str, Any]) -> str | None:
-    """Bad header types (section 5: such an entity MUST be ignored), checked
-    whether or not jsonschema is installed. Salt and sig are checked by
-    their own rules, which give clearer reasons."""
+    """Section 5: an entity with a malformed header MUST be ignored. These
+    are the spec/schema rules (field set, types, patterns), checked whether
+    or not jsonschema is installed, so the verdict never depends on it. An
+    update's salt and sig are checked by their own rules, which give
+    clearer reasons, so only their presence is checked here."""
+    if not isinstance(h, dict):
+        return "header is not an object"
+    allowed = HEADER_FIELDS.get(kind)
+    if allowed is not None:
+        # an update's salt and sig get their own, clearer reasons below and in _check_update
+        for k in (("t",) if kind == "u" else allowed):
+            if k not in h:
+                return f"{kind} header is missing {k}"
+        extra = sorted(set(h) - set(allowed))
+        if extra:
+            return f"{kind} header has unexpected field {extra[0]}"
     if kind == "u":
-        if not _is_int(h.get("t")):
+        if not _is_safe_int(h.get("t")):
             return "update header t is not an integer"
     elif kind in ("s", "v"):
         if not isinstance(h.get("id"), str) or not SNAPSHOT_ID.match(h["id"]):
             return "snapshot header id is not 32 lowercase hex characters"
-        if not isinstance(h.get("base"), str) or not h["base"].isdigit():
+        if not isinstance(h.get("base"), str) or not re.fullmatch(r"[0-9]+", h["base"]):
             return "snapshot header base is not a decimal string"
-        if not _is_int(h.get("t")):
+        if not _is_safe_int(h.get("t")):
             return "snapshot header t is not an integer"
         chunks = h.get("chunks")
         if not isinstance(chunks, list) or not all(isinstance(k, str) and qa.HEX32.match(k) for k in chunks):
             return "snapshot header chunks is not a list of entity keys"
-        if not _is_int(h.get("size")) or h["size"] < 0:
+        if not _is_safe_int(h.get("size")) or h["size"] < 0:
             return "snapshot header size is not a non-negative integer"
-        if not isinstance(h.get("authors"), dict):
+        authors = h.get("authors")
+        if not isinstance(authors, dict):
             return "snapshot header authors is not an object"
+        for cid, entry in authors.items():
+            if not re.fullmatch(r"[0-9]+", cid):
+                return f"snapshot header authors key {cid!r} is not a decimal client id"
+            if not isinstance(entry, dict) or set(entry) != {"address", "salt", "sig"}:
+                return f"snapshot header authors entry {cid} does not have exactly address, salt and sig"
+            if not (isinstance(entry["address"], str) and ADDRESS_LOWER.match(entry["address"])
+                    and isinstance(entry["salt"], str) and SALT_HEX.match(entry["salt"])
+                    and isinstance(entry["sig"], str) and SIG_HEX.match(entry["sig"])):
+                return f"snapshot header authors entry {cid} has a malformed field"
     elif kind == "c":
-        if not _is_int(h.get("i")) or not isinstance(h.get("of"), str):
-            return "chunk header i or of has the wrong type"
+        if not _is_safe_int(h.get("i")) or h["i"] < 1:
+            return "chunk header i is not a positive integer"
+        if not isinstance(h.get("of"), str) or not SNAPSHOT_ID.match(h["of"]):
+            return "chunk header of is not 32 lowercase hex characters"
     return None
 
 
@@ -993,8 +1052,11 @@ class Reader:
         log: Callable[[str], None] = lambda _m: None,
         schemas: Schemas | None = None,
         own_salt: str | None = None,
+        scan_outsiders: bool = True,
     ) -> None:
         self.link = link
+        # one more query on a live node; the trust report wants it, plain reading does not
+        self.scan_outsiders = scan_outsiders
         self.source = source
         self.member_key = member_key
         self.log = log
@@ -1372,9 +1434,10 @@ class Reader:
             refused.update(more)
 
         # Report entities the member filter excluded (e.g. forged writes).
-        if isinstance(self.source, VectorSource):
-            for e in self.source.entities:
-                if e.kind in ("u", "s") and e.creator not in members:
+        if self.scan_outsiders:
+            seen = {k for k, _r in self.ignored}
+            for e in self.source.outsiders(self.link.doc, members):
+                if e.key not in seen and not (e.kind == "a" and e.creator == self.link.owner):
                     self._ignore(e, "creator not in ACL")
 
         # Section 5: verified updates first, then snapshots (newest first),
@@ -1711,7 +1774,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0
         link = parse_link(args.link or data.get("link") or "")
         key = load_private_key(args.member_key) if args.member_key else None
-        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt)
+        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt, scan_outsiders=args.verify or isinstance(source, VectorSource))
         result = reader.read()
         if args.verify:
             print(trust_report(reader, result))

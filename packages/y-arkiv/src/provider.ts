@@ -27,6 +27,7 @@ import {
   unwrapAsMember,
   wrapForMember,
 } from "./crypto.js"
+import { headerProblem, MalformedHeader } from "./headers.js"
 import { bytesToHex, fromBase64Url, hexToBytes, toBase64Url } from "./hex.js"
 import type { DocLink, VersionLink } from "./link.js"
 import {
@@ -84,7 +85,7 @@ export type ProviderStats = {
 }
 
 /** A snapshot that decoded and passed its own checks, waiting on the verified-clock check before it counts. */
-type PendingSnapshot = { state: Uint8Array; commit: (trimHistory: boolean) => void }
+type PendingSnapshot = { state: Uint8Array; commit: (trimHistory: boolean) => void; registerClaims: () => void }
 
 export type ProviderOptions = {
   store: ArkivStore
@@ -157,6 +158,8 @@ export class ArkivProvider extends Observable<string> {
   private readonly sigs = new Map<number, Hex>()
   /** For text attributed only through a snapshot: who wrote that snapshot. */
   private readonly claimedVia = new Map<number, Hex>()
+  /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
+  private readonly refusedSnapshots = new Set<Hex>()
   /** Our signature over (document, salt): proof that this client id is ours, for later snapshots to carry. */
   private saltSig: Hex | null = null
   /** Every edit applied since the newest snapshot, oldest first, for time travel. */
@@ -313,7 +316,14 @@ export class ArkivProvider extends Observable<string> {
     // housekeeping never fails the connection: a lost race with another member is fine
     this.renewLeaseIfDue().catch((e) => this.emit("error", [e]))
     if (this.resyncInterval > 0) {
-      this.resyncTimer = setInterval(() => void this.resync({ joins: true }).catch((e) => this.emit("error", [e])), this.resyncInterval)
+      // a tab left open for days must renew the lease too, not only a fresh load
+      this.resyncTimer = setInterval(
+        () =>
+          void this.resync({ joins: true })
+            .then(() => this.renewLeaseIfDue())
+            .catch((e) => this.emit("error", [e])),
+        this.resyncInterval,
+      )
     }
   }
 
@@ -383,11 +393,20 @@ export class ArkivProvider extends Observable<string> {
       const creator = s.creator.toLowerCase()
       if (covered.has(creator)) continue
       const applied = await this.applySnapshotEntity(s, states)
-      if (applied === null) continue
+      if (applied === null) {
+        // refused, as opposed to not assemblable: that member contributes no snapshot (no fallback)
+        if (this.refusedSnapshots.has(s.key)) covered.add(creator)
+        continue
+      }
       covered.add(creator)
       if (oldestBase === null || applied < oldestBase) oldestBase = applied
     }
     const from = !this.fullHistory && oldestBase !== null && oldestBase > CATCH_UP_MARGIN_BLOCKS ? oldestBase - CATCH_UP_MARGIN_BLOCKS : 0n
+    // Section 5: an update under a client id that a valid snapshot authors entry gives to another
+    // address is ignored, so the candidates' claims go in before any update. Claims from a snapshot
+    // the verified-clock check then refuses are taken back below.
+    const before = { authors: new Map(this.claimedAuthors), via: new Map(this.claimedVia) }
+    for (const st of states) st.registerClaims()
     this.stats.queries++
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: writers, seqGte: from })
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
@@ -396,6 +415,12 @@ export class ArkivProvider extends Observable<string> {
     const historyBefore = this.history.length
     for (const u of byAge) await this.applyUpdateEntity(u, false)
     const verified = this.history.slice(historyBefore).map((h) => h.update)
+    // back to the claims from before this load; each snapshot that passes registers its own on commit.
+    // (Salts and signatures a refused snapshot carried stay: they are valid signatures, and verified
+    // updates set theirs in the same maps during the loop.)
+    const restore = <K, V>(target: Map<K, V>, from: Map<K, V>) => (target.clear(), from.forEach((v, k) => target.set(k, v)))
+    restore(this.claimedAuthors, before.authors)
+    restore(this.claimedVia, before.via)
     for (const st of states) {
       // A verified update can be pending, waiting on text only a snapshot holds. When the snapshot fills the
       // gap, Yjs keeps the snapshot's struct at that clock. So try each snapshot on a scratch copy first, and
@@ -502,9 +527,8 @@ export class ArkivProvider extends Observable<string> {
   private readonly proven = new Map<number, [number, number][]>()
   private readonly provenAt = new Map<number, { from: number; to: number; block: bigint; entity: Hex }[]>()
 
-  private markProven(meta: { from: Map<number, number>; to: Map<number, number> }, block: bigint, entity: Hex): void {
-    for (const [client, from] of meta.from) {
-      const to = meta.to.get(client) ?? from
+  private markProven(ranges: [client: number, from: number, to: number][], block: bigint, entity: Hex): void {
+    for (const [client, from, to] of ranges) {
       const list = this.proven.get(client) ?? []
       list.push([from, to])
       this.proven.set(client, list)
@@ -626,7 +650,6 @@ export class ArkivProvider extends Observable<string> {
     if (entity.attributes.seq > entity.createdAt) return this.reject()
     // the edit's client id must derive from its creator's address with a salt the creator signed
     if (!(await this.checkAuthors(frame.data, entity.creator, frame.header.salt, frame.header.sig))) return this.reject()
-    const meta = Y.parseUpdateMeta(frame.data)
     const svBefore = Y.decodeStateVector(Y.encodeStateVector(this.doc))
     this.applyRemote(frame.data)
     if (overridesVerified(this.doc, [frame.data])) {
@@ -634,10 +657,16 @@ export class ArkivProvider extends Observable<string> {
       // the chain's genuine edits. Nothing here is proven; a fresh load (updates before snapshots) heals it.
       this.emit("diverged", [entity.key])
     } else {
-      // proven: only clocks this update actually integrated, not ones a snapshot had already filled
-      const fresh = { from: new Map<number, number>(), to: meta.to }
-      for (const [c, from] of meta.from) fresh.from.set(c, Math.max(from, svBefore.get(c) ?? 0))
-      this.markProven(fresh, entity.createdAt, entity.key)
+      // proven: only clocks this update carries as items, struct by struct. parseUpdateMeta's from..to
+      // would also span Skip gaps, letting a crafted update vouch for text only a snapshot holds.
+      // And only clocks it integrated itself, not ones a snapshot had already filled.
+      const ranges: [number, number, number][] = []
+      for (const st of Y.decodeUpdate(frame.data).structs) {
+        if (!(st instanceof Y.Item)) continue
+        const from = Math.max(st.id.clock, svBefore.get(st.id.client) ?? 0)
+        if (from < st.id.clock + st.length) ranges.push([st.id.client, from, st.id.clock + st.length])
+      }
+      this.markProven(ranges, entity.createdAt, entity.key)
     }
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.stats.updatesApplied++
@@ -680,7 +709,7 @@ export class ArkivProvider extends Observable<string> {
       this.deferred.set(entity.key, entity)
       return null
     }
-    const base = BigInt(String(frame.header.base ?? "x").replace(/[^0-9]/g, "") || "-1")
+    const base = BigInt(frame.header.base as string) // a decimal string: openEntity checked the header
     if (base < 0n || base > entity.createdAt || entity.attributes.seq > entity.createdAt) {
       // a snapshot cannot cover blocks after the one it landed in
       this.seen.add(entity.key)
@@ -712,6 +741,7 @@ export class ArkivProvider extends Observable<string> {
     const ours = Y.parseUpdateMeta(state).to.get(this.doc.clientID)
     if (this.identity && ours !== undefined && ours > (Y.decodeStateVector(Y.encodeStateVector(this.doc)).get(this.doc.clientID) ?? 0)) {
       this.reject()
+      this.refusedSnapshots.add(entity.key)
       return null
     }
     const claims: { client: number; address: Hex; salt: string; sig: Hex }[] = []
@@ -734,7 +764,11 @@ export class ArkivProvider extends Observable<string> {
     // nothing about this snapshot is kept yet: the caller first checks it against the verified edits
     // (see overridesVerified) and commits it only if it passes, so a refused snapshot never becomes
     // the lease, the history base or a source of claimed authors
-    collect.push({ state, commit: (trimHistory) => this.commitSnapshot(entity, base, chunks, state, claims, trimHistory) })
+    collect.push({
+      state,
+      commit: (trimHistory) => this.commitSnapshot(entity, base, chunks, state, claims, trimHistory),
+      registerClaims: () => this.registerClaims(entity, claims),
+    })
     return base
   }
 
@@ -744,12 +778,7 @@ export class ArkivProvider extends Observable<string> {
    * catch-up window, so they all stay listed.
    */
   private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[], trimHistory: boolean): void {
-    for (const c of claims) {
-      this.claimedAuthors.set(c.client, c.address)
-      this.claimedVia.set(c.client, entity.creator.toLowerCase() as Hex)
-      this.salts.set(c.client, c.salt)
-      this.sigs.set(c.client, c.sig)
-    }
+    this.registerClaims(entity, claims)
     this.stats.snapshotsApplied++
     if (!this.snapshot || base >= this.snapshot.base) {
       this.baseState = state
@@ -758,6 +787,15 @@ export class ArkivProvider extends Observable<string> {
       this.updatesSinceSnapshot = 0
       this.bytesSinceSnapshot = 0
       this.emit("lease", [this.snapshot])
+    }
+  }
+
+  private registerClaims(entity: StoredEntity, claims: { client: number; address: Hex; salt: string; sig: Hex }[]): void {
+    for (const c of claims) {
+      this.claimedAuthors.set(c.client, c.address)
+      this.claimedVia.set(c.client, entity.creator.toLowerCase() as Hex)
+      this.salts.set(c.client, c.salt)
+      this.sigs.set(c.client, c.sig)
     }
   }
 
@@ -836,6 +874,15 @@ export class ArkivProvider extends Observable<string> {
 
   private async openEntity(entity: StoredEntity, kind: Kind, epochHint?: number): Promise<Frame | null> {
     if (entity.attributes.kind !== kind || entity.attributes.doc !== this.link.doc) return null
+    const frame = await this.decryptEntity(entity, kind, epochHint)
+    // a frame that decrypts but breaks its header schema is ignored for good (callers count it as rejected)
+    const problem = frame && headerProblem(kind, frame.header)
+    if (problem) throw new MalformedHeader(`${kind} header: ${problem}`)
+    return frame
+  }
+
+  /** Decrypts and decodes one entity; null if this session cannot open it (yet). */
+  private async decryptEntity(entity: StoredEntity, kind: Kind, epochHint?: number): Promise<Frame | null> {
     try {
       const { epoch, envelope } = decodeOuter(entity.payload)
       if (epochHint !== undefined && epoch !== epochHint) return null
@@ -893,8 +940,25 @@ export class ArkivProvider extends Observable<string> {
     })
   }
 
+  /**
+   * Re-reads the member list by key (arkiv_getEntity, not billed as a query) in case a patch was
+   * missed during a socket gap. True if the epoch moved.
+   */
+  private async refreshAcl(): Promise<boolean> {
+    if (!this.acl || !this.aclKey) return false
+    const acl = await this.fetch(this.aclKey)
+    if (!acl || (acl.attributes.seq === this.aclSeq && !this.acl.rosterHidden)) return false
+    const before = this.acl.epoch
+    await this.applyAclEntity(acl)
+    return this.acl.epoch !== before
+  }
+
   private async flushUpdates(updates: Uint8Array[]): Promise<FlushInfo | null> {
     {
+      // a writer whose socket missed a rotation would keep encrypting under the old key, which the
+      // removed member still holds. One free read by key before each write closes that window.
+      if (await this.refreshAcl()) this.enqueue(() => this.loadState())
+      this.assertWriter()
       const merged = Y.mergeUpdates(updates)
       if (merged.length > MAX_CHUNK_PLAINTEXT - 256) {
         // too big for one update: fold everything into a snapshot instead (the state already holds these edits)
@@ -946,15 +1010,7 @@ export class ArkivProvider extends Observable<string> {
    */
   async resync(options: { joins?: boolean } = {}): Promise<number> {
     if (!this.acl) return 0
-    // a member-list change missed during a socket gap: re-read the ACL by key (not billed as a query)
-    if (this.aclKey) {
-      const acl = await this.fetch(this.aclKey)
-      if (acl && (acl.attributes.seq !== this.aclSeq || this.acl.rosterHidden)) {
-        const before = this.acl.epoch
-        await this.applyAclEntity(acl)
-        if (this.acl.epoch !== before) await this.loadState()
-      }
-    }
+    if (await this.refreshAcl()) await this.loadState()
     if (this.acl.rosterHidden) return 0
     const base = this.snapshot?.base ?? 0n
     const from = base > CATCH_UP_MARGIN_BLOCKS ? base - CATCH_UP_MARGIN_BLOCKS : 0n
@@ -1333,6 +1389,8 @@ export class ArkivProvider extends Observable<string> {
       return frame
     }
     const first = await read(entity, KIND.version)
+    const problem = headerProblem(KIND.version, first.header)
+    if (problem) throw new Error(`version header: ${problem}`)
     const parts = [first.data]
     const chunks = Array.isArray(first.header.chunks) ? (first.header.chunks as Hex[]) : []
     for (const [i, key] of chunks.entries()) {
@@ -1340,6 +1398,7 @@ export class ArkivProvider extends Observable<string> {
       if (!c || c.creator.toLowerCase() !== entity.creator.toLowerCase()) throw new Error("version chunk missing")
       if (!c.readonly) throw new Error("a chunk of this version is not readonly on chain, so its creator could still change it")
       const cf = await read(c, KIND.chunk)
+      if (headerProblem(KIND.chunk, cf.header)) throw new Error("version chunk header is malformed")
       if (cf.header.i !== i + 1 || cf.header.of !== first.header.id) throw new Error("version chunk does not belong to this version")
       parts.push(cf.data)
     }

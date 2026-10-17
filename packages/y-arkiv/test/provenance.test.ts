@@ -1,14 +1,15 @@
+import { privateKeyToAccount } from "viem/accounts"
 import { describe, expect, it } from "vitest"
 import * as Y from "yjs"
 import { blame } from "../src/blame.js"
 import { MemoryChain } from "../src/memory.js"
 import { KIND, LIFETIME } from "../src/protocol.js"
 import { ArkivProvider } from "../src/provider.js"
-import { encodeFrame, encodeOuter } from "../src/codec.js"
-import { deriveEpochZeroKey, randomBytes, seal } from "../src/crypto.js"
+import { decodeOuter, encodeFrame, encodeOuter } from "../src/codec.js"
+import { clientIdFor, deriveEpochZeroKey, randomBytes, seal } from "../src/crypto.js"
 import { bytesToHex, hexToBytes } from "../src/hex.js"
 import type { DocLink } from "../src/link.js"
-import type { Hex } from "../src/store.js"
+import type { ArkivStore, Hex } from "../src/store.js"
 import { admit, identity, newDocument, peer, settle, text } from "./helpers.js"
 
 describe("blame", () => {
@@ -193,5 +194,100 @@ describe("history", () => {
     expect(text(late)).toBe("one two")
     expect(late.provider.history).toHaveLength(2)
     await a.provider.destroy()
+  })
+})
+
+describe("lease", () => {
+  it("a tab left open renews the lease on its resync timer, without a reload", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const doc = new Y.Doc()
+    const p = new ArkivProvider(doc, { store: chain.store(owner.address), link, identity: owner, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 20 })
+    await p.connect()
+    const before = p.snapshot!.expiresAt
+    chain.mine(Number((before - chain.block) / 2n) + 10)
+    for (let i = 0; i < 50 && p.snapshot!.expiresAt === before; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      chain.mine()
+      await p.idle()
+    }
+    expect(p.snapshot!.expiresAt).toBeGreaterThan(before)
+    p.destroy()
+  })
+})
+
+/** A member writes an update entity with any Yjs bytes, under their own signed salt. */
+async function rawUpdate(chain: MemoryChain, who: { address: Hex; privateKey: Hex }, link: DocLink, salt: Uint8Array, data: Uint8Array): Promise<Hex> {
+  const store = chain.store(who.address)
+  const head = await store.head()
+  const sig = await privateKeyToAccount(who.privateKey).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(link.doc), ...salt]) } })
+  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header: { t: Date.now(), salt: bytesToHex(salt), sig }, data }, randomBytes)
+  const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame))
+  const r = await store.batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: LIFETIME.snapshot }] })
+  chain.mine()
+  return r.created[0]!
+}
+
+describe("blame cannot be faked", () => {
+  it("an update with a Skip gap does not prove the snapshot text inside the gap", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    // Bea "types" a paste one character at a time, keeping each transaction's bytes
+    const salt = randomBytes(16)
+    const d = new Y.Doc()
+    d.clientID = clientIdFor(bea.id!.address, salt)
+    Y.applyUpdate(d, Y.encodeStateAsUpdate(bea.doc))
+    const steps: Uint8Array[] = []
+    d.on("update", (u: Uint8Array) => steps.push(u))
+    const t = d.getText("t")
+    const pasted = "PASTED ESSAY, NEVER TYPED"
+    for (let i = 0; i < pasted.length; i++) t.insert(i, pasted[i]!)
+    // the whole paste goes in a snapshot; the only update carries the first and last characters
+    await forgeSnapshot(chain, bea.id!.address, link, Y.encodeStateAsUpdate(d))
+    chain.mine(5)
+    await rawUpdate(chain, bea.id!, link, salt, Y.mergeUpdates([steps[0]!, steps[steps.length - 1]!]))
+    const doc = new Y.Doc()
+    const p = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
+    await p.connect()
+    expect(doc.getText("t").toString()).toBe(pasted)
+    const proven = blame(doc, p).flat().filter((r) => r.proven).map((r) => r.text).join("")
+    expect(proven).toBe("PD")
+    await a.provider.destroy()
+  })
+})
+
+describe("revocation with a dropped socket", () => {
+  it("a writer who missed the rotation does not write under the old key", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const cal = await peer(chain, link, identity("cal"))
+    await admit(chain, a, cal)
+    // Bea's socket is down from the start: her store never delivers events
+    const beaId = identity("bea")
+    const real = chain.store(beaId.address)
+    const muted: ArkivStore = { ...real, address: real.address, head: () => real.head(), batch: (b) => real.batch(b), predictKeys: (n) => real.predictKeys(n), query: (q) => real.query(q), get: (k, bl) => real.get(k, bl), watch: () => () => undefined }
+    const bdoc = new Y.Doc()
+    const bea = { doc: bdoc, id: beaId, provider: new ArkivProvider(bdoc, { store: muted, link, identity: beaId, flushIntervalMs: 0, autoCompact: false }) }
+    await bea.provider.connect()
+    await bea.provider.requestJoin()
+    await settle(chain, [a, cal])
+    await a.provider.approve(beaId.address)
+    await settle(chain, [a, cal])
+    await bea.provider.resync()
+    expect(bea.provider.role).toBe("writer")
+    await a.provider.revoke(cal.id!.address)
+    await settle(chain, [a, cal])
+    expect(bea.provider.acl!.epoch).toBe(0) // she has not heard
+    bea.doc.getText("t").insert(0, "after Cal left")
+    const info = await bea.provider.flush()
+    const entity = await chain.store(undefined).get(info!.entity)
+    expect(decodeOuter(entity!.payload).epoch).toBe(1)
+    await settle(chain, [a, cal])
+    expect(a.doc.getText("t").toString()).toContain("after Cal left")
+    expect(cal.doc.getText("t").toString()).not.toContain("after Cal left")
   })
 })

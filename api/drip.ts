@@ -30,7 +30,7 @@ const sent: number[] = []
  */
 const DIFFICULTY = 20
 
-function zeroBits(hash: Buffer): number {
+function zeroBits(hash: Uint8Array): number {
   let n = 0
   for (const byte of hash) {
     if (byte === 0) {
@@ -87,7 +87,7 @@ export default async function handler(req: Req, res: Res) {
       return res.status(503).json({ error: `The drip is out of test GLM (${formatEther(left)} left). Fund this key from your own wallet or the faucet at https://hub.arkiv.network/faucet.`, sponsor: account.address })
     }
     const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), account })
-    const hash = await wallet.sendTransaction({ to: address, value: AMOUNT })
+    const hash = await wallet.sendTransaction({ to: address as `0x${string}`, value: AMOUNT })
     recent.set(ip, now)
     recent.set(address.toLowerCase(), now)
     sent.push(now)

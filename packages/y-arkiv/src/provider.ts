@@ -356,8 +356,22 @@ export class ArkivProvider extends Observable<string> {
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
     // binding depends on order, so every reader uses the same one: creation block, then key
     const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+    const historyBefore = this.history.length
     for (const u of byAge) await this.applyUpdateEntity(u, false)
-    for (const st of states) this.applyRemote(st)
+    const verified = this.history.slice(historyBefore).map((h) => h.update)
+    for (const st of states) {
+      // A verified update can be pending, waiting on text only a snapshot holds. When the snapshot fills the
+      // gap, Yjs keeps the snapshot's struct at that clock. So try each snapshot on a scratch copy first, and
+      // refuse it if any verified clock would end up with different content.
+      const trial = new Y.Doc()
+      Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
+      Y.applyUpdate(trial, st)
+      if (overridesVerified(trial, verified)) {
+        this.reject()
+        continue
+      }
+      this.applyRemote(st)
+    }
     this.updatesSinceSnapshot = updates.entities.length
   }
 
@@ -1293,6 +1307,34 @@ async function writeSnapshotEntities(
   transactions++
   bytes += headSpec.payload.length
   return { result, headKey: result.created[(extra.creates ?? []).length]!, chunks, bytes, transactions }
+}
+
+/**
+ * True if `doc` holds, at any clock a verified update wrote, content other than that update's.
+ * Deleted text does not count: deleting is any member's right. JS Yjs already lets a pending
+ * update win such a clash, but the Rust engine (yrs) lets the snapshot win, so the protocol
+ * requires the check and every implementation runs it.
+ */
+export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
+  for (const u of updates) {
+    for (const struct of Y.decodeUpdate(u).structs) {
+      if (!(struct instanceof Y.Item)) continue
+      const want = struct.content.getContent()
+      // clock by clock: later edits split items, so one struct may now span several items
+      for (let i = 0; i < struct.length; i++) {
+        let found: Y.Item | Y.GC
+        try {
+          found = Y.getItem(doc.store, Y.createID(struct.id.client, struct.id.clock + i)) as Y.Item | Y.GC
+        } catch {
+          break // still pending: nothing has replaced it
+        }
+        if (!(found instanceof Y.Item) || found.deleted) continue
+        const have = found.content.getContent()[struct.id.clock + i - found.id.clock]
+        if (JSON.stringify(have) !== JSON.stringify(want[i])) return true
+      }
+    }
+  }
+  return false
 }
 
 /** What a writer signs to prove a client id salt is theirs: "quire1:salt:" || document id (32) || salt (16). */

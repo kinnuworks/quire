@@ -249,3 +249,53 @@ describe("defence in depth", () => {
     expect(text(a)).toBe("")
   })
 })
+
+describe("pending updates", () => {
+  it("the override detector flags a state whose text at a verified clock differs from the update", async () => {
+    const { overridesVerified } = await import("../src/provider.js")
+    const genuine = new Y.Doc()
+    genuine.clientID = 77
+    genuine.getText("t").insert(0, "AB")
+    const update = Y.encodeStateAsUpdate(genuine)
+    // a state that got "AX" under the same client id first: Yjs then skips the genuine structs as duplicates
+    const forged = new Y.Doc()
+    forged.clientID = 77
+    forged.getText("t").insert(0, "AX")
+    const doc = new Y.Doc()
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(forged))
+    Y.applyUpdate(doc, update)
+    expect(overridesVerified(doc, [update])).toBe(true)
+    // the honest case passes
+    const honest = new Y.Doc()
+    Y.applyUpdate(honest, update)
+    expect(overridesVerified(honest, [update])).toBe(false)
+  })
+
+  it("a snapshot that fills a pending update's gap cannot replace that update's text", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const c = await peer(chain, link, identity("cal"))
+    await admit(chain, a, c)
+    a.doc.getText("t").insert(0, "A")
+    await a.provider.flush()
+    await a.provider.compact()
+    // the owner's next edit depends on "A", which only snapshots will hold once its update leaves the window
+    chain.mine(200)
+    a.doc.getText("t").insert(1, "B")
+    await a.provider.flush()
+    await settle(chain, [a, c])
+    // cal builds a state under the owner's client id: the same "A" at clock 0, but "X" at the clock of "B"
+    const evil = new Y.Doc()
+    evil.clientID = a.doc.clientID
+    evil.getText("t").insert(0, "A")
+    evil.getText("t").insert(1, "X")
+    // cal writes it as a snapshot (it carries the owner's "A" at clock 0 and "X" at the owner's B clock)
+    Y.applyUpdate(c.doc, Y.encodeStateAsUpdate(evil))
+    await c.provider.compact()
+    chain.mine()
+    const late = await peer(chain, link, undefined)
+    expect(text(late)).toContain("B")
+    expect(text(late)).not.toContain("X")
+  })
+})

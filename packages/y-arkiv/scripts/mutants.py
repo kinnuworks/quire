@@ -17,7 +17,8 @@ MUTANTS = {
     "future qs": ("if (entity.attributes.seq > entity.createdAt) return this.reject()", "if (false) return this.reject()"),
     "own client id in snapshots": ("if (this.identity && ours !== undefined && ours >", "if (false && ours !== undefined && ours >"),
     "whole-item provenance": ("this.coveredByProven(client, clock, clock + length)", "this.coveredByProven(client, clock, clock + 1)"),
-    "updates before snapshots": ("for (const st of states) this.applyRemote(st)\n", ""),
+    "updates before snapshots": ("const applied = await this.applySnapshotEntity(s, states)", "const applied = await this.applySnapshotEntity(s)"),
+    "override detector": ("if (JSON.stringify(have) !== JSON.stringify(want[i])) return true", "if (false) return true"),
 }
 
 backup = tempfile.mktemp()

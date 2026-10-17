@@ -3,13 +3,16 @@
  * quire: read, watch and verify a Quire document from a terminal, straight
  * from Arkiv. Needs only the document link; never writes.
  *
- *   quire read   '<link>'      print the document text
- *   quire watch  '<link>'      print each edit as it lands
- *   quire verify '<link>'      show members, lease, and writes that were ignored
+ *   quire read   '<link>'          print the document text
+ *   quire watch  '<link>'          print each edit as it lands
+ *   quire verify '<link>'          show members, lease, and writes that were ignored
+ *   quire extend '<version link>'  keep a published version alive (needs QUIRE_KEY, a funded key)
+ *
+ *   --rpc <url> --ws <url>         use your own Arkiv node instead of the public endpoint
  */
 import * as Y from "yjs"
-import { ArkivProvider } from "./provider.js"
-import { parseDocLink } from "./link.js"
+import { ArkivProvider, extendVersion } from "./provider.js"
+import { parseDocLink, parseVersionLink } from "./link.js"
 import { SdkStore } from "./sdk.js"
 
 function text(doc: Y.Doc): string {
@@ -29,11 +32,31 @@ function fail(msg: string): never {
 }
 
 async function main() {
-  const [cmd, raw] = process.argv.slice(2)
-  if (!cmd || !raw) fail("usage: quire <read|watch|verify> '<document link>'")
-  const link = parseDocLink(raw.includes("#") ? raw.slice(raw.indexOf("#")) : raw)
+  const args = process.argv.slice(2)
+  const flag = (name: string) => {
+    const i = args.indexOf(name)
+    if (i < 0) return undefined
+    const v = args[i + 1]
+    args.splice(i, 2)
+    return v
+  }
+  const httpUrl = flag("--rpc")
+  const wsUrl = flag("--ws")
+  const [cmd, raw] = args
+  if (!cmd || !raw) fail("usage: quire <read|watch|verify|extend> '<link>' [--rpc url --ws url]")
+  const fragment = raw.includes("#") ? raw.slice(raw.indexOf("#")) : raw
+  if (cmd === "extend") {
+    const version = parseVersionLink(fragment)
+    if (!version) fail("that is not a Quire version link")
+    const key = process.env.QUIRE_KEY as `0x${string}` | undefined
+    if (!key) fail("set QUIRE_KEY to a funded Tiramisu key; any key works, versions allow anyone to extend them")
+    const until = await extendVersion(new SdkStore({ privateKey: key, httpUrl, wsUrl }), version, 3 * 365 * 86400)
+    console.log(`version ${version.key} now lives until block ${until}`)
+    process.exit(0)
+  }
+  const link = parseDocLink(fragment)
   if (!link) fail("that is not a Quire document link")
-  const store = new SdkStore()
+  const store = new SdkStore({ httpUrl, wsUrl })
   const doc = new Y.Doc()
   const provider = new ArkivProvider(doc, { store, link, flushIntervalMs: 0, autoCompact: false })
   await provider.connect()

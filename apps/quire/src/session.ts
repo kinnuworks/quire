@@ -66,6 +66,16 @@ export function linkFor(doc: Hex): DocLink | null {
   return raw ? parseDocLink(raw) : null
 }
 
+/** Removes a document's saved link and key from this browser. */
+export function forgetDocument(doc: Hex): void {
+  try {
+    localStorage.removeItem(LINK + doc)
+    localStorage.removeItem(ID + doc)
+  } catch {
+    // nothing stored
+  }
+}
+
 export function knownDocuments(): { doc: Hex; link: DocLink }[] {
   const out: { doc: Hex; link: DocLink }[] = []
   try {

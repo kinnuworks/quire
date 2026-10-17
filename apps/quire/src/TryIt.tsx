@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import * as Y from "yjs"
-import { bucketFor, deriveEpochZeroKey, encodeFrame, encodeOuter, KIND, open, PAD_BUCKETS, randomBytes, seal, decodeFrame, decodeOuter } from "y-arkiv"
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { bucketFor, clientIdFor, deriveEpochZeroKey, encodeFrame, encodeOuter, KIND, open, PAD_BUCKETS, randomBytes, seal, decodeFrame, decodeOuter } from "y-arkiv"
 import { hexPreview } from "./format"
 
 /**
@@ -11,23 +12,30 @@ import { hexPreview } from "./format"
 const secret = randomBytes(32)
 const doc = randomBytes(32)
 const docHex = `0x${Array.from(doc, (b) => b.toString(16).padStart(2, "0")).join("")}`
+// a throwaway writer, exactly as a real member: key, session salt, signed salt, derived client id
+const writer = privateKeyToAccount(generatePrivateKey())
+const salt = randomBytes(16)
+const saltHex = Array.from(salt, (b) => b.toString(16).padStart(2, "0")).join("")
+const sigPromise = writer.signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...doc, ...salt]) } })
 
 type Out = { payload: Uint8Array; plainBytes: number; frameBytes: number; header: string; text: string }
 
 async function encrypt(text: string): Promise<Out> {
   const y = new Y.Doc()
+  y.clientID = clientIdFor(writer.address, salt)
   const p = new Y.XmlElement("paragraph")
   p.insert(0, [new Y.XmlText(text)])
   y.getXmlFragment("default").push([p])
   const update = Y.encodeStateAsUpdate(y)
   const key = deriveEpochZeroKey(secret)
-  const frame = encodeFrame({ kind: KIND.update, doc, epoch: 0, header: { t: Date.now() }, data: update }, randomBytes)
+  const frame = encodeFrame({ kind: KIND.update, doc, epoch: 0, header: { t: Date.now(), salt: saltHex, sig: await sigPromise }, data: update }, randomBytes)
   const payload = encodeOuter(0, await seal(key, frame))
   const opened = decodeFrame(await open(key, decodeOuter(payload).envelope))
   const back = new Y.Doc()
   Y.applyUpdate(back, opened.data)
   const shown = (back.getXmlFragment("default").toArray()[0] as Y.XmlElement | undefined)?.toArray().map((t) => t.toString()).join("") ?? ""
-  return { payload, plainBytes: update.length, frameBytes: frame.length, header: JSON.stringify(opened.header), text: shown }
+  const h = opened.header as { t: number; salt: string; sig: string }
+  return { payload, plainBytes: update.length, frameBytes: frame.length, header: `t ${h.t}, salt ${h.salt.slice(0, 8)}…, sig ${h.sig.slice(0, 10)}…`, text: shown }
 }
 
 export function TryIt() {

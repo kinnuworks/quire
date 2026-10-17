@@ -125,7 +125,18 @@ export function DocPage({ link }: { link: DocLink }) {
   }
 
   const statusClass = provider?.status === "synced" ? "synced" : provider?.status === "error" ? "error" : ""
-  const statusText = synced ? (role === "owner" ? "Synced · owner" : role === "writer" ? "Synced · writer" : "Synced · read only") : provider?.status === "error" ? "Connection problem" : "Connecting"
+  const sealed = !!provider?.acl?.rosterHidden
+  const statusText = synced
+    ? sealed
+      ? "Sealed · no key"
+      : role === "owner"
+        ? "Synced · owner"
+        : role === "writer"
+          ? "Synced · writer"
+          : "Synced · read only"
+    : provider?.status === "error"
+      ? "Connection problem"
+      : "Connecting"
 
   return (
     <div className="ws">
@@ -152,7 +163,11 @@ export function DocPage({ link }: { link: DocLink }) {
       {session.error?.kind === "other" && <div className="ws-banner error">{session.error.message}</div>}
       {role === "reader" && synced && (
         <div className="ws-banner accent">
-          <span>{provider?.canRead ? "You are reading this document." : "This document's key changed. Ask the owner to add you again."}</span>
+          <span>
+            {provider?.canRead
+              ? "You are reading this document."
+              : `This document's text and member list are sealed under a key this link does not carry. You can see that it exists and has ${provider?.acl?.wraps.length ?? 0} members, and nothing else.`}
+          </span>
           {joinState === "idle" && (
             <button className="btn btn-sm btn-ink" onClick={() => join(false)}>
               Ask to join as a writer

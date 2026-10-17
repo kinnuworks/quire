@@ -1,4 +1,4 @@
-export { ArkivProvider, loadAt, prepareDoc } from "./provider.js"
+export { ArkivProvider, extendVersion, loadAt, overridesVerified, prepareDoc } from "./provider.js"
 export type {
   Authorship,
   FlushInfo,

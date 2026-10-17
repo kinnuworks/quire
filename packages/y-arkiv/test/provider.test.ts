@@ -263,3 +263,22 @@ describe("history and authorship", () => {
     expect(late.provider.authorOf(b.doc.clientID)).toEqual({ address: b.id!.address, proven: false, via: owner.address })
   })
 })
+
+describe("published versions", () => {
+  it("anyone, member or not, can keep a version alive with extendVersion", async () => {
+    const { extendVersion } = await import("../src/provider.js")
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "x".repeat(150_000))
+    await a.provider.flush()
+    const version = await a.provider.publishVersion()
+    chain.mine()
+    const stranger = chain.store(identity("s").address)
+    const before = (await stranger.get(version.key))!.expiresAt
+    const after = await extendVersion(stranger, version, 3 * 365 * 86400)
+    chain.mine()
+    expect(after).toBeGreaterThan(before)
+    expect((await stranger.get(version.key))!.expiresAt).toBe(after)
+  })
+})

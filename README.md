@@ -19,7 +19,7 @@ With Quire, there is no provider copy. Quire runs no server that sees text, and 
 
 **Open Source: teams locked into a collaboration vendor.** On 15 February 2024 Atlassian ended support for Confluence Server and its other Server products, leaving customers its Cloud service or a Data Center licence as the only supported options ([Atlassian](https://www.atlassian.com/licensing/server-end-of-support)). Teams building collaborative features on Yjs face the same choice in small: run a sync server, or rent one from a hosted provider. `y-arkiv` is a third option that needs neither. The data format is a published protocol with a schema and test vectors, and a second implementation written from that spec alone (Python, `readers/python`) reads the same documents, so nobody needs our permission or our code.
 
-**Security: anyone who has to trust "edited by" labels.** In a hosted editor, the version history saying who wrote a sentence is the provider's say-so, and nobody outside can check it. In Quire, every edit is an entity whose on-chain creator nobody can forge. Readers accept an edit only if its creator is in the member list, and only if its Yjs client id derives from that creator's address with a salt the creator signed. Each paragraph shows the wallets that wrote it, and anyone can rerun the check from chain data with the CLI or the Python reader.
+**Security: people who have to prove who wrote what.** In 2023 William Quarterman, a UC Davis student, was given a zero and referred for academic dishonesty after a detector flagged his history essay as written by ChatGPT. He was cleared because he had written it in Google Docs and could show its edit history ([Tech & Learning](https://www.techlearning.com/news/he-was-falsely-accused-of-using-ai-heres-what-he-wishes-his-professor-did-instead), [The Aggie](https://theaggie.org/2023/03/15/student-faculty-discuss-the-use-of-ai-detectors-at-universities-after-reports-of-false-academic-dishonesty-accusations/)). That history was evidence only because Google says so: it lives on Google's servers, a reviewer cannot check it independently, and it exists only as long as the account does. In Quire, each edit is an entity whose on-chain creator nobody can forge, timestamped by the block it landed in. A reader accepts an edit only if its creator is a member and its Yjs client id derives from that creator's address with a salt the creator signed. A student, a reporter or a contract negotiator can hand a reviewer the document link, and the reviewer runs `quire_read.py --verify` against the chain to see which address wrote which text and when, without trusting us or any provider.
 
 ## Why Arkiv, and what stays off it
 
@@ -34,7 +34,7 @@ With Quire, there is no provider copy. Quire runs no server that sees text, and 
 
 What Arkiv gives us that the product depends on:
 
-- Ordered, durable storage that nobody runs for us.
+- Durable storage that nobody runs for us, with every entity stamped by the block it landed in.
 - `$creator` that nobody can forge. The member list is trusted only from the owner's address, and edits only from members.
 - Typed range queries (`qs >= base - 60`), so a late joiner fetches exactly what it needs in three queries.
 - Push over WebSocket, with free reads by key.
@@ -82,7 +82,7 @@ The Python reader was written from PROTOCOL.md and the test vectors alone, witho
 | `$creator` | The member list is found by the owner's address. Edits are applied only from members, and only if their client id is `clientIdFor($creator, salt)` with a salt the creator signed | People tab: "Ignored writes" |
 | Entity Expiration | Edits and snapshots live 30 days (or until the owner's chosen date), join requests 1 hour, versions 1 year | Lifetime tab |
 | Lifetime Extension | The newest snapshot is a lease. A member renews it by extending their own snapshot or writing a fresh one, and only when the new expiry is later | Lifetime tab countdown |
-| Creation flags | Published versions are readonly and anyone can extend them. The member list can be extended by any member. Edits and snapshots carry no flags, so only their creator can extend them | Explorer tab, Publish version |
+| Creation flags | Published versions are readonly and anyone can extend them (the version page has a "Keep this version alive" button; the CLI has `extend`). The member list allows permissionless extension too, so a document stays open while its writers use it; it holds no text, so extending it keeps nothing readable alive. Edits and snapshots carry no flags, so only their creator can extend them | Explorer tab, version page |
 | Ownership | The owner patches the member list; only an entity's owner can delete it (Shred, Delete document) | Lifetime tab |
 | WebSocket events | `watchEntityEvents` over WebSocket with no `fromBlock`; each new entity is fetched with `arkiv_getEntity`, which is not billed | Live tab latency |
 | Batches | Create document (ACL and snapshot), key rotation (ACL patch and new snapshot), lease renewal, shred, delete | Live tab: one transaction each |
@@ -94,14 +94,14 @@ The Python reader was written from PROTOCOL.md and the test vectors alone, witho
 - creator and owner address
 - creation and expiry block
 - the four attributes and the flags
-- a payload in one of six fixed sizes
+- a payload in one of six fixed sizes (join requests, sealed to the owner's key, are 65 bytes longer)
 
 **What it does not show:** text, titles, member names, the member list (after the first revocation, link holders see only a member count), or who an address belongs to. Each member gets a fresh key per document, so their addresses in two documents are unrelated on chain.
 
 **What still leaks:**
 
-- **Activity:** which addresses write to a document id, and when. Edits go out on block boundaries, which blurs typing rhythm but does not hide activity.
-- **The RPC operator:** every query names the document id and member addresses, and every read comes from your IP address. Whoever runs the RPC endpoint can link your IP to the documents you open. Use a VPN or Tor if that matters to you.
+- **Activity:** which addresses write to a document id, and when. Each flush waits a random extra delay of up to two seconds on top of the block interval, which blurs typing rhythm but does not hide activity.
+- **The RPC operator:** every query names the document id and member addresses, and every read comes from your IP address. Whoever runs the RPC endpoint can link your IP to the documents you open, and could also leave entities out of its answers. Use a VPN or Tor if the first matters to you. The CLI takes `--rpc` and `--ws`, so you can read through your own node or a second endpoint and compare.
 - **The drip:** it sees your IP address and the new key it funds, and Vercel logs requests. On this testnet deployment it also funds every key from one sponsor address, so an observer can tell those keys were funded by Quire. Funding from your own wallet instead links that wallet to the document key, and the app warns before it does that.
 - **Old ciphertext:** expiry and deletion remove entities from Arkiv's state, but the transactions that wrote them, including their encrypted payloads, can remain in block history. Anyone who keeps an old link can decrypt old payloads they captured. Rotating the key protects everything written afterwards.
 - **The app itself:** it is JavaScript served by Vercel, so a malicious build could read the link from the fragment. The Content Security Policy only lets the page talk to itself and the Arkiv RPC, and the readers in this repository let you verify a document without our page.
@@ -127,7 +127,7 @@ Addresses that create Quire's entities:
 | `0xba964589a3bd9363c102dc9eabdd8863a90f109d` | open demo: writer (Ravi); join request and edits |
 | `0x0ea55b2eeecddc4e701417001460b596c12a2ada` | revocation demo: owner; created the ACL, rotated the key |
 | `0xbc9375026f9818a3ad5216509a8cd111527cee1a` | revocation demo: writer who stayed; wrote a snapshot under the new key |
-| `0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375` | revocation demo: removed member; only his join request remains |
+| `0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375` | revocation demo: removed member; his join request has since expired (1 hour), its transaction remains in block history |
 
 Document ids: open demo `0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578`, revocation demo `0x60567bef1262ba3a45e570aa02ac713c1f4f2a78b6c4de80ba5542bb3771975d`. Every entity carries `qd` equal to its document id, so this query lists them all:
 
@@ -163,7 +163,7 @@ The full live suite (`pnpm --dir packages/y-arkiv test:live`) passed on Tiramisu
 
 ## How this was built
 
-Everything here was written during the challenge window, in one long working session on 17 and 18 October 2026, and the commit history is the actual history of that session. No code predates the challenge. The libraries used are Yjs, Tiptap, viem, `@arkiv-network/sdk`, `arkiv-encryption`, noble curves and hashes, React and Vite.
+Everything here was written during the challenge window, in one long working session on 17 and 18 October 2026. No code predates the challenge. The first seven commits were re-authored once, to use a GitHub no-reply address instead of a personal email, and that rewrite reset their timestamps to the same minute; every later commit carries its real time. The libraries used are Yjs, Tiptap, viem, `@arkiv-network/sdk`, `arkiv-encryption`, noble curves and hashes, React and Vite.
 
 ## Run it locally
 

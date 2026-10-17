@@ -91,10 +91,12 @@ export type ProviderOptions = {
   flushIntervalMs?: number
   /** Compact automatically once enough updates pile up, and after typing stops. Default true. */
   autoCompact?: boolean
-  /** Re-read recent updates this often, to cover a dropped socket. 0 disables. Default 5 minutes. */
+  /** Re-read recent updates this often, to cover a dropped socket. 0 disables. Default 15 minutes. */
   resyncIntervalMs?: number
-  /** Compact this long after the last flush if anything is uncovered. Default 30 s. */
+  /** Compact this long after the last flush if anything is uncovered. Default 2 minutes. */
   idleCompactMs?: number
+  /** Up to this many extra milliseconds, at random, before each flush. Default 2 s. */
+  flushJitterMs?: number
   now?: () => number
   /**
    * The client id salt. Pass the one used with prepareDoc() when an editor binds
@@ -157,7 +159,8 @@ export class ArkivProvider extends Observable<string> {
   private writeQueue: Promise<unknown> = Promise.resolve()
   private work: Promise<unknown> = Promise.resolve()
   private unwatch: (() => void) | null = null
-  private timer: ReturnType<typeof setInterval> | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private readonly flushJitterMs: number
   private resyncTimer: ReturnType<typeof setInterval> | null = null
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private readonly resyncInterval: number
@@ -176,8 +179,10 @@ export class ArkivProvider extends Observable<string> {
     this.identity = options.identity
     this.now = options.now ?? Date.now
     this.autoCompact = options.autoCompact ?? true
-    this.resyncInterval = options.resyncIntervalMs ?? 5 * 60_000
-    this.idleCompactMs = options.idleCompactMs ?? 30_000
+    // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
+    this.resyncInterval = options.resyncIntervalMs ?? 15 * 60_000
+    this.idleCompactMs = options.idleCompactMs ?? 120_000
+    this.flushJitterMs = options.flushJitterMs ?? 2_000
     this.metaKey = deriveMetaKey(this.link.secret)
     this.epochKeys.set(0, deriveEpochZeroKey(this.link.secret))
     this.salt = options.salt ?? randomBytes(16)
@@ -201,9 +206,14 @@ export class ArkivProvider extends Observable<string> {
 
     const interval = options.flushIntervalMs ?? FLUSH_INTERVAL_MS
     if (interval > 0) {
-      this.timer = setInterval(() => {
-        if (this.pending.length) void this.flush().catch((e) => this.emit("error", [e]))
-      }, interval)
+      // a random delay on each flush, so write times on chain say less about when someone typed
+      const tick = () => {
+        this.timer = setTimeout(() => {
+          if (this.pending.length) void this.flush().catch((e) => this.emit("error", [e]))
+          if (this.status !== "destroyed") tick()
+        }, interval + Math.floor(Math.random() * (this.flushJitterMs + 1)))
+      }
+      tick()
     }
   }
 
@@ -1119,6 +1129,19 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /**
+   * Lists the creators of every entity for this document that came from outside
+   * the member list (join requests aside, which strangers send by design). One
+   * query without the creator filter: what the normal reads never even fetch.
+   */
+  async scanOutsiders(): Promise<Hex[]> {
+    if (!this.acl || this.acl.rosterHidden) return []
+    this.stats.queries++
+    const all = await queryAll(this.store, { doc: this.link.doc })
+    const members = new Set(memberAddresses(this.acl))
+    return all.entities.filter((e) => e.attributes.kind !== KIND.join && !members.has(e.creator.toLowerCase() as Hex)).map((e) => e.creator.toLowerCase() as Hex)
+  }
+
+  /**
    * Fetches one of this document's entities and decrypts it locally, so the
    * UI can show the public view and the private view side by side.
    */
@@ -1166,7 +1189,7 @@ export class ArkivProvider extends Observable<string> {
 
   destroy(): void {
     this.doc.off("update", this.onDocUpdate)
-    if (this.timer) clearInterval(this.timer)
+    if (this.timer) clearTimeout(this.timer)
     if (this.resyncTimer) clearInterval(this.resyncTimer)
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.unwatch?.()
@@ -1202,6 +1225,26 @@ export class ArkivProvider extends Observable<string> {
     Y.applyUpdate(doc, concat(parts))
     return { doc, creator: entity.creator, block: entity.createdAt }
   }
+}
+
+// ------------------------------------------------------------------ versions
+
+/**
+ * Keeps a published version alive: extends its head and every chunk by
+ * `seconds` in one batch. Versions carry permissionless extension, so any
+ * funded key can do this, member or not. Returns the new expiry block.
+ */
+export async function extendVersion(store: ArkivStore, link: VersionLink, seconds: number): Promise<bigint> {
+  const head = await store.get(link.key)
+  if (!head || head.attributes.kind !== KIND.version) throw new Error("version not found")
+  const { envelope } = decodeOuter(head.payload)
+  const frame = decodeFrame(await open(link.secret, envelope))
+  const chunks = Array.isArray(frame.header.chunks) ? (frame.header.chunks as Hex[]) : []
+  const now = await store.head()
+  const target = now + blocks(seconds)
+  if (target <= head.expiresAt) throw new Error("the version already lives longer than that")
+  await store.batch({ extensions: [link.key, ...chunks].map((key) => ({ key, lifetimeSeconds: seconds })) })
+  return target
 }
 
 // ------------------------------------------------------------------ time travel

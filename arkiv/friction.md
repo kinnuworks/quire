@@ -10,7 +10,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 
 | # | Surface | Issue | Severity for us |
 |---|---|---|---|
-| 1 | RPC + viem | Keyless query budget runs out and the SDK waits up to 30 minutes in silence | High: our demo script froze |
+| 1 | RPC + viem | Keyless query budget runs out and the SDK waits out the Retry-After in silence | High: our demo script froze |
 | 2 | SDK errors | Oversized batches and low balances both surface as "Execution error without revert data" | High: cost us an hour |
 | 3 | RPC / docs | The real per-transaction payload limit is about 128 KB total, not 128 KiB per entity | Medium |
 | 4 | `watchEntityEvents` | No server-side filter: every client receives every entity event on the network | Medium |
@@ -40,13 +40,13 @@ retry-after: 1086
 {"error":"ANON_COST_LIMITED","message":"unauthenticated query budget exhausted; get an API key at https://hub.arkiv.network for a monthly quota"}
 ```
 
-Each `arkiv_query` costs 100 units (`arkiv-cost: 100` header), so the keyless budget is 100 queries per window. viem's HTTP transport honours `Retry-After`, so the SDK call simply waited 18 minutes. Nothing reached our code: no error, no event, no log.
+Each `arkiv_query` costs 100 units (`arkiv-cost: 100` header), so the keyless budget is 100 queries per window. viem's HTTP transport honours `Retry-After`, so our script simply stopped: no error, no event, no log. We saw `retry-after: 1086` (18 minutes) the first time; a later saved capture shows 243 seconds, since the value is the time left in the window.
 
 **Expected.** A thrown error (or at least a callback) naming the budget and the reset time, so an app can tell the user.
 
 **Steps to reproduce.** Run about 100 `client.query(...)` calls from one IP without an access key, then call `client.query` again and time it. The raw 429 is saved by probe `budget429` in [probes/2026-10-17-18-28.json](probes/2026-10-17-18-28.json).
 
-**Suggested fix.** In the SDK's default transport, turn a 429 with `ANON_COST_LIMITED` into a typed error carrying `retryAfter`, and expose the `RateLimit` and `Arkiv-Quota-Used-Percent` headers. This extends Arkiv-Network/reported-issues#17 with the exact budget (10,000 units, 100 queries) and the 18-minute wait we measured.
+**Suggested fix.** In the SDK's default transport, turn a 429 with `ANON_COST_LIMITED` into a typed error carrying `retryAfter`, and expose the `RateLimit` and `Arkiv-Quota-Used-Percent` headers. This extends [Arkiv-Network/reported-issues#17](https://github.com/Arkiv-Network/reported-issues/issues/17) with the exact budget (10,000 units, 100 queries) and the 18-minute wait we measured.
 
 **What we did.** `SdkStore` passes its own `fetchFn` to viem's `http()` transport. It adds an access key when one is configured and throws `QueryBudgetError` on 429 ([sdk.ts](../packages/y-arkiv/src/sdk.ts)). The editor shows that message instead of freezing. Opening a document costs three queries, and live edits cost none (see 5), so one browser rarely gets near the budget.
 
@@ -110,7 +110,7 @@ That is fine today, but it grows linearly with the network. A client also has to
 
 **Suggested fix.** Accept `owner` (and ideally attribute equality) filters and pass the owner as a log topic filter in the subscription.
 
-**What we did.** We drop events whose `owner` is not in the document's member list before fetching anything. The owner's session, which needs to see join requests from strangers, fetches non-member entities at a capped 30 per minute ([provider.ts `allowStrangerFetch`](../packages/y-arkiv/src/provider.ts)).
+**What we did.** We drop events whose `owner` is not in the document's member list before fetching anything. The owner's session, which needs to see join requests from strangers, fetches non-member entities at a capped 240 per minute and also re-reads join requests on every resync ([provider.ts `allowStrangerFetch`](../packages/y-arkiv/src/provider.ts)).
 
 ## 5. `getEntity` is billed as a query; the free method is missing from the SDK types
 
@@ -127,7 +127,7 @@ The SDK's `client.getEntity(key)` is documented in its own JSDoc as using `arkiv
 
 **Expected.** `getEntity` uses the cheapest method, and every documented RPC method is typed.
 
-**Suggested fix.** Route `getEntity` through `arkiv_getEntity`, and add `arkiv_getEntity(key, block?)` to `ArkivRpcSchema`. This is related to reported-issues#18, with the cost headers measured.
+**Suggested fix.** Route `getEntity` through `arkiv_getEntity`, and add `arkiv_getEntity(key, block?)` to `ArkivRpcSchema`. This is related to [reported-issues#18](https://github.com/Arkiv-Network/reported-issues/issues/18), with the cost headers measured.
 
 **What we did.** Every live edit is fetched with raw `arkiv_getEntity`, so live collaboration costs no query budget at all ([sdk.ts `get`](../packages/y-arkiv/src/sdk.ts)).
 
@@ -155,7 +155,7 @@ The SDK waits for the receipt by polling, so it resolves up to 3.6 seconds after
 
 **Expected.** An error saying the types differ, as the SDK's typed builder implies.
 
-**Suggested fix.** Reject comparisons between mismatched types in the node, or coerce integer literals. This is related to arkiv-sdk-js#113.
+**Suggested fix.** Reject comparisons between mismatched types in the node, or coerce integer literals. This is related to [arkiv-sdk-js#113](https://github.com/Arkiv-Network/arkiv-sdk-js/issues/113).
 
 **What we did.** Every predicate is built with typed helpers (`str`, `bytes32`, `u64`, `addr`), and the exact query strings are in PROTOCOL.md so other implementations type them too.
 
@@ -191,7 +191,7 @@ We used it for every payload, and it did exactly what it says. Three gaps came u
 
 - **No associated data.** `encryptPayload(key, plaintext)` takes no additional data, so a ciphertext copied from one document or entity kind into another still decrypts. We repeat the document id, kind and epoch inside the plaintext frame and check them after decrypting ([codec.ts](../packages/y-arkiv/src/codec.ts)). *Suggested fix:* an optional `additionalData` parameter passed to WebCrypto's AES-GCM.
 - **Plaintext cap below the payload cap.** `MAX_PLAINTEXT_BYTES` is 100,000, while an entity can carry up to about 128 KB. That is a reasonable margin, but it is undocumented in the Arkiv docs. Our largest padding bucket is 98,304 bytes.
-- **"Never put the key in a URL."** The README says this, but for a link-sharing app the URL fragment is the standard place, since browsers never send it to a server. *Suggested fix:* a short note on fragments as the exception, and on removing them from the address bar after reading. Quire does exactly that.
+- **"Never put the key in a URL."** The package's type docs say so ("Back it up privately; never put it in an entity or URL", `dist/index.d.ts`) and its AGENTS.md repeats it, but for a link-sharing app the URL fragment is the standard place, since browsers never send it to a server. *Suggested fix:* a short note on fragments as the exception, and on removing them from the address bar after reading. Quire does exactly that.
 
 ## 11. `atBlock` retention is not documented
 

@@ -74,7 +74,12 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
     })
     p.on("join-request", (j: JoinRequest) => log({ kind: "join", text: `${j.name || "Someone"} asked to join`, author: j.address }))
     p.on("rejected", (n: number) => log({ kind: "rejected", text: `Ignored a write from outside the member list (${n} so far)` }))
-    p.on("acl", () => log({ kind: "acl", text: "Member list updated" }))
+    // the first ACL load is not news; only later changes are
+    let aclLoads = 0
+    p.on("acl", () => {
+      if (aclLoads++ > 0) log({ kind: "acl", text: "Member list updated" })
+      else bump()
+    })
     p.on("lease", () => bump())
     p.on("history", () => bump())
     p.on("status", () => bump())

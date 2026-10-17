@@ -41,14 +41,14 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 ## Queries the app runs
 
-Opening a document costs three queries. Live edits after that cost none: they arrive as WebSocket events and are fetched by key with `arkiv_getEntity`, which the public RPC does not bill against the query budget.
+Opening a document costs three queries. Live edits after that cost none: they arrive as WebSocket events and are fetched by key with `arkiv_getEntity`, which the public RPC does not bill against the query budget. Background work does cost a little: one query for each compaction (at most every two minutes after typing stops) and one for a resync every 15 minutes.
 
 | # | When | Query | Code |
 |---|---|---|---|
 | 1 | open | `qp = str('quire1') AND qd = bytes32(<doc>) AND qk = str('a') AND $creator = addr(<owner>)` | [`provider.ts` loadAcl](../packages/y-arkiv/src/provider.ts) |
 | 2 | open | `… AND qk = str('s') AND ($creator = addr(<m1>) OR …)`, all pages, ordered by `qs` on the client | `provider.ts` loadState |
 | 3 | open, before compacting | `… AND qk = str('u') AND qs >= u64(<base − 60>) AND ($creator = addr(<m1>) OR …)`, cursor pages pinned with `atBlock` | `provider.ts` loadState, resync |
-| 4 | owner opens | `… AND qk = str('j')`, limit 50 | `provider.ts` loadJoinRequests |
+| 4 | owner opens, and on resync | `… AND qk = str('j')`, all pages | `provider.ts` loadJoinRequests |
 | 5 | shred, delete | `… AND $creator = addr(<me>)` | `provider.ts` shredMine, deleteDocument |
 | 6 | history check | queries 1 to 3 with `atBlock = <past block>` | `provider.ts` loadAt |
 | 7 | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |
@@ -60,6 +60,6 @@ Opening a document costs three queries. Live edits after that cost none: they ar
 | Create document | ACL create + snapshot head |
 | Compact | chunks first, in transactions of at most 100,000 payload bytes (payloads travel hex-encoded and the RPC refuses requests over about 256 KiB: 120,000 bytes lands, 130,000 does not); then the head, which lists the chunk keys |
 | Remove a member | ACL patch (new epoch, re-wrapped keys, sealed roster) + the new snapshot head under the new key |
-| Renew lease | extensions for my snapshot and its chunks, and the ACL if I am the owner, only where they move expiry later |
+| Renew lease | extensions for my snapshot and its chunks, and the ACL, only where they move expiry later |
 | Shred my edit history | deletes of my updates and join requests |
 | Delete document | deletes of the ACL and every entity the owner created |

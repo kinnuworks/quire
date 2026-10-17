@@ -223,7 +223,7 @@ export function Home() {
               Why it exists
             </span>
             <h2>A shared document is only as private as its host.</h2>
-            <p className="lead">The usual setup gives one company the only copy, the right to read it and the power to switch it off. That has happened, more than once.</p>
+            <p className="lead">In the usual setup, one company holds the only copy. It can read the document, and it can lock you out of it.</p>
           </div>
           <div className="grid grid-2">
             <div className="card card--flat reveal">
@@ -253,7 +253,7 @@ export function Home() {
             <div className="card card--chosen reveal" style={{ "--i": 1 } as React.CSSProperties}>
               <p className="t-title">With Quire</p>
               <p className="t-small" style={{ marginTop: 14 }}>
-                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so there is nothing for us to lock, scan or hand over.
+                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so we have nothing to hand over. The page itself is served by Vercel; the readers in the repository check documents without it.
               </p>
               <div className="flow">
                 <span>Your browser</span>
@@ -325,7 +325,7 @@ export function Home() {
               <span className="eyebrow">
                 <PenIcon /> Authorship you can check
               </span>
-              <h3>Every paragraph knows who wrote it.</h3>
+              <h3>See which wallet wrote each paragraph.</h3>
               <p className="lead">
                 Turn on authorship and each paragraph gets a bar in the colors of the wallets that wrote it. Each live edit is checked against its on-chain creator and a salt that creator signed. Text that survives only inside a snapshot is shown as claimed, with the member who carried it. Writes from outside the member list are never applied.
               </p>
@@ -410,7 +410,7 @@ export function Home() {
               <div className="mini">
                 <div className="mini__head">
                   <span>Members</span>
-                  <span className="pill-tag accent">epoch 2</span>
+                  <span className="pill-tag accent">epoch 1</span>
                 </div>
                 <div className="mini__body" style={{ gap: 0 }}>
                   {[
@@ -444,7 +444,7 @@ export function Home() {
             <h2>
               Encrypt a line <em className="t-serif">yourself.</em>
             </h2>
-            <p className="lead">This is the exact code path an edit takes before it is written to Arkiv. Type below and watch what the public would see.</p>
+            <p className="lead">The same code an edit runs before it goes to Arkiv: a throwaway key, its signed salt, the padded frame and the encryption. Nothing is sent. Type below and compare the two views.</p>
           </div>
           <TryIt />
         </div>
@@ -458,13 +458,13 @@ export function Home() {
               Open protocol
             </span>
             <h2>Built so others can build on it.</h2>
-            <p className="lead">The editor is one client. The protocol, the library and two independent readers are in the repository under MIT.</p>
+            <p className="lead">The editor is one client. The protocol, the library, a CLI and a Python reader written from the spec alone are in the repository under MIT.</p>
           </div>
           <div className="grid grid-3">
             {[
               { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Swap it for y-websocket and any Yjs editor syncs over Arkiv." },
               { i: <BookIcon />, t: "A written spec", d: "PROTOCOL.md, JSON Schema for every entity, and test vectors with a forged write." },
-              { i: <TerminalIcon />, t: "Read without us", d: "A CLI and a Python reader written from the spec alone rebuild any document from chain data." },
+              { i: <TerminalIcon />, t: "Read without us", d: "Our CLI, and a Python reader written from the spec alone, rebuild any document from chain data and check every rule." },
               { i: <HistoryIcon />, t: "Time travel", d: "Rebuild a document exactly as Arkiv held it at a past block, with atBlock reads." },
               { i: <SnowIcon />, t: "Frozen versions", d: "Publish a readonly copy with its own key. Anyone with the link can keep it alive." },
               { i: <ShieldIcon />, t: "Privacy audit", d: "A standard-library script checks what the explorer can see for any document id." },

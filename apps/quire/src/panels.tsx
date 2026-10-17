@@ -4,6 +4,7 @@ import { type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, t
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
 import { balanceOf, formatGlm } from "./gas"
+import { forgetDocument } from "./session"
 import type { DocumentSession } from "./useDocument"
 
 function Addr({ a, label }: { a: string; label?: string }) {
@@ -106,7 +107,9 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
       <section>
         <h4>Members · epoch {p.acl.epoch}</h4>
         {p.acl.rosterHidden ? (
-          <p className="muted small">The member list is sealed under a key this browser does not have.</p>
+          <p className="small">
+            <span className="big">{p.acl.wraps.length}</span> <span className="muted">members. Their names and addresses are sealed under the current key, which this link does not carry.</span>
+          </p>
         ) : (
           p.acl.members.map((m) => (
             <div className="row" key={m.address}>
@@ -125,14 +128,37 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
             </div>
           ))
         )}
-        <p className="muted small">Readers apply an edit only if its on-chain creator is in this list. Removing someone rotates the key for everyone who stays.</p>
+        {!p.acl.rosterHidden && <p className="muted small">Readers apply an edit only if its on-chain creator is in this list. Removing someone rotates the key for everyone who stays.</p>}
       </section>
 
+      {!p.acl.rosterHidden && (
+        <section>
+          <h4>Ignored writes</h4>
+          <p>
+            <span className="big">{p.stats.rejectedWrites}</span> <span className="muted small">entities seen by this tab came from outside the member list, or tried to write under someone else's name.</span>
+          </p>
+          <button
+            className="btn btn-ghost"
+            disabled={!!busy}
+            onClick={() =>
+              run("scanning", async () => {
+                const n = await p.scanOutsiders()
+                return n.length === 0
+                  ? "Nothing on chain for this document from outside the member list."
+                  : `${n.length} ${n.length === 1 ? "entity" : "entities"} on chain for this document came from outside the member list (${n.map((x) => short(x)).join(", ")}). None were applied.`
+              })
+            }
+          >
+            Check the chain for outside writes
+          </button>
+        </section>
+      )}
       <section>
-        <h4>Ignored writes</h4>
-        <p>
-          <span className="big">{p.stats.rejectedWrites}</span> <span className="muted small">entities for this document came from outside the member list, or tried to write under someone else's name.</span>
-        </p>
+        <h4>This browser</h4>
+        <p className="muted small">This browser keeps the document's link{identity ? " and your key" : ""} so you can reopen it. On a shared computer, remove it.</p>
+        <button className="btn btn-ghost" onClick={() => confirm("Remove this document's link" + (identity ? " and your key" : "") + " from this browser?") && (forgetDocument(link.doc), (location.hash = "#/"))}>
+          Forget this document
+        </button>
       </section>
       {view}
     </div>
@@ -200,7 +226,7 @@ export function ChainPanel({ session }: { session: DocumentSession }) {
   const latest = session.activity.find((a) => a.entity)?.entity as Hex | undefined
   const [key, setKey] = useState<Hex | undefined>(undefined)
   const [view, setView] = useState<{ entity: StoredEntity; frame: Frame | null } | null>(null)
-  const target = key ?? latest ?? p?.snapshot?.key
+  const target = key ?? latest ?? p?.snapshot?.key ?? p?.aclKey ?? undefined
   useEffect(() => {
     if (!p || !target) return
     let alive = true
@@ -210,7 +236,8 @@ export function ChainPanel({ session }: { session: DocumentSession }) {
     }
   }, [p, target])
   if (!p) return null
-  const sample = render(toExpression({ doc: p.link.doc, kind: KIND.update, creators: p.acl ? p.acl.members.map((m) => m.address) : [] }))
+  const base = p.snapshot?.base ?? 0n
+  const sample = render(toExpression({ doc: p.link.doc, kind: KIND.update, seqGte: base > 60n ? base - 60n : 0n, creators: p.acl ? p.acl.members.map((m) => m.address) : [] }))
 
   return (
     <div className="panel-card">
@@ -302,6 +329,8 @@ function FrameView({ frame }: { frame: Frame }) {
         <>
           <dt>roster</dt>
           <dd>sealed under the epoch key</dd>
+          <dt>members</dt>
+          <dd>{Array.isArray(h.wraps) ? h.wraps.length : 0} (one sealed key each)</dd>
         </>
       )}
       {typeof h.t === "number" && (
@@ -316,8 +345,12 @@ function FrameView({ frame }: { frame: Frame }) {
           <dd>#{h.base}</dd>
         </>
       )}
-      <dt>content</dt>
-      <dd>{frame.data.length} B of Yjs data, padded</dd>
+      {frame.data.length > 0 && (
+        <>
+          <dt>content</dt>
+          <dd>{frame.data.length} B of Yjs data, padded</dd>
+        </>
+      )}
     </dl>
   )
 }
@@ -328,27 +361,34 @@ export function HistoryPanel({ session, link }: { session: DocumentSession; link
   const p = session.provider
   const entries = p?.history ?? []
   const [i, setI] = useState<number | null>(null)
-  const [check, setCheck] = useState<string | null>(null)
+  const [cache, setCache] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState<string | null>(null)
   if (!p) return null
-  if (!entries.length) return <div className="panel-card muted">History starts at the newest snapshot. Edits made after it show up here.</div>
+  if (!entries.length) return <div className="panel-card muted">No edits since this document was last opened by a writer. History lists the edits that are still on chain as their own entities.</div>
   const idx = Math.min(i ?? entries.length - 1, entries.length - 1)
   const at = entries[idx]!
-  const text = plainText(p.stateAt(at.block))
+  const key = at.block.toString()
   const pct = entries.length > 1 ? (idx / (entries.length - 1)) * 100 : 100
 
-  async function verify() {
-    if (!session.store) return
-    setCheck("Reading the document from Arkiv as of that block…")
+  // every position is rebuilt from Arkiv itself with atBlock reads (three queries), then cached
+  async function rebuild() {
+    if (!session.store || cache[key] !== undefined) return
+    setLoading(key)
     try {
       const past = await loadAt(session.store, link, at.block, p!.identity)
-      setCheck(plainText(past) === text ? `Matches what Arkiv held at block ${at.block}.` : `Arkiv at block ${at.block} differs. An edit in the same block may be newer.`)
+      setCache((c) => ({ ...c, [key]: plainText(past) }))
     } catch (e) {
-      setCheck((e as Error).message)
+      setCache((c) => ({ ...c, [key]: `Could not read block ${key}: ${(e as Error).message.split("\n")[0]}` }))
+    } finally {
+      setLoading(null)
     }
   }
 
   return (
     <div className="panel-card">
+      <p className="muted small">
+        Each step is one edit that is still on chain. Pick a step and Quire rebuilds the document exactly as Arkiv held it at that block, using atBlock reads. Nothing local is used.
+      </p>
       <input
         className="range"
         type="range"
@@ -356,19 +396,23 @@ export function HistoryPanel({ session, link }: { session: DocumentSession; link
         max={entries.length - 1}
         value={idx}
         style={{ "--val": `${pct}%` } as React.CSSProperties}
-        onChange={(e) => (setI(Number(e.target.value)), setCheck(null))}
+        onChange={(e) => setI(Number(e.target.value))}
         aria-label="Edit history"
       />
       <div className="row">
-        <span className="small mono">block {at.block.toString()}</span>
+        <span className="small mono">
+          step {idx + 1} of {entries.length} · block {key}
+        </span>
         <Addr a={at.author} />
       </div>
-      <pre className="preview">{text || "(empty)"}</pre>
-      <button className="btn btn-outline" onClick={verify}>
-        Check against Arkiv at this block
-      </button>
-      {check && <p className="muted small">{check}</p>}
-      <p className="muted small">The slider replays edits locally. The check rebuilds the document with atBlock reads and compares.</p>
+      {cache[key] !== undefined ? (
+        <pre className="preview">{cache[key] || "(empty)"}</pre>
+      ) : (
+        <button className="btn btn-outline" disabled={loading !== null} onClick={rebuild}>
+          {loading === key ? "Reading from Arkiv…" : "Rebuild from Arkiv at this block"}
+        </button>
+      )}
+      <p className="muted small">Each rebuild costs three queries from your network's free budget.</p>
     </div>
   )
 }
@@ -393,14 +437,14 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
   const writer = p.role === "owner" || p.role === "writer"
   const left = p.snapshot && head !== null ? p.snapshot.expiresAt - head : null
   const aclLeft = p.aclExpiresAt !== null && head !== null ? p.aclExpiresAt - head : null
-  const total = 15 * 86400 * 2 // 30 days in blocks of 2 s
+  const total = (30 * 86400) / 2 // 30 days in blocks of 2 s
   const pct = left === null ? 0 : Math.max(2, Math.min(100, (Number(left) / total) * 100))
   return (
     <div className="panel-card">
       <section>
         <h4>This document lives for</h4>
         <div className="big" style={{ fontSize: 34 }}>
-          {left === null ? "…" : blocksToDuration(left)}
+          {p.acl?.rosterHidden ? "sealed" : left === null ? "…" : blocksToDuration(left)}
         </div>
         <div className="meter" style={{ marginTop: 10 }}>
           <i style={{ width: `${pct}%` }} />

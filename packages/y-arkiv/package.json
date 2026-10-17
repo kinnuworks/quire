@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -41,6 +42,7 @@
     "vitest": "^5.0.5"
   },
   "bin": {
+    "y-arkiv": "./dist/cli.js",
     "quire": "./dist/cli.js"
   },
   "keywords": [
@@ -56,5 +58,6 @@
     "type": "git",
     "url": "git+https://github.com/kinnuworks/quire.git",
     "directory": "packages/y-arkiv"
-  }
+  },
+  "homepage": "https://github.com/kinnuworks/quire#readme"
 }

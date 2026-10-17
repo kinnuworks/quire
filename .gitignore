@@ -8,3 +8,4 @@ dist
 coverage
 __pycache__
 PLAN.md
+.claude

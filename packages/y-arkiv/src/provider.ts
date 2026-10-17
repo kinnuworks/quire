@@ -747,6 +747,17 @@ export class ArkivProvider extends Observable<string> {
     })
   }
 
+  /**
+   * Fetches one of this document's entities and decrypts it locally, so the
+   * UI can show the public view and the private view side by side.
+   */
+  async inspect(key: Hex): Promise<{ entity: StoredEntity; frame: Frame | null } | null> {
+    const entity = await this.fetch(key)
+    if (!entity) return null
+    const frame = await this.openEntity(entity, entity.attributes.kind, undefined)
+    return { entity, frame }
+  }
+
   private pushHistory(entry: HistoryEntry): void {
     this.history.push(entry)
     this.history.sort((a, b) => (a.block < b.block ? -1 : a.block > b.block ? 1 : 0))

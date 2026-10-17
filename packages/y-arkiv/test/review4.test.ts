@@ -175,3 +175,23 @@ describe("versions", () => {
     expect(opened.doc.getText("t").toString()).toBe("approved 10,000")
   })
 })
+
+describe("history", () => {
+  it("a cold load lists the edits it read in the catch-up window, even those a snapshot covers", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "one")
+    await a.provider.flush()
+    await settle(chain, [a])
+    a.doc.getText("t").insert(3, " two")
+    await a.provider.flush()
+    await settle(chain, [a])
+    await a.provider.compact()
+    await settle(chain, [a])
+    const late = await peer(chain, link, undefined)
+    expect(text(late)).toBe("one two")
+    expect(late.provider.history).toHaveLength(2)
+    await a.provider.destroy()
+  })
+})

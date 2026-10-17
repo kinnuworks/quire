@@ -75,7 +75,7 @@ python3 readers/python/quire_audit.py --doc <0x document id>
 
 The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 93 tests of its own, covering forged writes, forged snapshots and swapped authorship. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library.
 
-The TypeScript suite has 84 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, attacks from four rounds of adversarial review, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 29 security rules in turn and shows that a test fails every time.
+The TypeScript suite has 85 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, attacks from four rounds of adversarial review, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 29 security rules in turn and shows that a test fails every time.
 
 ## How it uses Arkiv
 

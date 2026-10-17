@@ -84,7 +84,7 @@ export type ProviderStats = {
 }
 
 /** A snapshot that decoded and passed its own checks, waiting on the verified-clock check before it counts. */
-type PendingSnapshot = { state: Uint8Array; commit: () => void }
+type PendingSnapshot = { state: Uint8Array; commit: (trimHistory: boolean) => void }
 
 export type ProviderOptions = {
   store: ArkivStore
@@ -408,7 +408,7 @@ export class ArkivProvider extends Observable<string> {
         continue
       }
       this.applyRemote(st.state)
-      st.commit()
+      st.commit(false)
     }
     this.updatesSinceSnapshot = updates.entities.length
   }
@@ -734,11 +734,16 @@ export class ArkivProvider extends Observable<string> {
     // nothing about this snapshot is kept yet: the caller first checks it against the verified edits
     // (see overridesVerified) and commits it only if it passes, so a refused snapshot never becomes
     // the lease, the history base or a source of claimed authors
-    collect.push({ state, commit: () => this.commitSnapshot(entity, base, chunks, state, claims) })
+    collect.push({ state, commit: (trimHistory) => this.commitSnapshot(entity, base, chunks, state, claims, trimHistory) })
     return base
   }
 
-  private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[]): void {
+  /**
+   * Makes a checked snapshot count: its authors table, the lease, the history base. A snapshot that
+   * arrives live trims history to edits after its base; on load the edits were just read for the
+   * catch-up window, so they all stay listed.
+   */
+  private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[], trimHistory: boolean): void {
     for (const c of claims) {
       this.claimedAuthors.set(c.client, c.address)
       this.claimedVia.set(c.client, entity.creator.toLowerCase() as Hex)
@@ -748,8 +753,7 @@ export class ArkivProvider extends Observable<string> {
     this.stats.snapshotsApplied++
     if (!this.snapshot || base >= this.snapshot.base) {
       this.baseState = state
-      // with fullHistory every edit still on chain stays listed, including those the snapshot covers
-      if (!this.fullHistory) this.history.splice(0, this.history.length, ...this.history.filter((h) => h.block >= base))
+      if (trimHistory && !this.fullHistory) this.history.splice(0, this.history.length, ...this.history.filter((h) => h.block >= base))
       this.snapshot = { key: entity.key, base, expiresAt: entity.expiresAt, chunks, creator: entity.creator.toLowerCase() as Hex }
       this.updatesSinceSnapshot = 0
       this.bytesSinceSnapshot = 0
@@ -770,7 +774,7 @@ export class ArkivProvider extends Observable<string> {
         continue
       }
       this.applyRemote(st.state)
-      st.commit()
+      st.commit(true)
     }
   }
 

@@ -22,7 +22,7 @@ MUTANTS = [
     (P, "override detector", "if (unitKey(doc, found, struct.id.clock + i - found.id.clock) !== unitKey(doc, struct, i)) return true", "if (false) return true"),
     (P, "override: map key", "k === 0 ? (item.parentSub ?? \"\") : \"\"", "\"\""),
     (P, "override: format value", "id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? \"\") : \"\", unit(item.content, k)]", "id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? \"\") : \"\", item.content.getContent()[k] ?? null]"),
-    (P, "refused snapshot never commits", "      if (overridesVerified(trial, verified)) {\n        this.reject()\n        continue", "      if (overridesVerified(trial, verified)) {\n        this.reject()\n        st.commit()\n        continue"),
+    (P, "refused snapshot never commits", "      if (overridesVerified(trial, verified)) {\n        this.reject()\n        continue", "      if (overridesVerified(trial, verified)) {\n        this.reject()\n        st.commit(false)\n        continue"),
     (P, "versions must be readonly", "if (!entity.readonly) throw", "if (false) throw"),
     (P, "ACL creator check", "if (entity.creator.toLowerCase() !== this.link.owner.toLowerCase()) return", "if (false) return"),
     (P, "chunk creator", "chunk.creator.toLowerCase() === entity.creator.toLowerCase() ?", "true ?"),

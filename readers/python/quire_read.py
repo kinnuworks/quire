@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Read a Quire v1 document and print its text.
+"""Read a Quire v1 document, or a published version, and print its text.
 
-Follows PROTOCOL.md sections 3 to 5 and 7. Needs `cryptography` and `pycrdt`
-(see requirements.txt). Entities come from a vectors file (--vectors) or a
-live Arkiv node (--link with --rpc). With --verify it prints a trust report
-instead of the text. If `jsonschema` is installed, decrypted headers are
-also checked against spec/schema/*.json.
+Follows PROTOCOL.md sections 1, 3 to 5 and 7. Needs `cryptography` and
+`pycrdt` (see requirements.txt). Entities come from a vectors file
+(--vectors) or a live Arkiv node (--rpc), and the document is named by a
+document link (--link) or a version link (--version-link). With --verify it
+prints a trust report instead of the text. If `jsonschema` is installed,
+decrypted headers are also checked against spec/schema/*.json.
 """
 
 from __future__ import annotations
@@ -218,6 +219,32 @@ def parse_link(link: str) -> Link:
     if len(doc) != 32 or len(secret) != 32:
         raise ValueError("doc id and link secret must be 32 bytes each")
     return Link("0x" + doc.hex(), secret, "0x" + m.group(3).lower())
+
+
+@dataclass
+class VersionLink:
+    key: str  # entity key of the version head, 0x + 64 hex
+    secret: bytes  # the version's own 32-byte key
+
+
+def parse_version_link(link: str) -> VersionLink:
+    """Accept a full URL, a fragment, or the bare `/v/<key>.<secret>` (section 1)."""
+    m = re.search(r"/v/([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)", link)
+    if not m:
+        raise ValueError("not a Quire version link")
+    key, secret = _b64url(m.group(1)), _b64url(m.group(2))
+    if len(key) != 32 or len(secret) != 32:
+        raise ValueError("version entity key and version key must be 32 bytes each")
+    return VersionLink("0x" + key.hex(), secret)
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def format_version_link(entity_key: str, secret: bytes) -> str:
+    """The fragment form `#/v/<key>.<secret>`, for tests and tooling."""
+    return f"#/v/{_b64url_encode(qa._hex_bytes(entity_key))}.{_b64url_encode(secret)}"
 
 
 # ---------------------------------------------------------------- frames
@@ -540,6 +567,8 @@ class ReadResult:
     doc: Doc  # the assembled Yjs document
     kinds: dict[str, str] = field(default_factory=dict)  # entity key -> kind
     creators: dict[str, str] = field(default_factory=dict)  # entity key -> creator
+    bound_by: dict[int, str] = field(default_factory=dict)  # client id -> "snapshot <key>" / "update <key>"
+    author_conflicts: list[str] = field(default_factory=list)  # snapshots disagreeing on authors
 
 
 def _block(value: Any) -> int:
@@ -562,12 +591,14 @@ class Reader:
         self.log = log
         self.schemas = schemas if schemas is not None else Schemas()
         self.keys: dict[int, bytes] = {0: epoch0_key(link.secret)}
-        self.unwrapped_as: str | None = None
+        self.unwrapped_index: int | None = None  # which entry of `wraps` opened
         self.applied: list[str] = []
         self.ignored: list[tuple[str, str]] = []
         self.kinds: dict[str, str] = {}
         self.creators: dict[str, str] = {}
         self.bindings: dict[int, str] = {}
+        self.bound_by: dict[int, str] = {}
+        self.author_conflicts: list[str] = []
 
     def _note(self, e: Entity) -> None:
         self.kinds[e.key] = e.kind
@@ -613,28 +644,35 @@ class Reader:
         epoch = int(acl.get("epoch", 0))
         if epoch == 0 or self.member_key is None:
             return
-        wraps = {k.lower(): v for k, v in (acl.get("wraps") or {}).items()}
-        # The roster is sealed, so find our wrap by our own address, then
-        # fall back to trying every wrap.
-        mine = address_of(public_key_bytes(self.member_key))
-        order = ([mine] if mine in wraps else []) + [a for a in wraps if a != mine]
-        for address in order:
+        # Section 3: `wraps` is an unlabelled list in random order, so try
+        # each entry until one opens with our key.
+        wraps = acl.get("wraps") or []
+        if not isinstance(wraps, list):
+            raise RuntimeError("ACL wraps is not a list")
+        for index, wrap in enumerate(wraps):
             try:
-                key = unwrap_epoch_key(self.member_key, qa._hex_bytes(wraps[address]), epoch)
+                key = unwrap_epoch_key(self.member_key, qa._hex_bytes(str(wrap)), epoch)
             except (InvalidTag, ValueError):
                 continue
             if len(key) == 32:
                 self.keys[epoch] = key
-                self.unwrapped_as = address
-                self.log(f"unwrapped epoch {epoch} key as {address}")
+                self.unwrapped_index = index
+                self.log(f"unwrapped epoch {epoch} key from wrap {index + 1} of {len(wraps)}")
                 return
-        self.log(f"member key does not unwrap epoch {epoch}")
+        self.log(f"member key opens none of the {len(wraps)} wraps for epoch {epoch}")
 
     def roster(self, acl: dict[str, Any]) -> dict[str, Any] | None:
-        """{members, revoked}, or None if it is sealed under a key we lack."""
+        """{doc, epoch, members, revoked}, or None if sealed under a key we lack.
+
+        For epoch 0 the members sit in the ACL header itself; `doc` and
+        `epoch` are filled in from the entity so callers see one shape.
+        """
         epoch = int(acl.get("epoch", 0))
         if epoch == 0:
-            return {"members": acl.get("members") or [], "revoked": acl.get("revoked") or []}
+            return {
+                "doc": self.link.doc, "epoch": 0,
+                "members": acl.get("members") or [], "revoked": acl.get("revoked") or [],
+            }
         key = self.keys.get(epoch)
         if key is None or not acl.get("roster"):
             return None
@@ -649,32 +687,32 @@ class Reader:
             self.schemas.check("roster", roster)
         except Rejected as exc:
             raise RuntimeError(str(exc)) from exc
+        # Section 3: the roster is bound to its document and epoch, so one
+        # cannot be replayed into another document or an older epoch.
+        if str(roster.get("doc", "")).lower() != self.link.doc.lower():
+            raise RuntimeError(f"ACL roster names document {roster.get('doc')!r}, not {self.link.doc}")
+        if roster.get("epoch") != epoch or isinstance(roster.get("epoch"), bool):
+            raise RuntimeError(f"ACL roster names epoch {roster.get('epoch')!r}, ACL header says {epoch}")
         return roster
 
     # Step 3: snapshots and their chunks.
     def _snapshot_data(self, head: Entity, frame: Frame) -> bytes:
-        parts = [frame.data]
-        chunks = frame.header.get("chunks") or []
-        head_id = str(frame.header.get("id", "")).lower()
-        for i, ckey in enumerate(chunks, start=1):
-            chunk = self.source.entity(ckey)
-            if chunk is None:
-                raise Rejected(f"chunk {ckey} missing")
-            if chunk.creator != head.creator or chunk.kind != "c":
-                raise Rejected(f"chunk {ckey} has wrong creator or kind")
-            cf = self._content_frame(chunk)
-            self.schemas.check("chunk", cf.header)
-            if cf.header.get("i") != i or str(cf.header.get("of", "")).lower() != head_id:
-                raise Rejected(f"chunk {ckey} header does not match i/of")
-            self._note(chunk)
-            parts.append(cf.data)
-        data = b"".join(parts)
-        size = frame.header.get("size")
-        if size is not None and int(size) != len(data):
-            raise Rejected(f"snapshot size {len(data)} != header size {size}")
-        return data
+        return assemble(head, frame, self.source, self._content_frame, self.schemas, self._note)
 
-    def load_snapshots(self, members: list[str]) -> tuple[list[tuple[Entity, bytes]], Entity | None, int | None]:
+    def _too_old(self, e: Entity, frame: Frame, current_epoch: int, last_revocation: int | None) -> str | None:
+        """Section 5: an old-epoch update or snapshot written after the
+        latest revocation could have been read by the removed member."""
+        if frame.epoch < current_epoch and last_revocation is not None and e.created_at > last_revocation:
+            what = "update" if e.kind == "u" else "snapshot"
+            return (
+                f"epoch {frame.epoch} {what} created at block {e.created_at},"
+                f" after the revocation at block {last_revocation}"
+            )
+        return None
+
+    def load_snapshots(
+        self, members: list[str], current_epoch: int = 0, last_revocation: int | None = None
+    ) -> tuple[list[tuple[Entity, bytes, Frame]], Entity | None, int | None]:
         decoded: list[tuple[Entity, Frame]] = []
         for e in self.source.by_kind(self.link.doc, "s", members):
             if e.creator not in members:
@@ -684,9 +722,14 @@ class Reader:
                 frame = self._content_frame(e)
                 self.schemas.check("snapshot", frame.header)
                 _block(frame.header["base"])
-                decoded.append((e, frame))
             except (Rejected, KeyError, ValueError) as exc:
                 self._ignore(e, f"snapshot header: {exc}")
+                continue
+            reason = self._too_old(e, frame, current_epoch, last_revocation)
+            if reason:
+                self._ignore(e, reason)
+                continue
+            decoded.append((e, frame))
         # Arkiv does not promise an order: newest qs first, ties by block
         # and then key so the choice is deterministic.
         decoded.sort(key=lambda ef: (int(ef[0].attr("qs") or 0), ef[0].created_at, ef[0].key), reverse=True)
@@ -701,7 +744,7 @@ class Reader:
             return [], None, None
         head, head_frame, head_data = newest
         newest_base = _block(head_frame.header["base"])
-        out: list[tuple[Entity, bytes]] = [(head, head_data)]
+        out: list[tuple[Entity, bytes, Frame]] = [(head, head_data, head_frame)]
         for e, f in decoded:
             if e is head or any(k == e.key for k, _r in self.ignored):
                 continue
@@ -709,10 +752,33 @@ class Reader:
                 self._ignore(e, "base not within 60 blocks of the newest snapshot")
                 continue
             try:
-                out.append((e, self._snapshot_data(e, f)))
+                out.append((e, self._snapshot_data(e, f), f))
             except Rejected as exc:
                 self._ignore(e, str(exc))
         return out, head, newest_base
+
+    def seed_bindings(self, snapshots: list[tuple[Entity, bytes, Frame]]) -> None:
+        """Section 5: client ids are bound first by the `authors` map of
+        the applied snapshots, newest first. Where two applied snapshots
+        claim one client id for different addresses, the newest wins and
+        the disagreement is recorded for the trust report."""
+        for e, _data, frame in snapshots:
+            authors = frame.header.get("authors") or {}
+            for cid_text, address in authors.items():
+                try:
+                    cid = int(str(cid_text), 10)
+                except ValueError:
+                    continue
+                address = str(address).lower()
+                held = self.bindings.get(cid)
+                if held is None:
+                    self.bindings[cid] = address
+                    self.bound_by[cid] = f"snapshot {e.key}"
+                elif held != address:
+                    self.author_conflicts.append(
+                        f"snapshot {e.key} claims client id {cid} for {address};"
+                        f" kept {held} from {self.bound_by[cid]}"
+                    )
 
     # Step 4: updates, with the section 5 rules on epochs and client ids.
     def load_updates(
@@ -731,21 +797,15 @@ class Reader:
             except Rejected as exc:
                 self._ignore(e, str(exc))
                 continue
-            if (
-                frame.epoch < current_epoch
-                and last_revocation is not None
-                and e.created_at > last_revocation
-            ):
-                self._ignore(
-                    e,
-                    f"epoch {frame.epoch} update created at block {e.created_at},"
-                    f" after the revocation at block {last_revocation}",
-                )
+            reason = self._too_old(e, frame, current_epoch, last_revocation)
+            if reason:
+                self._ignore(e, reason)
                 continue
             candidates.append((e, frame.data, clients))
-        # Binding depends on which update is applied first, so apply in a
-        # fixed order: creation block, then qs, then key.
-        candidates.sort(key=lambda c: (c[0].created_at, int(c[0].attr("qs") or 0), c[0].key))
+        # Binding depends on which update is applied first, so section 5
+        # fixes the order: createdAt, then entity key. Keys are 0x + 64
+        # lowercase hex, so string order equals numeric order.
+        candidates.sort(key=lambda c: (c[0].created_at, c[0].key))
         out: list[tuple[Entity, bytes]] = []
         for e, data, clients in candidates:
             taken = sorted(
@@ -756,7 +816,9 @@ class Reader:
                 self._ignore(e, f"Yjs client id already bound to another creator ({owners})")
                 continue
             for cid in clients:
-                self.bindings.setdefault(cid, e.creator)
+                if cid not in self.bindings:
+                    self.bindings[cid] = e.creator
+                    self.bound_by[cid] = f"update {e.key}"
             out.append((e, data))
         return out
 
@@ -795,7 +857,8 @@ class Reader:
         revoked = roster.get("revoked") or []
         last_revocation = max((_block(r["atBlock"]) for r in revoked), default=None)
 
-        snapshots, newest, newest_base = self.load_snapshots(members)
+        snapshots, newest, newest_base = self.load_snapshots(members, epoch, last_revocation)
+        self.seed_bindings(snapshots)
         updates = self.load_updates(members, newest_base, epoch, last_revocation)
 
         # Report entities the member filter excluded (e.g. forged writes).
@@ -804,7 +867,7 @@ class Reader:
                 if e.kind in ("u", "s") and e.creator not in members:
                     self._ignore(e, "creator not in ACL")
 
-        for e, data in snapshots + updates:
+        for e, data in [(s[0], s[1]) for s in snapshots] + updates:
             doc.apply_update(data)
             self._note(e)
             self.applied.append(e.key)
@@ -812,8 +875,119 @@ class Reader:
         return ReadResult(
             text, acl, epoch, sorted(self.keys), roster.get("members", []), revoked,
             self.applied, self.ignored, self.bindings, newest.key if newest else None,
-            doc, self.kinds, self.creators,
+            doc, self.kinds, self.creators, self.bound_by, self.author_conflicts,
         )
+
+
+def assemble(
+    head: Entity,
+    frame: Frame,
+    source: Source,
+    open_frame: Callable[[Entity], Frame],
+    schemas: Schemas,
+    note: Callable[[Entity], None] = lambda _e: None,
+) -> bytes:
+    """Join a snapshot or version head with its chunks (sections 1, 4, 5).
+
+    Each chunk must have the head's creator, the head's outer epoch, the
+    head's creation flags, `i` equal to its 1-based position and `of` equal
+    to the head's `id`. The data must add up to the head's `size`.
+    """
+    parts = [frame.data]
+    chunks = frame.header.get("chunks") or []
+    head_id = str(frame.header.get("id", "")).lower()
+    for i, ckey in enumerate(chunks, start=1):
+        chunk = source.entity(ckey)
+        if chunk is None:
+            raise Rejected(f"chunk {ckey} missing")
+        if chunk.creator != head.creator or chunk.kind != "c":
+            raise Rejected(f"chunk {ckey} has wrong creator or kind")
+        if outer_epoch(chunk) != frame.epoch:
+            raise Rejected(f"chunk {ckey} epoch {outer_epoch(chunk)} differs from its head's {frame.epoch}")
+        if (chunk.readonly, chunk.permissionless_extension) != (head.readonly, head.permissionless_extension):
+            raise Rejected(
+                f"chunk {ckey} flags ({qa.flags_text(chunk)}) differ from its head's ({qa.flags_text(head)})"
+            )
+        cf = open_frame(chunk)
+        schemas.check("chunk", cf.header)
+        if cf.header.get("i") != i or str(cf.header.get("of", "")).lower() != head_id:
+            raise Rejected(f"chunk {ckey} header does not match i/of")
+        note(chunk)
+        parts.append(cf.data)
+    data = b"".join(parts)
+    size = frame.header.get("size")
+    if size is not None and int(size) != len(data):
+        raise Rejected(f"snapshot size {len(data)} != header size {size}")
+    return data
+
+
+# ---------------------------------------------------------------- versions
+
+
+@dataclass
+class VersionResult:
+    text: str
+    head: Entity
+    header: dict[str, Any]
+    epoch: int  # outer epoch of the head; chunks must match it
+    chunks: list[str]
+    doc: Doc
+
+
+def read_version(link: VersionLink, source: Source, schemas: Schemas | None = None) -> VersionResult:
+    """Read a published version from its own link (sections 1, 3 and 4).
+
+    The version key is used directly. The link carries no document id, so
+    the frame is checked against the entity's own `qd`. The link also
+    carries no link secret, so this reader cannot open the ACL and cannot
+    tell whether the version's creator is, or was, a member: that is
+    reported, not checked.
+    """
+    schemas = schemas if schemas is not None else Schemas()
+    head = source.entity(link.key)
+    if head is None:
+        raise RuntimeError(f"version {link.key} not found")
+    if head.kind != "v":
+        raise RuntimeError(f"entity {link.key} is kind {head.kind!r}, not a version")
+    doc_id = head.attr("qd")
+    if not isinstance(doc_id, str) or not qa.HEX32.match(doc_id):
+        raise RuntimeError("version has no bytes32 qd")
+    doc_id = doc_id.lower()
+
+    def open_frame(e: Entity) -> Frame:
+        return decrypt_frame(e, link.secret, doc_id)
+
+    try:
+        frame = open_frame(head)
+        schemas.check("snapshot", frame.header)
+        data = assemble(head, frame, source, open_frame, schemas)
+    except Rejected as exc:
+        raise RuntimeError(f"version {link.key}: {exc}") from exc
+    doc = Doc()
+    doc.apply_update(data)
+    return VersionResult(
+        fragment_text(doc.get("default", type=XmlFragment)), head, frame.header, frame.epoch,
+        list(frame.header.get("chunks") or []), doc,
+    )
+
+
+def version_report(result: VersionResult) -> str:
+    head, header = result.head, result.header
+    lines = ["Quire version report", ""]
+    lines.append(f"version      {head.key}")
+    lines.append(f"document     {str(head.attr('qd')).lower()}")
+    lines.append(f"creator      {head.creator} (membership not checkable without the document link)")
+    lines.append(f"flags        {qa.flags_text(head)}  expected readonly, permissionless extension:"
+                 f" {_yes(not qa.check_flags(head))}")
+    lines.append(f"blocks       created {head.created_at}, expires {head.expires_at}")
+    lines.append(f"epoch        {result.epoch} (outer header; the version key is used directly)")
+    lines.append(f"id           {header.get('id')}  base {header.get('base')}  size {header.get('size')}")
+    lines.append(f"chunks       {len(result.chunks)} (creator, epoch, flags, i and of checked)")
+    authors = header.get("authors") or {}
+    lines.append(f"authors      {len(authors)} (as claimed by the version's creator)")
+    for cid, who in sorted(authors.items(), key=lambda kv: (len(kv[0]), kv[0])):
+        lines.append(f"  {cid:<12} {who}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- text
@@ -852,21 +1026,19 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
     lines.append(f"owner key    {owner_pub[:20]}... hashes to owner: {_yes(owner_ok)}")
     keep = acl.get("keepUntil")
     lines.append(f"keepUntil    {'none' if keep is None else 'block ' + str(keep)}")
-    held = f"unwrapped as {reader.unwrapped_as}" if reader.unwrapped_as else (
-        "derived from the link" if result.epoch == 0 else "not held"
-    )
+    wraps = acl.get("wraps") or []
+    if reader.unwrapped_index is not None:
+        held = f"unwrapped from wrap {reader.unwrapped_index + 1} of {len(wraps)}"
+    else:
+        held = "derived from the link" if result.epoch == 0 else "not held"
     lines.append(f"epoch        {result.epoch} (content key {held})")
-    lines.append(f"wraps        {len(acl.get('wraps') or {})}")
+    lines.append(f"wraps        {len(wraps)} (unlabelled; the count is all a link holder learns)")
     lines.append(f"schemas      {reader.schemas.status}")
     lines.append("")
 
     if result.members is None:
         lines.append("members      not visible: the roster is sealed under the epoch key")
         lines.append("             and no member key unwrapped it, so no content was read")
-        wraps = sorted((acl.get("wraps") or {}).keys())
-        if wraps:
-            lines.append("wrap addresses (readable by any link holder):")
-            lines.extend(f"  {w}" for w in wraps)
     else:
         lines.append(f"members      {len(result.members)}")
         for m in result.members:
@@ -878,6 +1050,8 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
                 f"  {m.get('address')}  {m.get('name')!r:<12} {m.get('role'):<7}"
                 f" added at {m.get('addedAtBlock')}  key hashes to address: {_yes(ok)}"
             )
+        if result.epoch > 0:  # a mismatch would have stopped the read
+            lines.append(f"roster       sealed; its doc and epoch match the ACL: yes")
         lines.append(f"revoked      {len(result.revoked or [])}")
         for r in result.revoked or []:
             lines.append(f"  {r.get('address')}  at block {r.get('atBlock')}")
@@ -903,10 +1077,14 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
 
     if result.bindings:
         lines.append("")
-        lines.append("client ids   (bound by the first applied update)")
+        lines.append("client ids   (bound by applied snapshots' authors, then the first applied update)")
         names = {str(m["address"]).lower(): m.get("name") for m in result.members or []}
         for cid, who in sorted(result.bindings.items()):
-            lines.append(f"  {cid:<12} {who} {names.get(who) or ''}".rstrip())
+            how = result.bound_by.get(cid, "")
+            how = how[: how.find(" ") + 11] + "..." if how else ""
+            lines.append(f"  {cid:<12} {who} {names.get(who) or '':<8} {how}".rstrip())
+        for conflict in result.author_conflicts:
+            lines.append(f"  conflict: {conflict}")
 
     joins = reader.join_requests(acl) if reader.member_key is not None else []
     if reader.member_key is not None and public_key_hex(reader.member_key).lower() == owner_pub.lower():
@@ -929,9 +1107,10 @@ def load_private_key(hex_key: str) -> ec.EllipticCurvePrivateKey:
 
 def main(argv: Iterable[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--vectors", help="document vectors JSON file")
-    src.add_argument("--link", help="Quire document link")
+    ap.add_argument("--vectors", help="vectors JSON file to read entities from instead of --rpc")
+    which = ap.add_mutually_exclusive_group()
+    which.add_argument("--link", help="Quire document link (default with --vectors: the file's link)")
+    which.add_argument("--version-link", help="Quire version link, #/v/<key>.<version key>")
     ap.add_argument("--rpc", default=qa.DEFAULT_RPC, help="Arkiv JSON-RPC URL")
     ap.add_argument("--member-key", help="member private key, 0x + 64 hex")
     ap.add_argument("--verify", action="store_true", help="print a trust report instead of the text")
@@ -939,17 +1118,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     args = ap.parse_args(list(argv) if argv is not None else None)
 
+    if not args.vectors and not (args.link or args.version_link):
+        ap.error("give --vectors, --link or --version-link")
     log = (lambda m: print(m, file=sys.stderr)) if args.verbose else (lambda _m: None)
     try:
         if args.vectors:
             data, entities = qa.load_vectors(args.vectors)
-            link = parse_link(data["link"])
             source: Source = VectorSource(entities)
         else:
-            link = parse_link(args.link)
-            source = RpcSource(args.rpc)
+            data, source = {}, RpcSource(args.rpc)
+        schemas = Schemas(enabled=not args.no_schema)
+        if args.version_link:
+            vresult = read_version(parse_version_link(args.version_link), source, schemas)
+            if args.verify:
+                print(version_report(vresult))
+            elif vresult.text:
+                print(vresult.text)
+            return 0
+        link = parse_link(args.link or data.get("link") or "")
         key = load_private_key(args.member_key) if args.member_key else None
-        reader = Reader(link, source, key, log, Schemas(enabled=not args.no_schema))
+        reader = Reader(link, source, key, log, schemas)
         result = reader.read()
         if args.verify:
             print(trust_report(reader, result))

@@ -82,6 +82,7 @@ class Entity:
     permissionless_extension: bool
     attributes: list[Attribute]
     payload: bytes
+    flags_raw: int | None = None  # creationFlags.raw when the source gives it
 
     def attr(self, name: str) -> Any:
         """Value of the first attribute called `name`, or None."""
@@ -156,10 +157,13 @@ def _parse_attributes(raw: Any) -> list[Attribute]:
 def parse_entity(raw: dict[str, Any]) -> Entity:
     """Normalize one entity from a vectors file or an arkiv_query result."""
     flags = raw.get("creationFlags")
+    flags_raw: int | None = None
     if isinstance(flags, dict):
         readonly = bool(flags.get("readonly"))
         permissionless = bool(flags.get("permissionlessExtension"))
-    else:
+        if flags.get("raw") is not None:
+            flags_raw = _int(flags["raw"])
+    else:  # older vectors put the two booleans at the top level
         readonly = bool(raw.get("readonly"))
         permissionless = bool(raw.get("permissionlessExtension"))
     return Entity(
@@ -172,6 +176,7 @@ def parse_entity(raw: dict[str, Any]) -> Entity:
         permissionless_extension=permissionless,
         attributes=_parse_attributes(raw.get("attributes")),
         payload=_hex_bytes(raw.get("payload") or ""),
+        flags_raw=flags_raw,
     )
 
 
@@ -304,24 +309,33 @@ def check_payload(e: Entity) -> list[str]:
 def check_flags(e: Entity) -> list[str]:
     """Problems with creation flags against the section 1 table.
 
-    Only versions may allow permissionless extension, and versions are
-    readonly. A chunk takes its head's flags, and the head is not visible
-    without decrypting, so a chunk may carry either set: none, or the
-    version set (readonly and permissionless extension together).
+    A version is readonly with permissionless extension. Every other kind,
+    snapshots included, has no flags. A chunk takes its head's flags, and
+    the head is not visible without decrypting, so a chunk may carry either
+    set: none (a snapshot chunk) or both (a version chunk).
+
+    `raw` is the chain's flag bitfield. PROTOCOL.md does not give its bit
+    layout, so the only check on it is that an entity with neither flag
+    also has raw 0: anything else is a flag this audit does not know.
     """
     ro, pe = e.readonly, e.permissionless_extension
+    name = KIND_NAMES.get(e.kind, e.kind)
+    problems: list[str] = []
     if e.kind == "v":
-        problems = [] if ro else ["version is not readonly"]
-        return problems
-    if e.kind == "c":
+        if not ro:
+            problems.append("version is not readonly")
+        if not pe:
+            problems.append("version does not allow permissionless extension")
+    elif e.kind == "c":
         if ro != pe:
-            return [f"chunk flags ({flags_text(e)}) match neither a snapshot nor a version head"]
-        return []
-    problems = []
-    if pe:
-        problems.append(f"{KIND_NAMES.get(e.kind, e.kind)} allows permissionless extension")
-    if ro:
-        problems.append(f"{KIND_NAMES.get(e.kind, e.kind)} is readonly, expected no flags")
+            problems.append(f"chunk flags ({flags_text(e)}) match neither a snapshot nor a version head")
+    else:
+        if pe:
+            problems.append(f"{name} allows permissionless extension")
+        if ro:
+            problems.append(f"{name} is readonly, expected no flags")
+    if not ro and not pe and e.flags_raw not in (None, 0):
+        problems.append(f"{name} has raw flags {e.flags_raw} but neither readonly nor permissionless extension")
     return problems
 
 
@@ -338,7 +352,8 @@ def flags_text(e: Entity) -> str:
         )
         if on
     ]
-    return ", ".join(flags) or "none"
+    text = ", ".join(flags) or "none"
+    return text if e.flags_raw is None else f"{text} (raw {e.flags_raw})"
 
 
 def audit(entities: list[Entity], doc: str | None, owner: str | None) -> Report:

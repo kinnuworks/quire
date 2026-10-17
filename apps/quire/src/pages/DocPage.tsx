@@ -4,7 +4,7 @@ import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import { useEffect, useRef, useState } from "react"
 import type { DocLink, Identity } from "y-arkiv"
-import { AuthorshipBars, setMembers } from "../authorship"
+import { AuthorshipBars, blockAuthors, setMembers } from "../authorship"
 import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
 import { ActivityPanel, ChainPanel, HistoryPanel, LifetimePanel, PeoplePanel } from "../panels"
 import { identityFor, newIdentity, preferredName, saveIdentity, setPreferredName, shareUrl } from "../session"
@@ -193,6 +193,16 @@ export function DocPage({ link }: { link: DocLink }) {
       {role === "pending" && (
         <div className="ws-banner">
           Request sent. The owner sees it live and can add you. If they can't find it, send them your address: <code className="mono">{identity?.address}</code>
+        </div>
+      )}
+
+      {blame && !session.fullHistory && session.provider && blockAuthors(doc, session.provider).flat().some((a) => !a.proven) && (
+        <div className="ws-banner">
+          Dashed bars are claimed: that text reached you inside a snapshot, so only the snapshot's writer vouches for it.{" "}
+          <button className="link-button" onClick={session.loadFullHistory}>
+            Check every edit still on chain
+          </button>{" "}
+          to prove it from the edits themselves.
         </div>
       )}
 

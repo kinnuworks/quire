@@ -39,6 +39,10 @@ export type DocumentSession = {
   /** Bumps on every provider event, so components re-read provider state. */
   tick: number
   latencies: number[]
+  /** True once the session was reopened reading every edit still on chain. */
+  fullHistory: boolean
+  /** Reopens with every edit still on chain, so text older than the newest snapshot is proven too. */
+  loadFullHistory: () => void
 }
 
 let nextId = 1
@@ -46,11 +50,14 @@ let nextId = 1
 export function useDocument(link: DocLink | null, identity: Identity | undefined): DocumentSession {
   // bumping this reconnects with a fresh doc: after a budget wait, or to heal a divergence
   const [attempt, setAttempt] = useState(0)
+  // opt in: a long-edited document can have many edits still on chain, and each page costs a query
+  const [fullHistory, setFullHistory] = useState(false)
+  useEffect(() => setFullHistory(false), [link?.doc])
   // the client id is derived from our address before the editor binds to the doc
   const { doc, salt } = useMemo(() => {
     const d = new Y.Doc()
     return { doc: d, salt: identity ? prepareDoc(d, identity.address) : undefined }
-  }, [link?.doc, identity?.address, attempt])
+  }, [link?.doc, identity?.address, attempt, fullHistory])
   const [provider, setProvider] = useState<ArkivProvider | null>(null)
   const [store, setStore] = useState<SdkStore | null>(null)
   const [error, setError] = useState<SessionError | null>(null)
@@ -61,7 +68,7 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   useEffect(() => {
     if (!link) return
     const s = new SdkStore(identity ? { privateKey: identity.privateKey } : {})
-    const p = new ArkivProvider(doc, { store: s, link, identity, salt })
+    const p = new ArkivProvider(doc, { store: s, link, identity, salt, fullHistory })
     const log = (a: Omit<Activity, "id" | "at">) => {
       activity.current = [{ id: nextId++, at: Date.now(), ...a }, ...activity.current].slice(0, 200)
       bump()
@@ -118,7 +125,7 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       void p.close().catch(() => undefined).finally(() => p.destroy())
       setProvider(null)
     }
-  }, [doc, link?.doc, identity?.address, attempt])
+  }, [doc, link?.doc, identity?.address, attempt, fullHistory])
 
-  return { doc, provider, store, activity: activity.current, error, tick, latencies: latencies.current }
+  return { doc, provider, store, activity: activity.current, error, tick, latencies: latencies.current, fullHistory, loadFullHistory: () => setFullHistory(true) }
 }

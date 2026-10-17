@@ -365,7 +365,22 @@ export function HistoryPanel({ session, link }: { session: DocumentSession; link
   const [cache, setCache] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState<string | null>(null)
   if (!p) return null
-  if (!entries.length) return <div className="panel-card muted">No edits since this document was last opened by a writer. History lists the edits that are still on chain as their own entities.</div>
+  const older = !session.fullHistory && (
+    <p className="muted small">
+      Edits older than the newest snapshot are still on chain for up to 30 days, but opening skips them to save queries.{" "}
+      <button className="link-button" onClick={session.loadFullHistory}>
+        Load every edit still on chain
+      </button>
+      , which also proves who wrote the older text.
+    </p>
+  )
+  if (!entries.length)
+    return (
+      <div className="panel-card">
+        <p className="muted small">{session.fullHistory ? "No edits from members are left on chain: they expired or were shredded. The text comes from snapshots alone." : "No edits since the newest snapshot."}</p>
+        {older}
+      </div>
+    )
   const idx = Math.min(i ?? entries.length - 1, entries.length - 1)
   const at = entries[idx]!
   const key = at.block.toString()
@@ -414,6 +429,7 @@ export function HistoryPanel({ session, link }: { session: DocumentSession; link
         </button>
       )}
       <p className="muted small">Each rebuild costs three queries from your network's free budget.</p>
+      {older}
     </div>
   )
 }

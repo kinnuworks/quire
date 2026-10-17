@@ -196,7 +196,7 @@ export function Home() {
         <div className="container">
           <span className="badge badge--dot">Running on Arkiv's Tiramisu testnet</span>
           <h1>
-            Write together. <span className="t-muted">Nobody else can read it.</span>
+            Write together. <span className="t-muted">Only people with the link can read it.</span>
           </h1>
           <p className="lead">
             Quire is a shared editor with no server in the middle. Every edit is encrypted in your browser, stored on Arkiv, and reaches your collaborators a block or two later.

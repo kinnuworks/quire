@@ -8,6 +8,7 @@
  *      visitor's wallet to this document key on chain, and the UI says so.
  * Reading a document never needs either.
  */
+import { sha256 } from "@noble/hashes/sha2.js"
 import { tiramisu } from "@arkiv-network/sdk/chains"
 import { createPublicClient, createWalletClient, custom, formatEther, http, parseEther } from "viem"
 import { type Hex, TIRAMISU_HTTP } from "y-arkiv"
@@ -34,14 +35,31 @@ async function waitForBalance(address: Hex, ms = 40_000): Promise<boolean> {
 
 export type GasResult = { ok: true; via: "balance" | "drip" | "wallet" } | { ok: false; reason: string }
 
+/**
+ * The drip's proof of work (api/drip.ts): a nonce whose sha256 over
+ * "quire-drip:<address>:<minute>:<nonce>" starts with 20 zero bits. About a
+ * million hashes; yields to the page every few thousand so typing stays smooth.
+ */
+async function dripWork(address: Hex): Promise<{ minute: number; nonce: number }> {
+  const minute = Math.floor(Date.now() / 60_000)
+  const prefix = `quire-drip:${address.toLowerCase()}:${minute}:`
+  const enc = new TextEncoder()
+  for (let nonce = 0; ; nonce++) {
+    const h = sha256(enc.encode(prefix + nonce))
+    if (h[0] === 0 && h[1] === 0 && (h[2]! & 0xf0) === 0) return { minute, nonce }
+    if (nonce % 20_000 === 0) await new Promise((r) => setTimeout(r, 0))
+  }
+}
+
 export async function ensureGas(address: Hex): Promise<GasResult> {
   if ((await balanceOf(address)) >= MIN_BALANCE) return { ok: true, via: "balance" }
   let reason = "The gas drip did not answer."
   try {
+    const work = await dripWork(address)
     const res = await fetch("/api/drip", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ address }),
+      body: JSON.stringify({ address, ...work }),
     })
     const body = (await res.json().catch(() => ({}))) as { error?: string }
     if (res.ok) {

@@ -170,3 +170,4 @@ pre.code { padding: 12px; border-radius: var(--r-md); background: #1B1B1F; color
 .input{flex:1;min-width:0;height:36px;padding:0 12px;border:0;border-radius:var(--r-sm);background:var(--surface);box-shadow:inset 0 0 0 1px var(--line-2);font:inherit;font-size:13px;color:var(--ink)}
 .input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .ws-banner code{font-size:12px;word-break:break-all}
+.link-button{padding:0;border:0;background:none;font:inherit;color:var(--accent-ink);text-decoration:underline;text-underline-offset:2px;cursor:pointer}

@@ -748,7 +748,8 @@ export class ArkivProvider extends Observable<string> {
     this.stats.snapshotsApplied++
     if (!this.snapshot || base >= this.snapshot.base) {
       this.baseState = state
-      this.history.splice(0, this.history.length, ...this.history.filter((h) => h.block >= base))
+      // with fullHistory every edit still on chain stays listed, including those the snapshot covers
+      if (!this.fullHistory) this.history.splice(0, this.history.length, ...this.history.filter((h) => h.block >= base))
       this.snapshot = { key: entity.key, base, expiresAt: entity.expiresAt, chunks, creator: entity.creator.toLowerCase() as Hex }
       this.updatesSinceSnapshot = 0
       this.bytesSinceSnapshot = 0

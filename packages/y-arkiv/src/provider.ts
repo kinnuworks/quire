@@ -271,18 +271,19 @@ export class ArkivProvider extends Observable<string> {
     if (!frame) return
     // unwrap the current epoch key first if this session is a member: it opens the sealed roster
     const epoch = typeof frame.header.epoch === "number" ? frame.header.epoch : 0
-    const wraps = (frame.header.wraps ?? {}) as Record<string, Hex>
+    const wraps = (Array.isArray(frame.header.wraps) ? frame.header.wraps : []) as Hex[]
     if (epoch > 0 && !this.epochKeys.has(epoch) && this.identity) {
-      const wrapped = wraps[this.identity.address.toLowerCase()]
-      if (wrapped) {
+      // wraps carry no labels: try each, and the one sealed to us opens
+      for (const w of wraps) {
         try {
-          this.epochKeys.set(epoch, await unwrapAsMember(hexToBytes(wrapped), this.identity.privateKey, epoch))
+          this.epochKeys.set(epoch, await unwrapAsMember(hexToBytes(w), this.identity.privateKey, epoch))
+          break
         } catch {
-          // a wrap that does not open is treated as no wrap
+          // sealed to someone else
         }
       }
     }
-    const acl = await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n))
+    const acl = await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc)
     this.acl = acl
     this.aclKey = entity.key
     this.aclExpiresAt = entity.expiresAt
@@ -308,7 +309,8 @@ export class ArkivProvider extends Observable<string> {
     this.stats.queries++
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: writers, seqGte: from })
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
-    const byAge = [...updates.entities].sort((x, y) => (x.attributes.seq < y.attributes.seq ? -1 : x.attributes.seq > y.attributes.seq ? 1 : 0))
+    // binding depends on order, so every reader uses the same one: creation block, then key
+    const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
     for (const u of byAge) await this.applyUpdateEntity(u, false)
     this.updatesSinceSnapshot = updates.entities.length
   }
@@ -456,6 +458,12 @@ export class ArkivProvider extends Observable<string> {
       this.deferred.set(entity.key, entity)
       return null
     }
+    if (frame.epoch < this.acl.epoch && entity.createdAt > this.lastRevocationBlock()) {
+      // written under an old key after a revocation: the removed member could read it
+      this.seen.add(entity.key)
+      this.reject()
+      return null
+    }
     const chunks = Array.isArray(frame.header.chunks) ? (frame.header.chunks as Hex[]) : []
     const parts = [frame.data]
     for (const [i, key] of chunks.entries()) {
@@ -532,7 +540,9 @@ export class ArkivProvider extends Observable<string> {
     // parseUpdateMeta covers structs at any clock; encodeStateVectorFromUpdate only counts
     // runs that start at clock 0, so it misses every update after a writer's first
     const clients = [...Y.parseUpdateMeta(update).from.keys()]
-    if (clients.some((c) => (this.authors.get(c) ?? a) !== a)) return false
+    // proven bindings first; a snapshot's claimed authors also count, so nobody can take over
+    // a client id once its own edits have expired into a snapshot
+    if (clients.some((c) => (this.authors.get(c) ?? this.claimedAuthors.get(c) ?? a) !== a)) return false
     for (const c of clients) this.authors.set(c, a)
     return true
   }
@@ -828,7 +838,7 @@ export class ArkivProvider extends Observable<string> {
       acl.members.push({ address: req.address, publicKey: req.publicKey, name: req.name, role: "writer", addedAtBlock: head.toString() })
       if (acl.epoch > 0) {
         const epochKey = this.epochKeys.get(acl.epoch)!
-        acl.wraps[req.address] = `0x${bytesToHex(await wrapForMember(epochKey, hexToBytes(req.publicKey), acl.epoch))}`
+        acl.wraps = shuffle([...acl.wraps, `0x${bytesToHex(await wrapForMember(epochKey, hexToBytes(req.publicKey), acl.epoch))}` as Hex])
       }
       return {}
     })
@@ -848,10 +858,9 @@ export class ArkivProvider extends Observable<string> {
       acl.members = acl.members.filter((m) => m.address.toLowerCase() !== target)
       acl.revoked.push({ address: target as Hex, atBlock: head.toString() })
       acl.epoch += 1
-      acl.wraps = {}
-      for (const m of acl.members) {
-        acl.wraps[m.address.toLowerCase()] = `0x${bytesToHex(await wrapForMember(epochKey, hexToBytes(m.publicKey), acl.epoch))}`
-      }
+      const wraps: Hex[] = []
+      for (const m of acl.members) wraps.push(`0x${bytesToHex(await wrapForMember(epochKey, hexToBytes(m.publicKey), acl.epoch))}`)
+      acl.wraps = shuffle(wraps)
       this.epochKeys.set(acl.epoch, epochKey)
       return { snapshot: { epoch: acl.epoch, key: epochKey } }
     })
@@ -1039,7 +1048,7 @@ function blocks(seconds: number): bigint {
 }
 
 async function aclSpec(doc: Hex, metaKey: Uint8Array, acl: Acl, epochKey: Uint8Array | undefined, head: bigint): Promise<CreateSpec> {
-  const header = (await toHeader(acl, epochKey)) as unknown as Record<string, unknown>
+  const header = (await toHeader(acl, epochKey, doc)) as unknown as Record<string, unknown>
   const payload = encodeOuter(0, await seal(metaKey, encodeFrame({ kind: KIND.acl, doc: hexToBytes(doc), epoch: 0, header, data: new Uint8Array() }, randomBytes)))
   return { payload, attributes: { doc, kind: KIND.acl, seq: head }, lifetimeSeconds: LIFETIME.acl }
 }
@@ -1100,6 +1109,16 @@ async function writeSnapshotEntities(
   transactions++
   bytes += headSpec.payload.length
   return { result, headKey: result.created[(extra.creates ?? []).length]!, chunks, bytes, transactions }
+}
+
+function shuffle<T>(xs: T[]): T[] {
+  const out = [...xs]
+  const r = randomBytes(out.length * 4)
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = new DataView(r.buffer).getUint32(i * 4) % (i + 1)
+    ;[out[i], out[j]] = [out[j]!, out[i]!]
+  }
+  return out
 }
 
 function concat(parts: Uint8Array[]): Uint8Array {

@@ -39,14 +39,12 @@
       ]
     },
     "wraps": {
-      "type": "object",
-      "propertyNames": {
-        "pattern": "^0x[0-9a-f]{40}$"
-      },
-      "additionalProperties": {
+      "type": "array",
+      "items": {
         "type": "string",
         "pattern": "^0x04[0-9a-f]{128}[0-9a-f]{120}$"
-      }
+      },
+      "description": "the epoch key sealed to each member (ephemeral key || envelope), unlabelled and in random order"
     },
     "members": {
       "type": "array",

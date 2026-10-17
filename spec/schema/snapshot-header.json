@@ -8,7 +8,8 @@
     "base",
     "t",
     "chunks",
-    "size"
+    "size",
+    "authors"
   ],
   "properties": {
     "base": {
@@ -45,5 +46,6 @@
       "pattern": "^[0-9a-f]{32}$",
       "description": "random snapshot id; every chunk names it"
     }
-  }
+  },
+  "additionalProperties": false
 }

@@ -127,8 +127,7 @@ for (const kind of Object.values(KIND)) {
       owner: e.owner,
       createdAt: `0x${e.createdAt.toString(16)}`,
       expiresAt: `0x${e.expiresAt.toString(16)}`,
-      readonly: e.readonly,
-      permissionlessExtension: e.permissionlessExtension,
+      creationFlags: { readonly: e.readonly, permissionlessExtension: e.permissionlessExtension, raw: (e.readonly ? 1 : 0) | (e.permissionlessExtension ? 2 : 0) },
       attributes: [
         { name: "qp", type: "str", value: "quire1" },
         { name: "qd", type: "bytes32", value: e.attributes.doc },

@@ -17,13 +17,21 @@ A document is a set of Arkiv entities that share a random 32-byte document id. T
 | join request | `j` | anyone with the link | asks the owner to add a public key | 1 hour | none |
 | version | `v` | any member | frozen copy with its own key | 1 year | readonly, permissionless extension |
 
-Only versions allow permissionless extension. Every other entity can be extended only by its own creator, so nobody outside the member list can keep a document alive.
+Only versions, and the chunks of a version, allow permissionless extension; both are also readonly. Every other entity, including a snapshot's chunks, carries no flags and can be extended only by its own creator, so nobody outside the member list can keep a document alive.
 
 The link a person shares carries three values in the URL fragment: the document id, a 32-byte link secret, and the owner's address. The fragment is never sent to any server.
 
 ```
 https://<app>/#/d/<base64url(doc id)>.<base64url(link secret)>.<owner address, 40 hex chars>
 ```
+
+A published version has its own link, carrying the version head's entity key and the version's 32-byte key:
+
+```
+https://<app>/#/v/<base64url(version entity key)>.<base64url(version key)>
+```
+
+base64url is unpadded (RFC 4648 section 5).
 
 ## 2. Public attributes
 
@@ -57,7 +65,9 @@ The meta key encrypts the ACL payload. Content keys encrypt updates, snapshots, 
 
 Only the current epoch's key is wrapped. That is enough, because a revocation writes a snapshot under the new key in the same batch (section 6): everything older is inside that snapshot, so a member never needs an earlier epoch's key.
 
-When a member is removed, the owner MUST start a new epoch *n* + 1 with a random content key, seal it to each remaining member, and store the results in the ACL's `wraps`. From then on the roster (`members` and `revoked`) is stored only as `roster`, an envelope under the epoch key, so a removed member who still holds the link learns nothing about later membership.
+When a member is removed, the owner MUST start a new epoch *n* + 1 with a random content key, seal it to each remaining member, and store the results in the ACL's `wraps` as an unlabelled list in random order. A member finds their wrap by trying each until one opens. Because the list carries no addresses, a link holder learns only how many members there are, not who they are. From then on the roster is stored only as `roster`: an AES-256-GCM envelope, under the epoch key, of the unpadded UTF-8 JSON object `{doc, epoch, members, revoked}`. Readers MUST check that its `doc` and `epoch` match the entity and the ACL header, so a roster cannot be replayed into another document or epoch. A removed member who still holds the link learns nothing about later membership beyond the member count.
+
+An address "matches" a public key when it is the last 20 bytes of keccak-256 over the 64-byte uncompressed public key without its 0x04 prefix (the Ethereum rule).
 
 ## 4. Payload format
 
@@ -85,10 +95,10 @@ Headers by kind:
 
 | Kind | Header fields | Data |
 |---|---|---|
-| ACL | `v` (1), `owner`, `ownerPublicKey`, `epoch`, `keepUntil` (block or null), `wraps {lowercase address: hex}`; epoch 0: `members[] {address, publicKey, name, role, addedAtBlock}` and `revoked[] {address, atBlock}`; epoch 1+: `roster` (hex envelope of `{members, revoked}`) | empty |
+| ACL | `v` (1), `owner`, `ownerPublicKey`, `epoch`, `keepUntil` (block or null), `wraps` (list of hex, unlabelled); epoch 0: `members[] {address, publicKey, name, role, addedAtBlock}` and `revoked[] {address, atBlock}`; epoch 1+: `roster` (hex envelope of `{members, revoked}`) | empty |
 | update | `t`: writer's clock in ms | a Yjs v1 update |
-| snapshot | `id` (16 random bytes, hex), `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: address}` | the first part of a Yjs v1 state update |
-| chunk | `i` (1-based index), `of` (the snapshot's `id`) | the next part |
+| snapshot | `id` (16 random bytes, 32 hex characters without `0x`), `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: address}` | the first part of a Yjs v1 state update |
+| chunk | `i` (1-based index), `of` (the snapshot's `id`) | the next part. Its outer epoch MUST equal its head's |
 | join | `publicKey` (65-byte hex), `name` | empty |
 | version | same as snapshot | same as snapshot |
 
@@ -96,15 +106,15 @@ Headers by kind:
 
 1. Query the ACL: `qp = "quire1" AND qd = <doc> AND qk = "a" AND $creator = <owner from link>`. Readers MUST NOT trust an ACL created by any other address.
 2. Decrypt it with the meta key. If `epoch` > 0, unwrap your epoch key from `wraps` and open `roster` with it. Without that key you can neither see the members nor read current content.
-3. Query all snapshots from members: `qk = "s"` and `$creator` is any member address, following cursors. Order them by `qs`, newest first (Arkiv does not promise an order). Apply the newest, plus any others whose `base` is within 60 blocks of it. For each `chunks[i]`, fetch the entity by key. The chunk MUST have the same `$creator` as its head, its `i` MUST be the 1-based position and its `of` MUST equal the head's `id`.
-4. Query updates from members with `qs >= newest base - 60`, following cursors. Pin later pages to the first page's block with `atBlock`. Apply them in any order: Yjs updates commute.
+3. Query all snapshots from members: `qk = "s"` and `$creator` is any member address, following cursors. Order them by `qs`, newest first (Arkiv does not promise an order). Apply the newest one that can be assembled, plus any others whose `base` differs from that snapshot's `base` by at most 60 blocks. If the newest cannot be assembled, fall back to the next. For each `chunks[i]`, fetch the entity by key. The chunk MUST have the same `$creator` as its head, its `i` MUST be the 1-based position and its `of` MUST equal the head's `id`.
+4. Query updates from members with `qs >= newest base - 60`, following cursors. Pin later pages to the first page's block with `atBlock`. Yjs updates commute, but client id binding (below) depends on order, so apply them sorted by `createdAt`, then by entity key. Live updates arrive in block order and are applied as they come.
 5. Subscribe to entity events over WebSocket. On `EntityCreated`, fetch the entity by key and apply it if its creator is a member. On `EntityPatched` of the ACL, reload the ACL and catch up. An entity that cannot be read yet (its epoch key or a chunk has not arrived) SHOULD be retried, not dropped.
 
 Readers MUST ignore updates and snapshots whose `$creator` is not in the ACL, even if they decrypt.
 
-Readers MUST ignore an update whose structs use a Yjs client id already bound to a different `$creator`: the first update a reader applies for a client id binds it to that update's creator. This keeps one member from writing under another member's name.
+Readers MUST ignore an update whose structs use a Yjs client id already bound to a different address. A client id is bound by the `authors` map of the snapshot a reader applied, and otherwise by the first update the reader applies that uses it. Client ids are taken from the update's structs at any clock (Yjs `parseUpdateMeta`), not from a state vector derived from the update, which only counts runs that start at clock 0. This keeps one member from writing under another member's name, including after that member's own updates have expired into a snapshot.
 
-Readers MUST ignore an update encrypted for an epoch older than the ACL's current epoch if it was created after the latest revocation in `revoked`: a removed member could read it.
+Readers MUST ignore an update or snapshot encrypted for an epoch older than the ACL's current epoch if its `createdAt` is greater than the `atBlock` of the latest entry in `revoked`: a removed member could read it.
 
 The exact raw query strings, as sent to `arkiv_query`:
 
@@ -134,7 +144,7 @@ Both methods return entities in this shape. Numbers are hex quantities, and the 
 }
 ```
 
-The conformance vectors in `spec/vectors/document.json` use the same shape.
+The conformance vectors in `spec/vectors/document.json` use the same shape, including `creationFlags`.
 
 ## 6. Writing
 

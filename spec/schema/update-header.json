@@ -11,5 +11,6 @@
       "type": "integer",
       "description": "writer clock, ms since epoch"
     }
-  }
+  },
+  "additionalProperties": false
 }

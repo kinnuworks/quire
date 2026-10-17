@@ -45,8 +45,18 @@ describe("JSON Schema matches the reference implementation", () => {
       checked++
       if (k === "a" && frame.header.epoch) {
         const epoch = frame.header.epoch as number
-        const wrap = (frame.header.wraps as Record<string, string>)[vec.members.bea]
-        const epochKey = await unwrapAsMember(hexToBytes(wrap!), vec.privateKeys.bea, epoch)
+        // wraps are unlabelled: Bea tries each until one opens
+        let epochKey: Uint8Array | undefined
+        for (const w of frame.header.wraps as string[]) {
+          try {
+            epochKey = await unwrapAsMember(hexToBytes(w), vec.privateKeys.bea, epoch)
+            break
+          } catch {
+            // sealed to another member
+          }
+        }
+        if (!epochKey) throw new Error("no wrap opened for Bea")
+        expect(JSON.stringify(frame.header.wraps)).not.toContain(vec.members.bea.slice(2))
         keys.set(epoch, epochKey)
         const roster = JSON.parse(new TextDecoder().decode(await open(epochKey, hexToBytes(frame.header.roster as string))))
         expect(schema("acl-roster")(roster), JSON.stringify(schema("acl-roster").errors)).toBe(true)

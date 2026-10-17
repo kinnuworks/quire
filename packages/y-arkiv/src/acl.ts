@@ -38,8 +38,11 @@ export type Acl = {
   keepUntil: string | null
   members: Member[]
   revoked: Revoked[]
-  /** For epochs above 0: the epoch key wrapped for each member, by lowercase address. */
-  wraps: Record<string, Hex>
+  /**
+   * For epochs above 0: the epoch key sealed to each member, in random order and
+   * without labels. A member finds theirs by trying each; nobody else learns who they are for.
+   */
+  wraps: Hex[]
   /** True when the roster is sealed under an epoch key this session does not hold. */
   rosterHidden: boolean
 }
@@ -51,7 +54,7 @@ export type AclHeader = {
   ownerPublicKey: Hex
   epoch: number
   keepUntil: string | null
-  wraps: Record<string, Hex>
+  wraps: Hex[]
   /** Epoch 0 only. */
   members?: Member[]
   revoked?: Revoked[]
@@ -60,7 +63,7 @@ export type AclHeader = {
 }
 
 export function emptyAcl(owner: Member): Acl {
-  return { v: 1, owner: owner.address, ownerPublicKey: owner.publicKey, epoch: 0, keepUntil: null, members: [owner], wraps: {}, revoked: [], rosterHidden: false }
+  return { v: 1, owner: owner.address, ownerPublicKey: owner.publicKey, epoch: 0, keepUntil: null, members: [owner], wraps: [], revoked: [], rosterHidden: false }
 }
 
 export function isMember(acl: Acl, address: Hex | undefined): boolean {
@@ -76,11 +79,12 @@ export function memberAddresses(acl: Acl): Hex[] {
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined): Promise<AclHeader> {
+export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined, doc: Hex): Promise<AclHeader> {
   const base = { v: 1 as const, owner: acl.owner, ownerPublicKey: acl.ownerPublicKey, epoch: acl.epoch, keepUntil: acl.keepUntil, wraps: acl.wraps }
   if (acl.epoch === 0) return { ...base, members: acl.members, revoked: acl.revoked }
   if (!epochKey) throw new Error("sealing the roster needs the current epoch key")
-  const roster = await seal(epochKey, enc.encode(JSON.stringify({ members: acl.members, revoked: acl.revoked })))
+  // the roster names its document and epoch, so it cannot be replayed into another ACL
+  const roster = await seal(epochKey, enc.encode(JSON.stringify({ doc: doc.toLowerCase(), epoch: acl.epoch, members: acl.members, revoked: acl.revoked })))
   return { ...base, roster: `0x${bytesToHex(roster)}` }
 }
 
@@ -88,7 +92,7 @@ export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined): Prom
  * Validates a header and opens its roster. `epochKey` is the current epoch's
  * key if this session holds it; without it an epoch 1+ roster stays hidden.
  */
-export async function fromHeader(header: Record<string, unknown>, owner: Hex, epochKey: (epoch: number) => Uint8Array | undefined): Promise<Acl> {
+export async function fromHeader(header: Record<string, unknown>, owner: Hex, epochKey: (epoch: number) => Uint8Array | undefined, doc: Hex): Promise<Acl> {
   const h = header as unknown as AclHeader
   if (h.v !== 1 || typeof h.epoch !== "number" || typeof h.owner !== "string" || typeof h.ownerPublicKey !== "string") throw new Error("malformed ACL")
   if (h.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("ACL owner does not match the link")
@@ -101,7 +105,8 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
   } else {
     const key = epochKey(h.epoch)
     if (key && h.roster) {
-      const r = JSON.parse(dec.decode(await open(key, hexToBytes(h.roster)))) as { members: Member[]; revoked: Revoked[] }
+      const r = JSON.parse(dec.decode(await open(key, hexToBytes(h.roster)))) as { doc: string; epoch: number; members: Member[]; revoked: Revoked[] }
+      if (r.doc !== doc.toLowerCase() || r.epoch !== h.epoch) throw new Error("ACL roster belongs to another document or epoch")
       members = r.members
       revoked = r.revoked
     } else rosterHidden = true
@@ -109,5 +114,5 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
   if (!rosterHidden && !members.some((m) => m.address.toLowerCase() === owner.toLowerCase() && m.role === "owner")) {
     throw new Error("ACL does not list its owner")
   }
-  return { v: 1, owner: h.owner, ownerPublicKey: h.ownerPublicKey, epoch: h.epoch, keepUntil: h.keepUntil ?? null, wraps: h.wraps ?? {}, members, revoked, rosterHidden }
+  return { v: 1, owner: h.owner, ownerPublicKey: h.ownerPublicKey, epoch: h.epoch, keepUntil: h.keepUntil ?? null, wraps: Array.isArray(h.wraps) ? h.wraps : [], members, revoked, rosterHidden }
 }

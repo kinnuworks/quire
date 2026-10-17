@@ -863,6 +863,10 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
     if result.members is None:
         lines.append("members      not visible: the roster is sealed under the epoch key")
         lines.append("             and no member key unwrapped it, so no content was read")
+        wraps = sorted((acl.get("wraps") or {}).keys())
+        if wraps:
+            lines.append("wrap addresses (readable by any link holder):")
+            lines.extend(f"  {w}" for w in wraps)
     else:
         lines.append(f"members      {len(result.members)}")
         for m in result.members:

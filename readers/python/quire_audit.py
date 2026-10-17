@@ -2,7 +2,8 @@
 """Privacy audit of what the public chain exposes for a Quire v1 document.
 
 Standard library only. Works on a conformance vectors file (--vectors) or
-against a live Arkiv node (--doc, --rpc). See PROTOCOL.md sections 2, 4 and 8.
+against a live Arkiv node (--doc, --rpc). See PROTOCOL.md sections 1, 2, 4
+and 8.
 
 Exit status: 0 when every check passes, 1 when any check fails, 2 on usage
 or network errors.
@@ -24,6 +25,7 @@ DEFAULT_RPC = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 BLOCK_SECONDS = 2
 OUTER_HEADER = 6  # 'Q' | 0x01 | epoch u32
 ENVELOPE_OVERHEAD = 12 + 16  # AES-GCM iv + tag
+SEALED_OVERHEAD = 65  # ephemeral public key in front of a join envelope
 PADDING_BUCKETS = (256, 1024, 4096, 16384, 65536, 98304)
 ATTRIBUTE_TYPES = {"qp": "str", "qd": "bytes32", "qk": "str", "qs": "u64"}
 KIND_NAMES = {
@@ -34,7 +36,14 @@ KIND_NAMES = {
     "j": "join",
     "v": "version",
 }
-ASCII_RUN = re.compile(rb"[\x20-\x7e]{12,}")
+# Leak heuristics. Random ciphertext produces printable runs by chance:
+# a 12-byte run of any printable byte (p = 95/256 per byte) shows up in
+# about 3% of 4 KiB payloads and most 96 KiB ones. Prose is mostly letters
+# and spaces, so 12 of those (p = 53/256) is the main test; any printable
+# run is flagged only from 24 bytes, which catches JSON and hex.
+TEXT_RUN = re.compile(rb"[A-Za-z ]{12,}")
+ASCII_RUN = re.compile(rb"[\x20-\x7e]{24,}")
+FRAME_MAGIC = b"QF\x01"
 HEX32 = re.compile(r"^0x[0-9a-fA-F]{64}$")
 SELECT_ALL = {
     k: True
@@ -277,13 +286,42 @@ def check_payload(e: Entity) -> list[str]:
     problems: list[str] = []
     if p[:2] != b"\x51\x01":
         problems.append(f"payload starts with {p[:2].hex() or 'nothing'}, not 5101")
-    frame = len(p) - OUTER_HEADER - ENVELOPE_OVERHEAD
+    # A join payload is sealed: ephemeral key (65) then the envelope.
+    sealed = SEALED_OVERHEAD if e.kind == "j" else 0
+    frame = len(p) - OUTER_HEADER - sealed - ENVELOPE_OVERHEAD
     if frame not in PADDING_BUCKETS:
         problems.append(f"payload {len(p)} bytes gives frame {frame}, not a bucket")
-    leaks = ASCII_RUN.findall(p)
-    if leaks:
-        sample = leaks[0][:40].decode("ascii")
-        problems.append(f"{len(leaks)} printable run(s) of 12+ bytes, e.g. {sample!r}")
+    if FRAME_MAGIC in p[OUTER_HEADER : OUTER_HEADER + sealed + 12 + len(FRAME_MAGIC) + 1]:
+        problems.append("frame magic QF01 in clear where ciphertext should start")
+    for pattern, what in ((TEXT_RUN, "letter/space run(s) of 12+"), (ASCII_RUN, "printable run(s) of 24+")):
+        leaks = pattern.findall(p)
+        if leaks:
+            sample = leaks[0][:40].decode("ascii")
+            problems.append(f"{len(leaks)} {what} bytes, e.g. {sample!r}")
+    return problems
+
+
+def check_flags(e: Entity) -> list[str]:
+    """Problems with creation flags against the section 1 table.
+
+    Only versions may allow permissionless extension, and versions are
+    readonly. A chunk takes its head's flags, and the head is not visible
+    without decrypting, so a chunk may carry either set: none, or the
+    version set (readonly and permissionless extension together).
+    """
+    ro, pe = e.readonly, e.permissionless_extension
+    if e.kind == "v":
+        problems = [] if ro else ["version is not readonly"]
+        return problems
+    if e.kind == "c":
+        if ro != pe:
+            return [f"chunk flags ({flags_text(e)}) match neither a snapshot nor a version head"]
+        return []
+    problems = []
+    if pe:
+        problems.append(f"{KIND_NAMES.get(e.kind, e.kind)} allows permissionless extension")
+    if ro:
+        problems.append(f"{KIND_NAMES.get(e.kind, e.kind)} is readonly, expected no flags")
     return problems
 
 
@@ -315,6 +353,8 @@ def audit(entities: list[Entity], doc: str | None, owner: str | None) -> Report:
         r.check(not problems, f"attributes {tag}", "; ".join(problems))
         problems = check_payload(e)
         r.check(not problems, f"payload {tag}", "; ".join(problems))
+        problems = check_flags(e)
+        r.check(not problems, f"flags {tag}", "; ".join(problems))
 
     # Per kind counts, lifetimes and flags.
     r.info("")

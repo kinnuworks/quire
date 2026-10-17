@@ -129,6 +129,24 @@
           }
         ]
       }
+    },
+    "creationFlags": {
+      "type": "object",
+      "required": [
+        "readonly",
+        "permissionlessExtension"
+      ],
+      "properties": {
+        "readonly": {
+          "type": "boolean"
+        },
+        "permissionlessExtension": {
+          "type": "boolean"
+        },
+        "raw": {
+          "type": "integer"
+        }
+      }
     }
   }
 }

@@ -1,17 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/acl-header.json",
-  "title": "ACL frame header (kind a)",
+  "title": "ACL frame header (kind a). Epoch 0 carries the roster in clear (inside the meta-key envelope); later epochs seal it under the epoch key.",
   "type": "object",
   "required": [
     "v",
     "owner",
+    "ownerPublicKey",
     "epoch",
-    "members",
-    "wraps",
-    "revoked"
+    "keepUntil",
+    "wraps"
   ],
-  "additionalProperties": false,
   "properties": {
     "v": {
       "const": 1
@@ -20,9 +19,34 @@
       "type": "string",
       "pattern": "^0x[0-9a-f]{40}$"
     },
+    "ownerPublicKey": {
+      "type": "string",
+      "pattern": "^0x04[0-9a-f]{128}$"
+    },
     "epoch": {
       "type": "integer",
       "minimum": 0
+    },
+    "keepUntil": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      ]
+    },
+    "wraps": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^0x[0-9a-f]{40}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^0x04[0-9a-f]{128}[0-9a-f]{120}$"
+      }
     },
     "members": {
       "type": "array",
@@ -63,17 +87,6 @@
         }
       }
     },
-    "wraps": {
-      "type": "object",
-      "propertyNames": {
-        "pattern": "^0x[0-9a-f]{40}$"
-      },
-      "additionalProperties": {
-        "type": "string",
-        "pattern": "^0x04[0-9a-f]{128}[0-9a-f]{120}$",
-        "description": "ephemeral public key (65 bytes) then an envelope of the 32-byte epoch key"
-      }
-    },
     "revoked": {
       "type": "array",
       "items": {
@@ -93,6 +106,54 @@
           }
         }
       }
+    },
+    "roster": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]+$",
+      "description": "AES-256-GCM envelope of {members, revoked} under the current epoch key"
     }
-  }
+  },
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "epoch": {
+          "const": 0
+        }
+      },
+      "required": [
+        "members",
+        "revoked"
+      ],
+      "not": {
+        "required": [
+          "roster"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "epoch": {
+          "minimum": 1
+        }
+      },
+      "required": [
+        "roster"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "members"
+            ]
+          },
+          {
+            "required": [
+              "revoked"
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

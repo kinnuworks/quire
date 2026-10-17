@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/acl-roster.json",
+  "title": "Sealed ACL roster (epoch 1+), after decryption",
+  "type": "object",
+  "required": [
+    "members",
+    "revoked"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "address",
+          "publicKey",
+          "name",
+          "role",
+          "addedAtBlock"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{40}$"
+          },
+          "publicKey": {
+            "type": "string",
+            "pattern": "^0x04[0-9a-f]{128}$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "writer"
+            ]
+          },
+          "addedAtBlock": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      }
+    },
+    "revoked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "address",
+          "atBlock"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{40}$"
+          },
+          "atBlock": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      }
+    }
+  }
+}

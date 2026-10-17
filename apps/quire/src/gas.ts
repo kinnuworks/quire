@@ -4,7 +4,8 @@
  * Writes cost gas, and a new key has none. We try, in order:
  *   1. the drip at /api/drip, which sends a small amount of test GLM and
  *      never sees anything but the address;
- *   2. the visitor's own wallet (MetaMask or similar), with one transfer.
+ *   2. the visitor's own wallet, with one transfer. That transfer links the
+ *      visitor's wallet to this document key on chain, and the UI says so.
  * Reading a document never needs either.
  */
 import { tiramisu } from "@arkiv-network/sdk/chains"
@@ -35,17 +36,22 @@ export type GasResult = { ok: true; via: "balance" | "drip" | "wallet" } | { ok:
 
 export async function ensureGas(address: Hex): Promise<GasResult> {
   if ((await balanceOf(address)) >= MIN_BALANCE) return { ok: true, via: "balance" }
+  let reason = "The gas drip did not answer."
   try {
     const res = await fetch("/api/drip", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ address }),
     })
-    if (res.ok && (await waitForBalance(address))) return { ok: true, via: "drip" }
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    if (res.ok) {
+      if (await waitForBalance(address)) return { ok: true, via: "drip" }
+      reason = "The drip sent gas, but it has not arrived yet. Try again in a few seconds."
+    } else if (body.error) reason = body.error
   } catch {
-    // no drip deployed here: fall through to the wallet
+    // no drip on this host: fall through
   }
-  return { ok: false, reason: "The gas drip is unavailable. Fund this key from your own wallet instead." }
+  return { ok: false, reason }
 }
 
 type Injected = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> }
@@ -54,7 +60,7 @@ export function hasWallet(): boolean {
   return typeof window !== "undefined" && !!(window as unknown as { ethereum?: Injected }).ethereum
 }
 
-/** One transfer from the visitor's wallet to the document key. */
+/** One transfer from the visitor's wallet to the document key. The caller must warn about linkability first. */
 export async function fundFromWallet(address: Hex, amount = "0.02"): Promise<GasResult> {
   const eth = (window as unknown as { ethereum?: Injected }).ethereum
   if (!eth) return { ok: false, reason: "No browser wallet found." }
@@ -81,3 +87,6 @@ export async function fundFromWallet(address: Hex, amount = "0.02"): Promise<Gas
   await reader.waitForTransactionReceipt({ hash })
   return { ok: true, via: "wallet" }
 }
+
+export const WALLET_WARNING =
+  "Funding from your own wallet puts a transfer from that wallet to this document's key on chain, so anyone can link the two. Use a wallet you don't mind being linked."

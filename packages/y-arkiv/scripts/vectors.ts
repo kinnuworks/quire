@@ -156,11 +156,11 @@ writeFileSync(
       doc: DOC,
       owner: owner.address,
       members: { owner: owner.address, bea: bea.address, cal: cal.address, mallory: mallory.address },
-      privateKeys: { bea: BEA_KEY, note: "Bea's key unwraps epoch 1. Never use these keys anywhere real." },
+      privateKeys: { owner: OWNER_KEY, bea: BEA_KEY, note: "Bea's key unwraps epoch 1; the owner's key opens join requests. Synthetic: never use these keys anywhere real." },
       head: chain.block.toString(),
       entities: all,
       expected: {
-        // a link holder without a member key reads only epoch 0 content
+        // a link holder who is not a member reads nothing once the epoch moves past 0: the roster is sealed
         linkHolderText: text(reader.doc),
         // a current member (Bea) reads everything
         memberText: text(beaView.doc),

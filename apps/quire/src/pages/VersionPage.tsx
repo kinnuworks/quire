@@ -12,7 +12,8 @@ export function VersionPage({ link }: { link: VersionLink }) {
   }, [link.key])
   return (
     <main className="version">
-      <a className="mark small" href="#/">
+      <a className="nav__brand" href="#/">
+        <span className="app-icon" />
         Quire
       </a>
       {!state && <p className="muted">Reading the published version from Arkiv…</p>}
@@ -29,7 +30,7 @@ export function VersionPage({ link }: { link: VersionLink }) {
               View the entity
             </a>
           </p>
-          <article className="page readonly">
+          <article className="sheet">
             {state.text.split("\n").map((line, i) => (
               <p key={i}>{line || " "}</p>
             ))}

@@ -1,100 +1,567 @@
-import { useState } from "react"
-import { ArkivProvider, formatDocLink, newDocLink, SdkStore } from "y-arkiv"
-import { ensureGas, fundFromWallet, hasWallet } from "../gas"
-import { knownDocuments, newIdentity, preferredName, saveIdentity, saveLink, setPreferredName } from "../session"
+import { useEffect, useState } from "react"
+import { ArkivProvider, formatDocLink, type Identity, newDocLink, SdkStore } from "y-arkiv"
 import { short } from "../format"
+import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
+import { ArrowIcon, BookIcon, GithubIcon, HistoryIcon, HourglassIcon, KeyIcon, LockIcon, PenIcon, PlugIcon, ShieldIcon, SnowIcon, TerminalIcon } from "../icons"
+import { knownDocuments, newIdentity, preferredName, saveIdentity, saveLink, setPreferredName } from "../session"
+import { TryIt } from "../TryIt"
 
-export function Home() {
+const REPO = "https://github.com/kinnuworks/quire"
+
+function useReveal() {
+  useEffect(() => {
+    const els = document.querySelectorAll(".reveal")
+    if (!("IntersectionObserver" in window)) return els.forEach((el) => el.classList.add("in"))
+    const io = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            e.target.classList.add("in")
+            io.unobserve(e.target)
+          }
+        }),
+      { rootMargin: "0px 0px -8% 0px" },
+    )
+    els.forEach((el) => io.observe(el))
+    return () => io.disconnect()
+  }, [])
+}
+
+function CreateForm({ id }: { id: string }) {
   const [name, setName] = useState(preferredName())
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [needsWallet, setNeedsWallet] = useState<string | null>(null)
-  const docs = knownDocuments()
+  // the key survives retries, so funding it by hand and pressing the button again works
+  const [pending, setPending] = useState<Identity | null>(null)
 
-  async function create(viaWallet = false) {
+  async function create(e?: React.FormEvent, viaWallet = false) {
+    e?.preventDefault()
     setError(null)
     const pseudonym = name.trim() || "Owner"
     setPreferredName(pseudonym)
-    const id = newIdentity(pseudonym)
-    const link = newDocLink(id.address)
+    const identity = pending ? { ...pending, name: pseudonym } : newIdentity(pseudonym)
+    setPending(identity)
+    const link = newDocLink(identity.address)
     try {
-      setBusy("Getting this document's key some test gas")
-      const gas = viaWallet ? await fundFromWallet(id.address) : await ensureGas(id.address)
-      if (!gas.ok) {
-        setNeedsWallet(gas.reason)
-        setBusy(null)
-        return
-      }
-      setBusy("Writing the member list and first snapshot in one transaction")
-      await ArkivProvider.createDocument({ store: new SdkStore({ privateKey: id.privateKey }), link, identity: id })
-      saveIdentity(link.doc, id)
+      setBusy("Funding a fresh key…")
+      const gas = viaWallet ? await fundFromWallet(identity.address) : await ensureGas(identity.address)
+      if (!gas.ok) throw new Error(gas.reason)
+      setBusy("Writing to Arkiv…")
+      await ArkivProvider.createDocument({ store: new SdkStore({ privateKey: identity.privateKey }), link, identity })
+      saveIdentity(link.doc, identity)
       saveLink(link)
       location.hash = formatDocLink(link)
-    } catch (e) {
-      setError((e as Error).message)
+    } catch (err) {
+      setError((err as Error).message)
       setBusy(null)
     }
   }
 
   return (
-    <main className="home">
-      <header className="hero">
-        <div className="mark">Quire</div>
-        <h1>Write together. No server reads it, and no server can take it away.</h1>
-        <p className="lede">
-          Every edit is encrypted in your browser and stored as an entity on Arkiv. Your collaborators get it within a block or two,
-          straight from the chain. There is no Quire backend holding your documents. The link you share is the key.
-        </p>
-      </header>
-
-      <section className="card create">
-        <label>
-          Your name in this document
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="A pseudonym is fine" maxLength={40} />
-        </label>
-        <button className="primary" disabled={!!busy} onClick={() => create(false)}>
-          {busy ? busy : "New document"}
+    <>
+      <form className="join" onSubmit={create} id={id}>
+        <input aria-label="Your name in this document" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name, a pseudonym is fine" maxLength={40} />
+        <button className="btn btn-candy" disabled={!!busy}>
+          {busy ?? (pending && error ? "Try again" : "New document")}
         </button>
-        {needsWallet && (
-          <div className="note">
-            <p>{needsWallet}</p>
-            {hasWallet() ? (
-              <button onClick={() => create(true)}>Fund with my wallet and create</button>
-            ) : (
-              <p>Install a browser wallet, or get test GLM from the Arkiv faucet at hub.arkiv.network/faucet.</p>
+      </form>
+      {error && pending ? (
+        <div className="card create-help">
+          <p className="error">{error}</p>
+          <p className="t-small">
+            This document's key is <span className="t-mono">{pending.address}</span>. Send it a little test GLM (0.01 is plenty) from the{" "}
+            <a href="https://hub.arkiv.network/faucet" target="_blank" rel="noreferrer">
+              Arkiv faucet
+            </a>{" "}
+            or any Tiramisu wallet, then press Try again.
+          </p>
+          <div className="row wrap" style={{ gap: 8, marginTop: 10 }}>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => navigator.clipboard?.writeText(pending.address)}>
+              Copy address
+            </button>
+            {hasWallet() && (
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => confirm(WALLET_WARNING) && create(undefined, true)}>
+                Fund from my wallet
+              </button>
             )}
           </div>
-        )}
-        {error && <p className="error">{error}</p>}
-      </section>
-
-      {docs.length > 0 && (
-        <section className="card">
-          <h2>Documents in this browser</h2>
-          <ul className="doclist">
-            {docs.map((d) => (
-              <li key={d.doc}>
-                <a href={`#/doc/${d.doc}`}>{short(d.doc, 6)}</a>
-              </li>
-            ))}
-          </ul>
-        </section>
+        </div>
+      ) : (
+        <p className="create-note">Creates a key for this document only, funds it with test gas, and writes the member list. About ten seconds.</p>
       )}
+    </>
+  )
+}
 
-      <section className="facts">
-        <div>
-          <h3>Private by construction</h3>
-          <p>The explorer sees four attributes and padded ciphertext. No titles, no text, no names, and a different address for you in every document.</p>
+function HeroVisual() {
+  return (
+    <div className="stage" aria-hidden="true">
+      <div className="duo">
+        <div className="window">
+          <div className="window__bar">
+            <div className="lights">
+              <i />
+              <i />
+              <i />
+            </div>
+            <span className="window__title">Field notes · 3 members</span>
+          </div>
+          <div className="doc-mock">
+            <h4>Site visit, Ward 14</h4>
+            <p style={{ "--bar": "var(--author-a)" } as React.CSSProperties}>The pump house was locked again. Water came on at 6:40 and stopped before 8.</p>
+            <p style={{ "--bar": "linear-gradient(var(--author-a) 50%, var(--author-b) 50%)" } as React.CSSProperties}>
+              Residents counted four dry days this month. Two of them were not on the official roster.
+            </p>
+            <p style={{ "--bar": "var(--author-b)" } as React.CSSProperties}>
+              Next: ask the ward office for the schedule in writing
+              <span className="caret" />
+              <span className="caret-tag">Bea</span>
+            </p>
+          </div>
         </div>
-        <div>
-          <h3>Authorship you can check</h3>
-          <p>Each paragraph shows which wallets wrote it, taken from the on-chain creator of every edit. Writes from outside the member list are ignored.</p>
+        <div className="window window--dark">
+          <div className="window__bar">
+            <div className="lights">
+              <i />
+              <i />
+              <i />
+            </div>
+            <span className="window__title">Explorer</span>
+          </div>
+          <div className="pub">
+            <dl>
+              <dt>$creator</dt>
+              <dd>0x9e1c…41a7</dd>
+              <dt>qp</dt>
+              <dd>"quire1"</dd>
+              <dt>qd</dt>
+              <dd>0x3f0a…c912</dd>
+              <dt>qk</dt>
+              <dd>"u"</dd>
+              <dt>qs</dt>
+              <dd>u64</dd>
+              <dt>payload</dt>
+              <dd>1,034 bytes</dd>
+            </dl>
+            <div className="hex">51 01 00 00 00 00 9c 4e 0b 71 e2 3a d8 05 f6 1c 77 a9 30 be 52 c4 8d 19 e7 6a 02 f3 bb 48 d1 7e 0c 95 a6 21 4f e8 ca 13 70 9d …</div>
+          </div>
         </div>
-        <div>
-          <h3>Expiry you control</h3>
-          <p>A document lives as long as someone keeps opening it, or as long as the owner sets. Members can shred everything they wrote in one transaction.</p>
+      </div>
+      <div className="float" style={{ left: "-8px", bottom: "26px" }}>
+        <div className="float-row">
+          <span className="live-dot" />
+          <div>
+            <b>Edit from Bea</b>
+            <div className="t-micro">arrived one block after she typed</div>
+          </div>
+        </div>
+      </div>
+      <div className="float" style={{ right: "18px", top: "-6px" }}>
+        <div className="float-row">
+          <ShieldIcon />
+          <div>
+            <b>1 write ignored</b>
+            <div className="t-micro">its creator is not a member</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function Home() {
+  useReveal()
+  const docs = knownDocuments()
+  return (
+    <>
+      <nav className="nav">
+        <div className="nav__bar">
+          <a className="nav__brand" href="#/">
+            <span className="app-icon" />
+            Quire
+          </a>
+          <div className="nav__links">
+            <a href="#how">How it works</a>
+            <a href="#try">Try the encryption</a>
+            <a href="#open">Build on it</a>
+            <a href="#faq">FAQ</a>
+          </div>
+          <a className="btn btn-sm btn-candy" href="#start">
+            New document
+          </a>
+        </div>
+      </nav>
+
+      <header className="hero">
+        <div className="container">
+          <span className="badge badge--dot">Running on Arkiv's Tiramisu testnet</span>
+          <h1>
+            Write together. <span className="t-muted">Nobody else can read it.</span>
+          </h1>
+          <p className="lead">
+            Quire is a shared editor with no server in the middle. Every edit is encrypted in your browser, stored on Arkiv, and reaches your collaborators a block or two later.
+          </p>
+          <div id="start">
+            <CreateForm id="create" />
+          </div>
+          <div className="trust">
+            <span>Free on testnet</span>
+            <span>No account</span>
+            <span>Open source, MIT</span>
+          </div>
+          <div className="hero__visual bleed">
+            <HeroVisual />
+          </div>
+        </div>
+      </header>
+
+      <section className="section section--alt after-bleed" id="how">
+        <div className="container">
+          <div className="section-head">
+            <span className="eyebrow">
+              <span className="dot" />
+              Why it exists
+            </span>
+            <h2>A shared document is only as private as its host.</h2>
+            <p className="lead">The usual setup gives one company the only copy, the right to read it and the power to switch it off. That has happened, more than once.</p>
+          </div>
+          <div className="grid grid-2">
+            <div className="card card--flat reveal">
+              <p className="t-title">The usual way</p>
+              <ul className="cases">
+                <li>
+                  <time>31 Oct 2017</time>
+                  <span>Google Docs locked journalists out of their own drafts with a mistaken terms-of-service flag.</span>
+                </li>
+                <li>
+                  <time>Jul 2019</time>
+                  <span>GitHub restricted private repositories for developers in Iran, Syria and Crimea under US sanctions.</span>
+                </li>
+                <li>
+                  <time>9 Sep 2024</time>
+                  <span>Notion cut off its users in Russia and told them to export their data.</span>
+                </li>
+              </ul>
+              <div className="flow">
+                <span>Your browser</span>
+                <i>→</i>
+                <span>Their server, readable</span>
+                <i>→</i>
+                <span>Your team</span>
+              </div>
+            </div>
+            <div className="card card--chosen reveal" style={{ "--i": 1 } as React.CSSProperties}>
+              <p className="t-title">With Quire</p>
+              <p className="t-small" style={{ marginTop: 14 }}>
+                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so there is nothing for us to lock, scan or hand over.
+              </p>
+              <div className="flow">
+                <span>Your browser</span>
+                <i>→</i>
+                <span>Arkiv, encrypted</span>
+                <i>→</i>
+                <span>Your team</span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
-    </main>
+
+      <section className="section">
+        <div className="container stack">
+          <div className="split reveal">
+            <div>
+              <span className="eyebrow">
+                <LockIcon /> Private by construction
+              </span>
+              <h3>The explorer sees four fields and noise.</h3>
+              <p className="lead">
+                Each entity carries a protocol tag, a random document id, a kind and a block number. The text, the title and the member list are encrypted and padded to one of six sizes. You also get a fresh address in every document, so nobody can link your documents together.
+              </p>
+              <div className="chips">
+                <span className="chip">AES-256-GCM</span>
+                <span className="chip">Padded payloads</span>
+                <span className="chip">Key per document</span>
+              </div>
+            </div>
+            <div className="stage stage--soft" aria-hidden="true">
+              <div className="mini">
+                <div className="mini__head">
+                  <span>One edit, two views</span>
+                  <span className="pill-tag">same entity</span>
+                </div>
+                <div className="mini__body">
+                  <div className="pair">
+                    <div>
+                      <h5>Public</h5>
+                      <dl className="kv">
+                        <dt>qk</dt>
+                        <dd>"u"</dd>
+                        <dt>qs</dt>
+                        <dd>u64</dd>
+                        <dt>size</dt>
+                        <dd>1,034 B</dd>
+                      </dl>
+                    </div>
+                    <div className="private">
+                      <h5>Your browser</h5>
+                      <dl className="kv">
+                        <dt>kind</dt>
+                        <dd>edit</dd>
+                        <dt>by</dt>
+                        <dd>Bea</dd>
+                        <dt>text</dt>
+                        <dd>"ask the ward office…"</dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="split split--flip reveal">
+            <div>
+              <span className="eyebrow">
+                <PenIcon /> Authorship you can check
+              </span>
+              <h3>Every paragraph knows who wrote it.</h3>
+              <p className="lead">
+                Turn on authorship and each paragraph gets a bar in the colors of the wallets that wrote it. The colors come from the on-chain creator of each edit, which nobody can fake. Writes from addresses outside the member list are never applied.
+              </p>
+              <div className="chips">
+                <span className="chip">$creator checks</span>
+                <span className="chip">Forged writes ignored</span>
+              </div>
+            </div>
+            <div className="stage stage--soft" aria-hidden="true">
+              <div className="mini">
+                <div className="mini__head">
+                  <span>Who wrote what</span>
+                  <span className="pill-tag accent">on</span>
+                </div>
+                <div className="doc-mock" style={{ minHeight: 0, padding: "18px 22px 20px 34px" }}>
+                  <p style={{ "--bar": "var(--author-a)" } as React.CSSProperties}>Budget draft, second pass.</p>
+                  <p style={{ "--bar": "var(--author-c)" } as React.CSSProperties}>Moved travel to its own line so it can be cut first.</p>
+                  <p style={{ "--bar": "linear-gradient(var(--author-c) 50%, var(--author-b) 50%)" } as React.CSSProperties}>Printing costs are an estimate until Friday.</p>
+                </div>
+                <div className="mini__body" style={{ borderTop: "1px solid var(--line)" }}>
+                  <div className="row wrap" style={{ gap: 14 }}>
+                    <span className="addr"><span className="dot" style={{ background: "var(--author-a)" }} />Asha · 0x41c0…8e2d</span>
+                    <span className="addr"><span className="dot" style={{ background: "var(--author-c)" }} />Ravi · 0xb7f2…01aa</span>
+                    <span className="addr"><span className="dot" style={{ background: "var(--author-b)" }} />Bea · 0x9e1c…41a7</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="split reveal">
+            <div>
+              <span className="eyebrow">
+                <HourglassIcon /> Expiry you control
+              </span>
+              <h3>Documents live while people use them.</h3>
+              <p className="lead">
+                A document rests on a snapshot with a 30-day lease. Opening it renews the lease, so a document nobody touches fades away on its own. The owner can keep it longer or delete it now, and any member can shred everything they wrote in one transaction.
+              </p>
+              <div className="chips">
+                <span className="chip">Entity Expiration</span>
+                <span className="chip">Lifetime Extension</span>
+                <span className="chip">Shred my writing</span>
+              </div>
+            </div>
+            <div className="stage stage--soft" aria-hidden="true">
+              <div className="mini">
+                <div className="mini__head">
+                  <span>Lifetime</span>
+                  <span className="pill-tag">renewed on open</span>
+                </div>
+                <div className="mini__body">
+                  <div className="countdown">28d 4h</div>
+                  <div className="meter">
+                    <i style={{ width: "92%" }} />
+                  </div>
+                  <div className="row wrap" style={{ gap: 8 }}>
+                    <span className="chip chip--soft">Keep 90 days</span>
+                    <span className="chip chip--soft">Keep 1 year</span>
+                    <span className="chip chip--soft">Delete now</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="split split--flip reveal">
+            <div>
+              <span className="eyebrow">
+                <KeyIcon /> Removing someone
+              </span>
+              <h3>Revoking a member rotates the key.</h3>
+              <p className="lead">
+                Removing a member starts a new epoch with a fresh key, wrapped only for the people who stay. The new member list and a snapshot under the new key land in the same transaction. The old link stops working for anything written afterwards.
+              </p>
+              <div className="chips">
+                <span className="chip">Atomic batch</span>
+                <span className="chip">ECDH key wrap</span>
+              </div>
+            </div>
+            <div className="stage stage--soft" aria-hidden="true">
+              <div className="mini">
+                <div className="mini__head">
+                  <span>Members</span>
+                  <span className="pill-tag accent">epoch 2</span>
+                </div>
+                <div className="mini__body" style={{ gap: 0 }}>
+                  {[
+                    { n: "Asha", a: "0x41c0…8e2d", c: "var(--author-a)", r: "owner" },
+                    { n: "Bea", a: "0x9e1c…41a7", c: "var(--author-b)", r: "writer" },
+                    { n: "Ravi", a: "0xb7f2…01aa", c: "var(--author-c)", r: "removed", gone: true },
+                  ].map((m) => (
+                    <div className={`member ${m.gone ? "gone" : ""}`} key={m.n}>
+                      <span className="dot" style={{ background: m.c }} />
+                      <div className="who">
+                        <b>{m.n}</b>
+                        <span>{m.a}</span>
+                      </div>
+                      <span className="pill-tag">{m.r}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="section section--alt" id="try">
+        <div className="container">
+          <div className="section-head">
+            <span className="eyebrow">
+              <span className="dot" />
+              Try it on this page
+            </span>
+            <h2>
+              Encrypt a line <em className="t-serif">yourself.</em>
+            </h2>
+            <p className="lead">This is the exact code path an edit takes before it is written to Arkiv. Type below and watch what the public would see.</p>
+          </div>
+          <TryIt />
+        </div>
+      </section>
+
+      <section className="section" id="open">
+        <div className="container">
+          <div className="section-head">
+            <span className="eyebrow">
+              <span className="dot" />
+              Open protocol
+            </span>
+            <h2>Built so others can build on it.</h2>
+            <p className="lead">The editor is one client. The protocol, the library and two independent readers are in the repository under MIT.</p>
+          </div>
+          <div className="grid grid-3">
+            {[
+              { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Swap it for y-websocket and any Yjs editor syncs over Arkiv." },
+              { i: <BookIcon />, t: "A written spec", d: "PROTOCOL.md, JSON Schema for every entity, and test vectors with a forged write." },
+              { i: <TerminalIcon />, t: "Read without us", d: "A CLI and a Python reader written from the spec alone rebuild any document from chain data." },
+              { i: <HistoryIcon />, t: "Time travel", d: "Rebuild a document exactly as Arkiv held it at a past block, with atBlock reads." },
+              { i: <SnowIcon />, t: "Frozen versions", d: "Publish a readonly copy with its own key. Anyone with the link can keep it alive." },
+              { i: <ShieldIcon />, t: "Privacy audit", d: "A standard-library script checks what the explorer can see for any document id." },
+            ].map((x, n) => (
+              <div className="tile reveal" key={x.t} style={{ "--i": n % 3 } as React.CSSProperties}>
+                <span className="icon-tile">{x.i}</span>
+                <div>
+                  <p className="t-title">{x.t}</p>
+                  <p>{x.d}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="cta-row">
+            <a className="btn btn-outline" href={REPO} target="_blank" rel="noreferrer">
+              <GithubIcon /> Read the code
+            </a>
+            <a className="btn btn-ghost" href={`${REPO}/blob/main/PROTOCOL.md`} target="_blank" rel="noreferrer">
+              Read the protocol <ArrowIcon />
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section className="section section--alt" id="faq">
+        <div className="container">
+          <div className="section-head">
+            <h2>Questions.</h2>
+          </div>
+          <div className="faq">
+            <details>
+              <summary>Is there really no server?</summary>
+              <p>
+                There is one small function, and it only sends a few cents of test gas to a new document key. It sees an address and nothing else. Reading and writing documents goes straight from your browser to Arkiv. You can also skip the drip and fund the key yourself.
+              </p>
+            </details>
+            <details>
+              <summary>What can someone watching the chain learn?</summary>
+              <p>
+                That a document id exists, which addresses write to it and roughly when. Not the text, the title, the members' names or who the addresses belong to. Your address is new in every document. One thing to know: on testnet the drip funds every key from the same wallet, so a careful observer can tell that two keys were funded by Quire.
+              </p>
+            </details>
+            <details>
+              <summary>What happens if I lose the link?</summary>
+              <p>The link is the key, and nobody else has a copy. Ask a member to send it again. This browser also remembers the documents you opened in it.</p>
+            </details>
+            <details>
+              <summary>Can a removed member still read the document?</summary>
+              <p>They keep whatever they already saw. They cannot read anything written after they were removed, because the key changed and their new copy was never wrapped for them.</p>
+            </details>
+            <details>
+              <summary>Can I use this in my own app?</summary>
+              <p>Yes. y-arkiv is a Yjs provider, so editors like Tiptap, BlockNote and CodeMirror work with it. PROTOCOL.md describes the format if you want to write your own client.</p>
+            </details>
+            <details>
+              <summary>Why testnet only?</summary>
+              <p>Arkiv's network is in testnet. Treat everything here as a working prototype and keep real secrets out of it.</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="container" style={{ textAlign: "center" }}>
+          <span className="app-icon final-icon" style={{ display: "block" }} />
+          <h2>
+            Start a document. <span className="t-muted">Share the link.</span>
+          </h2>
+          <div style={{ marginTop: 8 }}>
+            <CreateForm id="create-bottom" />
+          </div>
+          {docs.length > 0 && (
+            <div className="chips" style={{ justifyContent: "center", marginTop: 28 }}>
+              {docs.slice(0, 6).map((d) => (
+                <a className="chip" key={d.doc} href={`#/doc/${d.doc}`}>
+                  Reopen {short(d.doc, 4)}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <footer className="footer">
+        <div className="container">
+          <a className="nav__brand" href="#/">
+            <span className="app-icon" />
+            Quire
+          </a>
+          <div className="row wrap" style={{ gap: 20 }}>
+            <a href={REPO} target="_blank" rel="noreferrer">GitHub</a>
+            <a href={`${REPO}/blob/main/PROTOCOL.md`} target="_blank" rel="noreferrer">Protocol</a>
+            <a href="https://arkiv.network" target="_blank" rel="noreferrer">Arkiv</a>
+          </div>
+          <span>Built on Arkiv for the Global Tour Stop. MIT licensed.</span>
+        </div>
+      </footer>
+    </>
   )
 }

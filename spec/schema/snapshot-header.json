@@ -4,6 +4,7 @@
   "title": "Snapshot or version frame header (kind s or v); data is the first part of a Yjs v1 state update",
   "type": "object",
   "required": [
+    "id",
     "base",
     "t",
     "chunks",
@@ -38,6 +39,11 @@
         "pattern": "^0x[0-9a-f]{40}$"
       },
       "description": "Yjs client id to address, as claimed by the compactor"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "random snapshot id; every chunk names it"
     }
   }
 }

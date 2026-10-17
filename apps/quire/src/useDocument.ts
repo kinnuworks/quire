@@ -63,8 +63,16 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       () => bump(),
       (e: Error) => setError(e.message),
     )
+    // fold the last edits into a snapshot when the tab is hidden or closed, so nothing outlives its cover
+    const onHide = () => {
+      if (document.visibilityState === "hidden") void p.close().catch(() => undefined)
+    }
+    document.addEventListener("visibilitychange", onHide)
+    window.addEventListener("pagehide", onHide)
     return () => {
-      p.destroy()
+      document.removeEventListener("visibilitychange", onHide)
+      window.removeEventListener("pagehide", onHide)
+      void p.close().catch(() => undefined).finally(() => p.destroy())
       setProvider(null)
     }
   }, [doc, link?.doc, identity?.address])

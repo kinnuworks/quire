@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import Ajv2020 from "ajv/dist/2020.js"
 import { describe, expect, it } from "vitest"
 import { decodeFrame, decodeOuter } from "../src/codec.js"
-import { deriveEpochZeroKey, deriveMetaKey, open, unwrapAsMember } from "../src/crypto.js"
+import { deriveEpochZeroKey, deriveMetaKey, open, openWith, unwrapAsMember } from "../src/crypto.js"
 import { hexToBytes } from "../src/hex.js"
 
 const root = new URL("../../../spec/", import.meta.url)
@@ -33,14 +33,23 @@ describe("JSON Schema matches the reference implementation", () => {
     for (const e of ordered) {
       const k = kind(e)
       const { epoch, envelope } = decodeOuter(hexToBytes(e.payload))
-      const key = k === "a" || k === "j" ? meta : keys.get(epoch)
-      if (!key) continue
-      const frame = decodeFrame(await open(key, envelope))
+      let plain: Uint8Array
+      if (k === "j") plain = await openWith(vec.privateKeys.owner, envelope, "join")
+      else {
+        const key = k === "a" ? meta : keys.get(epoch)
+        if (!key) continue
+        plain = await open(key, envelope)
+      }
+      const frame = decodeFrame(plain)
       expect(byKind[k]!(frame.header), `${k}: ${JSON.stringify(byKind[k]!.errors)}`).toBe(true)
       checked++
       if (k === "a" && frame.header.epoch) {
+        const epoch = frame.header.epoch as number
         const wrap = (frame.header.wraps as Record<string, string>)[vec.members.bea]
-        keys.set(frame.header.epoch as number, await unwrapAsMember(hexToBytes(wrap!), vec.privateKeys.bea, frame.header.epoch as number))
+        const epochKey = await unwrapAsMember(hexToBytes(wrap!), vec.privateKeys.bea, epoch)
+        keys.set(epoch, epochKey)
+        const roster = JSON.parse(new TextDecoder().decode(await open(epochKey, hexToBytes(frame.header.roster as string))))
+        expect(schema("acl-roster")(roster), JSON.stringify(schema("acl-roster").errors)).toBe(true)
       }
     }
     expect(checked).toBe(vec.entities.length)

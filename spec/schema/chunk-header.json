@@ -15,7 +15,8 @@
     },
     "of": {
       "type": "string",
-      "pattern": "^0x[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "the id of the snapshot or version this chunk belongs to"
     }
   }
 }

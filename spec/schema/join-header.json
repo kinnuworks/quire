@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kinnuworks/quire/blob/main/spec/schema/join-header.json",
-  "title": "Join request frame header (kind j)",
+  "title": "Join request frame header (kind j). The frame is sealed to the owner's public key: ephemeral key (65) || envelope, HKDF label 'join'.",
   "type": "object",
   "required": [
     "publicKey",

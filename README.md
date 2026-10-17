@@ -114,7 +114,7 @@ Two public demo documents live on Tiramisu. Their content is synthetic, and thei
 **Open demo**: three members, readable by anyone with the link.
 https://quire-five.vercel.app/#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283
 
-**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you see that the document exists and has two members, but not who they are, and none of the text.
+**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you can open the member list, but it is sealed under the new key, so you learn only that there are two members, and you can read none of the text. The addresses that wrote entities are still public on chain, as for any document.
 https://quire-five.vercel.app/#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada
 
 Addresses that create Quire's entities:

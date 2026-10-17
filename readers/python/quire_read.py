@@ -2,7 +2,8 @@
 """Read a Quire v1 document, or a published version, and print its text.
 
 Follows PROTOCOL.md sections 1, 3 to 5 and 7. Needs `cryptography` and
-`pycrdt` (see requirements.txt). Entities come from a vectors file
+`pycrdt` (see requirements.txt); secp256k1 key recovery for the salt
+signatures is done here in pure Python. Entities come from a vectors file
 (--vectors) or a live Arkiv node (--rpc), and the document is named by a
 document link (--link) or a version link (--version-link). With --verify it
 prints a trust report instead of the text. If `jsonschema` is installed,
@@ -21,7 +22,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
@@ -208,7 +209,7 @@ _G = (
     0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
     1,
 )
-_Jacobian = tuple[int, int, int] | None  # None is the point at infinity
+_Jacobian = Optional[tuple[int, int, int]]  # None is the point at infinity
 
 
 def _jdouble(p: _Jacobian) -> _Jacobian:
@@ -1680,6 +1681,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     which.add_argument("--version-link", help="Quire version link, #/v/<key>.<version key>")
     ap.add_argument("--rpc", default=qa.DEFAULT_RPC, help="Arkiv JSON-RPC URL")
     ap.add_argument("--member-key", help="member private key, 0x + 64 hex")
+    ap.add_argument("--own-salt", help="your writing session's salt (32 hex): refuse snapshots that write"
+                    " under your own client id beyond your verified updates; needs --member-key")
     ap.add_argument("--verify", action="store_true", help="print a trust report instead of the text")
     ap.add_argument("--no-schema", action="store_true", help="skip JSON Schema checks")
     ap.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
@@ -1704,7 +1707,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0
         link = parse_link(args.link or data.get("link") or "")
         key = load_private_key(args.member_key) if args.member_key else None
-        reader = Reader(link, source, key, log, schemas)
+        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt)
         result = reader.read()
         if args.verify:
             print(trust_report(reader, result))

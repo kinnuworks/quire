@@ -1165,7 +1165,7 @@ class ReaderTests(unittest.TestCase):
             return make_entity(template, key=fake_key(0xBAD0 + n), kind="u", creator=VEC["members"]["bea"],
                                block=13, payload=seal("u", 1, header, body, reader.keys[1]))
 
-        bad_header = dict(snapshot_header(data, 13), chunks="not a list", size="many", base=13)
+        bad_header = dict(snapshot_header(data, 13), chunks="not a list", size="many")
         hostile = [
             update(1, signed, os.urandom(40)),  # random bytes as Yjs
             update(2, signed, b"\x01\x01\xb9\x60\x00\x04\x01\x01\xff"),  # string that is not UTF-8
@@ -1234,32 +1234,52 @@ class ReaderTests(unittest.TestCase):
                                                 and e is not owner_late_update(entities))]
             result = self._read(ents + [forged])
             self.assertNotIn(forged.key, result.applied, drop_first)
-            self.assertEqual(
-                dict(result.ignored)[forged.key],
-                f"snapshot carries an item at client {OWNER_CLIENT} clock {start} that differs from a verified update's",
-            )
+            # The paragraph and text type items match the genuine ones; the
+            # first differing item is a character of the text.
+            reason = dict(result.ignored)[forged.key]
+            self.assertRegex(reason, rf"^snapshot carries an item at client {OWNER_CLIENT} clock (\d+)"
+                                     " that differs from a verified update's$")
+            self.assertGreaterEqual(int(reason.split(" clock ")[1].split()[0]), start)
             self.assertEqual(result.newest_snapshot, honest.newest_snapshot)  # step 3 falls back
             self.assertEqual(result.text, VEC["expected"]["memberText"], drop_first)
 
     def test_updates_first_alone_does_not_stop_a_pending_override(self) -> None:
-        # Why the refusal above exists. Without it, applying updates first
-        # protects a genuine update whose earlier clocks are already there,
-        # but not one still waiting on clocks only a snapshot has: when the
-        # snapshot fills the gap, Yjs takes the snapshot's struct.
+        # Why the refusal above exists. Applying updates first protects a
+        # genuine update whose dependencies are already integrated, but not
+        # one still waiting on items only a snapshot has: when the snapshot
+        # fills the gap, Yjs takes the snapshot's struct at the same clock.
+        # In the vectors the owner's epoch 1 paragraph follows Cal's line,
+        # which only the snapshots carry, so that update is always pending.
+        a = Doc(client_id=77)
+        frag = a.get("default", type=XmlFragment)
+        frag.children.append(XmlElement("paragraph", None, [XmlText("Hello")]))
+        sv = a.get_state()
+        first = a.get_update()
+        frag.children[0].children[0].insert(5, " world")
+        genuine = a.get_update(sv)
+        f = Doc(client_id=77)
+        f.apply_update(first)
+        f.get("default", type=XmlFragment).children[0].children[0].insert(5, " fakes")
+        forged_state = f.get_update()
+
+        def opened(*updates: bytes) -> str:
+            d = Doc()
+            for u in updates:
+                d.apply_update(u)
+            return quire_read.fragment_text(d.get("default", type=XmlFragment))
+
+        self.assertEqual(opened(first, genuine, forged_state), "Hello world")  # dependencies present
+        self.assertEqual(opened(genuine, forged_state), "Hello fakes")  # genuine update pending
+        # The same happens to the vectors' owner update without the refusal.
         forged, _start, entities = self._forged_owner_snapshot()
-        late = owner_late_update(entities)
         original = quire_read.Reader.refuse
         quire_read.Reader.refuse = lambda self, snapshots, verified: {}
         try:
-            whole = self._read(entities + [forged])
-            pending = self._read([e for e in entities if not (e.kind == "u" and e.creator == VEC["owner"]
-                                                             and e is not late)] + [forged])
+            result = self._read(entities + [forged])
         finally:
             quire_read.Reader.refuse = original
-        self.assertNotIn("FORGED", whole.text)
-        self.assertIn("Written in epoch 1, after Cal left.", whole.text)
-        self.assertIn("FORGED", pending.text)
-        self.assertNotIn("Written in epoch 1, after Cal left.", pending.text)
+        self.assertIn("FORGED", result.text)
+        self.assertNotIn("Written in epoch 1, after Cal left.", result.text)
 
     def test_snapshot_under_the_readers_own_id_is_refused(self) -> None:
         # Section 5: a snapshot with structs under the reader's own client id
@@ -1319,7 +1339,8 @@ class ReaderTests(unittest.TestCase):
         d.get("default", type=XmlFragment).children.append(XmlElement("paragraph", None, [XmlText("Bea one")]))
         sv1 = d.get_state()
         a_data, after_a = d.get_update(sv0), d.get_update()
-        text = d.get("default", type=XmlFragment).children[-1].children[0]
+        frag = d.get("default", type=XmlFragment)
+        text = frag.children[len(frag.children) - 1].children[0]
         text += " two"
         b_data = d.get_update(sv1)
         header = {"t": 1, "salt": salt, "sig": sign_salt(BEA_KEY, salt)}

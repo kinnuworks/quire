@@ -41,8 +41,11 @@ with open(DOCUMENT, encoding="utf-8") as fh:
 
 OWNER_KEY = VEC["privateKeys"]["owner"]
 BEA_KEY = VEC["privateKeys"]["bea"]
-OWNER_CLIENT = 3362225433  # the owner's Yjs client id in the vectors
-CAL_CLIENT = 1578550643  # Cal's; Cal is revoked, his edits live on only in the snapshot
+# Yjs client ids in the vectors, each clientIdFor(address, session salt).
+OWNER_CLIENT = 7322550630947896
+OWNER_SALT = "bc92b85c18495b2d8cc0196dfadedb27"  # visible to every member in the owner's update headers
+BEA_CLIENT = 7727742464255025
+CAL_CLIENT = 1921161367756840  # Cal is revoked; his edits live on only in the snapshot
 REVOKED_AT = 10  # Cal's atBlock in the sealed roster
 
 
@@ -99,8 +102,7 @@ def make_entity(template, *, key: str, kind: str, creator: str, block: int, payl
         template, key=key, creator=creator, owner=creator, created_at=block,
         expires_at=block + 1296000, attributes=attrs, payload=payload,
         readonly=readonly, permissionless_extension=permissionless,
-        # PROTOCOL.md does not give raw's bit layout, so only "no flags" has a known raw.
-        flags_raw=None if readonly or permissionless else 0,
+        flags_raw=quire_audit.raw_flags(readonly, permissionless),
     )
 
 
@@ -183,7 +185,7 @@ class AuditTests(unittest.TestCase):
                 quire_audit.Attribute(a.name, a.type, "v" if a.name == "qk" else a.value)
                 for a in template.attributes
             ],
-            readonly=False, permissionless_extension=True,
+            readonly=False, permissionless_extension=True, flags_raw=None,  # booleans only, no raw
         )
         self.assertEqual(quire_audit.check_flags(version), ["version is not readonly"])
         version.readonly = True
@@ -198,7 +200,7 @@ class AuditTests(unittest.TestCase):
         # Section 1: a snapshot carries no flags, readonly included.
         entities = quire_audit.load_vectors(DOCUMENT)[1]
         snap = next(e for e in entities if e.kind == "s")
-        snap.readonly = True
+        snap.readonly, snap.flags_raw = True, 1
         self.assertEqual(quire_audit.check_flags(snap), ["snapshot is readonly, expected no flags"])
 
     def test_vectors_carry_creation_flags_like_the_rpc(self) -> None:
@@ -214,6 +216,39 @@ class AuditTests(unittest.TestCase):
         e.flags_raw = 4
         self.assertTrue(quire_audit.check_flags(e))
 
+    def test_raw_flag_bits(self) -> None:
+        # Section 5: in creationFlags.raw, bit 0 is readonly and bit 1 is
+        # permissionless extension.
+        self.assertEqual(quire_audit.raw_flags(False, False), 0)
+        self.assertEqual(quire_audit.raw_flags(True, False), 1)
+        self.assertEqual(quire_audit.raw_flags(False, True), 2)
+        self.assertEqual(quire_audit.raw_flags(True, True), 3)
+        template = quire_audit.load_vectors(DOCUMENT)[1][0]
+        version = dataclasses.replace(
+            template, attributes=[
+                quire_audit.Attribute(a.name, a.type, "v" if a.name == "qk" else a.value)
+                for a in template.attributes
+            ],
+            readonly=True, permissionless_extension=True,
+        )
+        for raw, ok in ((3, True), (None, True), (0, False), (1, False), (2, False), (7, False), (11, False)):
+            version.flags_raw = raw
+            self.assertEqual(not quire_audit.check_flags(version), ok, raw)
+        update = next(e for e in quire_audit.load_vectors(DOCUMENT)[1] if e.kind == "u")
+        for raw, ok in ((0, True), (1, False), (2, False), (3, False), (4, False)):
+            update.flags_raw = raw
+            self.assertEqual(not quire_audit.check_flags(update), ok, raw)
+        # The booleans and raw must agree in both directions.
+        update.flags_raw, update.readonly = 0, True
+        self.assertIn("bit 0 disagrees", " ".join(quire_audit.check_flags(update)))
+
+    def test_raw_flag_mismatch_fails_audit(self) -> None:
+        entities = quire_audit.load_vectors(DOCUMENT)[1]
+        e = next(x for x in entities if x.kind == "s")
+        e.flags_raw = 2  # says permissionless extension; the booleans say none
+        report = quire_audit.audit(entities, VEC["doc"], VEC["owner"])
+        self.assertIn(f"flags snapshot {e.key}", report.failures)
+
     def test_chunk_flags_follow_a_head(self) -> None:
         template = quire_audit.load_vectors(DOCUMENT)[1][0]
         chunk = dataclasses.replace(
@@ -224,6 +259,7 @@ class AuditTests(unittest.TestCase):
         )
         for ro, pe, ok in ((False, False, True), (True, True, True), (False, True, False), (True, False, False)):
             chunk.readonly, chunk.permissionless_extension = ro, pe
+            chunk.flags_raw = quire_audit.raw_flags(ro, pe)
             self.assertEqual(not quire_audit.check_flags(chunk), ok, (ro, pe))
 
 
@@ -427,7 +463,9 @@ class ReaderTests(unittest.TestCase):
     def _extra_snapshot(self, *, epoch: int, block: int, text: str):
         """A full-state snapshot by the owner with one more paragraph."""
         reader, result = self._member_result()
-        d = Doc(client_id=777)
+        salt = os.urandom(16).hex()
+        cid = quire_read.client_id_for(VEC["owner"], salt)
+        d = Doc(client_id=cid)
         d.apply_update(result.doc.get_update())
         d.get("default", type=XmlFragment).children.append(XmlElement("paragraph", None, [XmlText(text)]))
         data = d.get_update()
@@ -435,8 +473,8 @@ class ReaderTests(unittest.TestCase):
         template = newest_snapshot(entities)
         e = make_entity(
             template, key=fake_key(0x5500 + block), kind="s", creator=VEC["owner"], block=block,
-            payload=seal("s", epoch, snapshot_header(data, block, authors={"777": VEC["owner"]}), data,
-                         reader.keys[epoch]),
+            payload=seal("s", epoch, snapshot_header(
+                data, block, authors={str(cid): {"address": VEC["owner"], "salt": salt}}), data, reader.keys[epoch]),
         )
         return e, self._reader(entities + [e]).read()
 
@@ -471,8 +509,17 @@ class ReaderTests(unittest.TestCase):
         # A state vector of this update is empty: it starts at clock 35.
         self.assertEqual(get_state(data), b"\x00")
 
-    def _forged_update(self, client_id: int, epoch: int, block: int, text: str,
-                       creator: str | None = None, key: str | None = None, extra=()):
+    def _forged_update(self, client_id: int | None, epoch: int, block: int, text: str,
+                       creator: str | None = None, key: str | None = None, salt: str | None = None,
+                       header: dict | None = None, extra=(), schemas=None):
+        """An update by `creator` (Bea by default) adding one paragraph.
+
+        `client_id=None` uses the creator's own clientIdFor(creator, salt).
+        """
+        creator = creator or VEC["members"]["bea"]
+        salt = salt or os.urandom(16).hex()
+        if client_id is None:
+            client_id = quire_read.client_id_for(creator, salt)
         reader, result = self._member_result()
         d = Doc(client_id=client_id)
         d.apply_update(result.doc.get_update())
@@ -483,72 +530,222 @@ class ReaderTests(unittest.TestCase):
         entities = quire_audit.load_vectors(DOCUMENT)[1]
         template = bea_update(entities)
         e = make_entity(
-            template, key=key or fake_key(0xB0 + block), kind="u", creator=creator or VEC["members"]["bea"],
-            block=block, payload=seal("u", epoch, {"t": 1}, update, reader.keys[epoch]),
+            template, key=key or fake_key(0xB0 + block), kind="u", creator=creator, block=block,
+            payload=seal("u", epoch, header if header is not None else {"t": 1, "salt": salt}, update,
+                         reader.keys[epoch]),
         )
-        return e, self._reader(entities + [e] + list(extra)).read()
+        data, _ = quire_audit.load_vectors(DOCUMENT)
+        out = quire_read.Reader(
+            quire_read.parse_link(data["link"]), quire_read.VectorSource(entities + [e] + list(extra)),
+            quire_read.load_private_key(BEA_KEY), schemas=schemas,
+        ).read()
+        return e, out
 
-    def test_update_under_another_members_client_id_is_ignored(self) -> None:
-        e, result = self._forged_update(OWNER_CLIENT, 1, 13, "Bea writes as the owner.")
+    def test_client_id_for_matches_the_vectors(self) -> None:
+        # Section 5: every update in the vectors uses clientIdFor($creator, salt).
+        reader, _result = self._member_result()
+        seen = {}
+        for e in reader.source.entities:  # type: ignore[attr-defined]
+            if e.kind != "u":
+                continue
+            frame = reader._content_frame(e)
+            cid = quire_read.client_id_for(e.creator, frame.header["salt"])
+            self.assertEqual(set(quire_read.update_clients(frame.data)), {cid}, e.key)
+            self.assertLess(cid, 1 << 53)
+            seen[e.creator] = cid
+        self.assertEqual(seen[VEC["owner"]], OWNER_CLIENT)
+        self.assertEqual(seen[VEC["members"]["bea"]], BEA_CLIENT)
+        self.assertEqual(seen[VEC["members"]["cal"]], CAL_CLIENT)
+        self.assertEqual(quire_read.client_id_for(VEC["owner"], OWNER_SALT), OWNER_CLIENT)
+        # Same answer for mixed-case addresses and for raw salt bytes.
+        self.assertEqual(quire_read.client_id_for(VEC["owner"].upper().replace("0X", "0x"),
+                                                  bytes.fromhex(OWNER_SALT)), OWNER_CLIENT)
+
+    def test_client_id_for_rules(self) -> None:
+        # keccak-256 of "" and the 53-bit mask; a zero result becomes 1.
+        self.assertEqual(
+            quire_read.keccak256(b"").hex(),
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+        )
+        addr, salt = VEC["owner"], OWNER_SALT
+        digest = quire_read.keccak256(bytes.fromhex(addr[2:]) + bytes.fromhex(salt))
+        self.assertEqual(OWNER_CLIENT, int.from_bytes(digest[:8], "big") & ((1 << 53) - 1))
+        original = quire_read.keccak256
+        try:
+            quire_read.keccak256 = lambda _data: b"\xff\xe0" + b"\0" * 30  # top 11 bits only: masks to 0
+            self.assertEqual(quire_read.client_id_for(addr, salt), 1)
+        finally:
+            quire_read.keccak256 = original
+        for bad in ("", "00" * 15, "AB" * 16, "0x" + "00" * 16, "00" * 17):
+            with self.assertRaises(ValueError, msg=bad):
+                quire_read.client_id_for(addr, bad)
+
+    def test_update_clients_at_any_clock(self) -> None:
+        reader, _result = self._member_result()
+        owner_e1 = owner_late_update(reader.source.entities)  # type: ignore[attr-defined]
+        data = reader._content_frame(owner_e1).data
+        clients = quire_read.update_clients(data)
+        self.assertEqual(set(clients), {OWNER_CLIENT})
+        self.assertEqual(clients[OWNER_CLIENT][0][0], 35)
+        # A state vector of this update is empty: it starts at clock 35.
+        self.assertEqual(get_state(data), b"\x00")
+
+    def test_skip_struct_under_another_client_id_counts(self) -> None:
+        # Yjs parseUpdateMeta counts Skip structs, so a group for a foreign
+        # client holding only a Skip still fails the check. Without this,
+        # readers that do and do not count Skips would disagree.
+        reader, _result = self._member_result()
+        bea_e = bea_update(reader.source.entities)  # type: ignore[attr-defined]
+        frame = reader._content_frame(bea_e)
+        data = frame.data
+        self.assertEqual(data[0], 1)  # one client group, so the count is one byte
+        skip_group = bytes([1]) + bytes([0xB9, 0x60]) + bytes([0]) + bytes([10, 5])  # 1 struct, client 12345, clock 0, skip 5
+        forged = bytes([2]) + skip_group + data[1:]
+        clients = quire_read.update_clients(forged)
+        self.assertEqual(clients[12345], [])
+        self.assertIn(BEA_CLIENT, clients)
+        e = make_entity(
+            bea_e, key=fake_key(0xD1), kind="u", creator=bea_e.creator, block=bea_e.created_at,
+            payload=seal("u", 0, frame.header, forged, reader.keys[0]),
+        )
+        result = self._reader(quire_audit.load_vectors(DOCUMENT)[1] + [e]).read()
         self.assertNotIn(e.key, result.applied)
-        self.assertIn("already bound", dict(result.ignored)[e.key])
-        self.assertEqual(result.bindings[OWNER_CLIENT], VEC["members"]["owner"])
+        self.assertIn("12345 is not clientIdFor", dict(result.ignored)[e.key])
+
+    def test_update_with_client_id_not_derived_from_creator_is_ignored(self) -> None:
+        # A fresh client id that is not clientIdFor(creator, salt).
+        e, result = self._forged_update(4242, 1, 13, "Bea, under a made-up id.")
+        self.assertNotIn(e.key, result.applied)
+        self.assertIn("is not clientIdFor(creator, salt)", dict(result.ignored)[e.key])
+        self.assertNotIn(4242, result.authors)
         self.assertEqual(result.text, VEC["expected"]["memberText"])
 
-    def test_update_under_own_client_id_is_applied(self) -> None:
-        e, result = self._forged_update(4242, 1, 13, "Bea writes as herself.")
-        self.assertIn(e.key, result.applied)
-        self.assertEqual(result.bindings[4242], VEC["members"]["bea"])
-        self.assertTrue(result.text.endswith("Bea writes as herself."))
-        self.assertEqual(result.bound_by[4242], f"update {e.key}")
+    def test_member_writing_under_the_owners_client_id_is_ignored(self) -> None:
+        # Bea copies the owner's client id, with her own salt and with the
+        # owner's salt (which every member sees in the owner's headers).
+        for salt in (None, OWNER_SALT):
+            e, result = self._forged_update(OWNER_CLIENT, 1, 13, "Bea writes as the owner.", salt=salt)
+            self.assertNotIn(e.key, result.applied, salt)
+            self.assertIn(f"{OWNER_CLIENT} is not clientIdFor", dict(result.ignored)[e.key])
+            self.assertEqual(result.authors[OWNER_CLIENT].address, VEC["owner"])
+            self.assertEqual(result.text, VEC["expected"]["memberText"])
 
-    def test_snapshot_authors_bind_before_any_update(self) -> None:
-        # Section 5: bindings are seeded from the applied snapshot's authors.
-        # This update is created at block 5, before every real owner update,
-        # so under first-update binding alone it would take the owner's id.
-        e, result = self._forged_update(OWNER_CLIENT, 1, 5, "Bea, early, as the owner.")
-        self.assertNotIn(e.key, result.applied)
-        self.assertIn("already bound", dict(result.ignored)[e.key])
-        newest = result.newest_snapshot
-        self.assertEqual(result.bound_by[OWNER_CLIENT], f"snapshot {newest}")
-        self.assertEqual(result.text, VEC["expected"]["memberText"])
-
-    def test_revoked_members_client_id_stays_bound(self) -> None:
-        # Cal's updates are gone from the read (he is not a member any more),
-        # but the snapshot's authors still bind his id to him.
+    def test_member_writing_under_a_revoked_members_client_id_is_ignored(self) -> None:
+        # Cal's updates are out of the read, and nothing is bound any more:
+        # the check alone keeps Bea from writing as Cal.
         e, result = self._forged_update(CAL_CLIENT, 1, 13, "Bea writes as Cal.")
         self.assertNotIn(e.key, result.applied)
-        self.assertEqual(result.bindings[CAL_CLIENT], VEC["members"]["cal"])
+        self.assertEqual(result.authors[CAL_CLIENT].address, VEC["members"]["cal"])
+        self.assertFalse(result.authors[CAL_CLIENT].proven)
 
-    def test_update_order_is_created_at_then_key(self) -> None:
-        # Two members use one fresh client id in the same block. Section 5
-        # applies by createdAt, then entity key, so the lower key binds it,
-        # whatever the qs values say.
-        reader, base = self._member_result()
-        owner_doc = Doc(client_id=5555)
-        owner_doc.apply_update(base.doc.get_update())
-        owner_doc.get("default", type=XmlFragment).children.append(
-            XmlElement("paragraph", None, [XmlText("Owner first.")])
-        )
-        upd = owner_doc.get_update(base.doc.get_state())
-        template = bea_update(quire_audit.load_vectors(DOCUMENT)[1])
-        low = make_entity(
-            template, key=fake_key(0x01), kind="u", creator=VEC["owner"], block=13,
-            payload=seal("u", 1, {"t": 1}, upd, reader.keys[1]),
-        )
-        # Give the low key the higher qs: the old (qs, key) order would flip it.
-        low.attributes = [quire_audit.Attribute(a.name, a.type, 99 if a.name == "qs" else a.value)
-                          for a in low.attributes]
-        e, result = self._forged_update(5555, 1, 13, "Bea second.", key=fake_key(0x02), extra=[low])
-        self.assertIn(low.key, result.applied)
+    def test_update_under_own_derived_client_id_is_applied(self) -> None:
+        e, result = self._forged_update(None, 1, 13, "Bea writes as herself.")
+        self.assertIn(e.key, result.applied)
+        self.assertTrue(result.text.endswith("Bea writes as herself."))
+        cid = next(iter(quire_read.update_clients(self._forged_payload_data(e))))
+        self.assertEqual(result.authors[cid].address, VEC["members"]["bea"])
+        self.assertTrue(result.authors[cid].proven)
+        self.assertEqual(result.authors[cid].source, f"update {e.key}")
+
+    def _forged_payload_data(self, e) -> bytes:
+        reader, _result = self._member_result()
+        return reader._content_frame(e).data
+
+    def test_update_written_early_under_another_id_is_still_ignored(self) -> None:
+        # Under first-come binding an update created before every real owner
+        # update could take the owner's id. With derived ids, block order
+        # plays no part.
+        e, result = self._forged_update(OWNER_CLIENT, 1, 2, "Bea, early, as the owner.")
         self.assertNotIn(e.key, result.applied)
-        self.assertEqual(result.bindings[5555], VEC["owner"])
-        for seed in range(4):  # and the query order does not matter
-            entities = quire_audit.load_vectors(DOCUMENT)[1] + [low, e]
+        self.assertIn("is not clientIdFor", dict(result.ignored)[e.key])
+
+    def test_update_without_a_valid_salt_is_ignored(self) -> None:
+        # With schema checks off, the reader's own salt check still applies.
+        cases = {"missing": {"t": 1}, "short": {"t": 1, "salt": "ab" * 15}, "upper": {"t": 1, "salt": "AB" * 16}}
+        for name, header in cases.items():
+            e, result = self._forged_update(None, 1, 13, f"Salt {name}.", header=header,
+                                            schemas=quire_read.Schemas(enabled=False))
+            self.assertNotIn(e.key, result.applied, name)
+            self.assertIn("update salt", dict(result.ignored)[e.key], name)
+
+    def test_mallorys_update_fails_only_the_member_filter(self) -> None:
+        # The vectors' forgery has a valid salt and Mallory's own derived id,
+        # so it passes the client id check and only the member list stops it.
+        reader, result = self._member_result()
+        mallory = VEC["members"]["mallory"]
+        forged = [e for e in reader.source.entities if e.creator == mallory]  # type: ignore[attr-defined]
+        self.assertEqual(len(forged), 1)
+        frame = reader._content_frame(forged[0])
+        cid = quire_read.client_id_for(mallory, frame.header["salt"])
+        self.assertEqual(set(quire_read.update_clients(frame.data)), {cid})
+        self.assertEqual(dict(result.ignored)[forged[0].key], "creator not in ACL")
+
+    def test_update_check_does_not_depend_on_order(self) -> None:
+        good, _ = self._forged_update(None, 1, 13, "Bea, valid.", key=fake_key(0x02))
+        bad, _ = self._forged_update(OWNER_CLIENT, 1, 13, "Bea, as owner.", key=fake_key(0x01))
+        applied = None
+        for seed in range(4):
+            entities = quire_audit.load_vectors(DOCUMENT)[1] + [good, bad]
             random.Random(seed).shuffle(entities)
             again = self._reader(entities).read()
-            self.assertIn(low.key, again.applied)
-            self.assertNotIn(e.key, again.applied)
+            self.assertIn(good.key, again.applied)
+            self.assertNotIn(bad.key, again.applied)
+            applied = applied or again.applied
+            self.assertEqual(again.applied, applied)
+
+    # -------------------------------------------------------- snapshot authors
+
+    def test_vector_snapshot_authors_are_claimed(self) -> None:
+        _reader, result = self._member_result()
+        self.assertEqual(result.dropped_authors, [])
+        cal = result.authors[CAL_CLIENT]
+        self.assertEqual((cal.address, cal.proven), (VEC["members"]["cal"], False))
+        self.assertEqual(cal.source, f"snapshot {result.newest_snapshot}")
+        # The owner's and Bea's ids are also used by applied updates.
+        self.assertTrue(result.authors[OWNER_CLIENT].proven)
+        self.assertTrue(result.authors[BEA_CLIENT].proven)
+
+    def _snapshot_with_authors(self, authors: dict):
+        """A newest snapshot by the owner with a given authors map."""
+        reader, result = self._member_result()
+        data = result.doc.get_update()
+        template = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1])
+        e = make_entity(
+            template, key=fake_key(0x5C), kind="s", creator=VEC["owner"], block=13,
+            payload=seal("s", 1, snapshot_header(data, 13, authors=authors), data, reader.keys[1]),
+        )
+        return e, self._reader(quire_audit.load_vectors(DOCUMENT)[1] + [e]).read()
+
+    def test_valid_snapshot_author_is_accepted_as_claimed(self) -> None:
+        salt = os.urandom(16).hex()
+        cid = quire_read.client_id_for(VEC["members"]["bea"], salt)
+        e, result = self._snapshot_with_authors({str(cid): {"address": VEC["members"]["bea"], "salt": salt}})
+        self.assertEqual(result.newest_snapshot, e.key)
+        self.assertEqual(result.dropped_authors, [])
+        a = result.authors[cid]
+        self.assertEqual((a.address, a.salt, a.proven, a.source), (VEC["members"]["bea"], salt, False, f"snapshot {e.key}"))
+
+    def test_forged_snapshot_authors_are_dropped(self) -> None:
+        # Bea's address under the owner's id, the owner's id with a wrong
+        # salt, a non-canonical key and a bare address (the old shape). The
+        # snapshot itself is still applied: authors is attribution only.
+        bea = VEC["members"]["bea"]
+        forged = {
+            str(OWNER_CLIENT): {"address": bea, "salt": OWNER_SALT},
+            "4242": {"address": VEC["owner"], "salt": "00" * 16},
+            "0" + str(BEA_CLIENT): {"address": bea, "salt": "00" * 16},
+        }
+        e, result = self._snapshot_with_authors(forged)
+        self.assertEqual(result.newest_snapshot, e.key)
+        self.assertEqual(len([d for d in result.dropped_authors if e.key in d]), 3)
+        self.assertNotIn(4242, result.authors)
+        self.assertEqual(result.authors[OWNER_CLIENT].address, VEC["owner"])
+        self.assertTrue(result.authors[OWNER_CLIENT].proven)
+        self.assertEqual(result.text, VEC["expected"]["memberText"])
+        # The old {clientId: address} shape fails the schema, which ignores
+        # the whole snapshot; without schema checks only the entry is dropped.
+        self.assertEqual(quire_read.author_problem(str(OWNER_CLIENT), VEC["owner"]), "entry is not {address, salt}")
+        self.assertIsNone(quire_read.author_problem(str(OWNER_CLIENT), {"address": VEC["owner"], "salt": OWNER_SALT}))
 
     # -------------------------------------------------------- ACL
 
@@ -597,13 +794,13 @@ class ReaderTests(unittest.TestCase):
     # -------------------------------------------------------- epochs
 
     def test_old_epoch_update_after_revocation_is_ignored(self) -> None:
-        e, result = self._forged_update(4243, 0, 12, "Old key, after Cal left.")
+        e, result = self._forged_update(None, 0, 12, "Old key, after Cal left.")
         self.assertNotIn(e.key, result.applied)
         self.assertIn("after the revocation", dict(result.ignored)[e.key])
         self.assertEqual(result.text, VEC["expected"]["memberText"])
 
     def test_old_epoch_update_before_revocation_is_applied(self) -> None:
-        e, result = self._forged_update(4244, 0, 9, "Old key, before Cal left.")
+        e, result = self._forged_update(None, 0, 9, "Old key, before Cal left.")
         self.assertIn(e.key, result.applied)
         self.assertIn("Old key, before Cal left.", result.text)
 
@@ -620,6 +817,9 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("members      2", out)
         self.assertIn("2 x creator not in ACL", out)
         self.assertIn("join requests 2", out)
+        self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']} Owner    proven", out)
+        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  claimed", out)
+        self.assertNotIn("dropped:", out)
         self.assertNotIn(": NO", out)
 
     def test_verify_report_as_link_holder(self) -> None:
@@ -637,7 +837,7 @@ class ReaderTests(unittest.TestCase):
     # -------------------------------------------------------- versions
 
     def _version(self, *, chunks: int = 0, chunk_epoch: int | None = None, chunk_flags: bool = True,
-                 epoch: int = 1, head_flags: bool = True):
+                 epoch: int = 0, head_flags: bool = True, authors: dict | None = None):
         """A published version built in memory from a fresh random key."""
         _reader, result = self._member_result()
         vkey = os.urandom(32)
@@ -646,7 +846,9 @@ class ReaderTests(unittest.TestCase):
         parts = [data[cut[i]:cut[i + 1]] for i in range(chunks + 1)]
         template = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1])
         ckeys = [fake_key(0xCC00 + i) for i in range(chunks)]
-        header = snapshot_header(data, 13, ckeys, {str(OWNER_CLIENT): VEC["owner"]})
+        if authors is None:
+            authors = {str(OWNER_CLIENT): {"address": VEC["owner"], "salt": OWNER_SALT}}
+        header = snapshot_header(data, 13, ckeys, authors)
         head = make_entity(
             template, key=fake_key(0xEE), kind="v", creator=VEC["owner"], block=13,
             payload=seal("v", epoch, header, parts[0], vkey), readonly=head_flags, permissionless=head_flags,
@@ -682,6 +884,14 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(v.text, VEC["expected"]["memberText"], chunks)
             self.assertEqual(len(v.chunks), chunks)
 
+    def test_version_authors_are_checked(self) -> None:
+        forged = {str(OWNER_CLIENT): {"address": VEC["members"]["bea"], "salt": OWNER_SALT}}
+        link, entities = self._version(authors=forged)
+        v = quire_read.read_version(quire_read.parse_version_link(link), quire_read.VectorSource(entities))
+        report = quire_read.version_report(v)
+        self.assertIn("authors      0 claimed by the version's creator, 1 dropped", report)
+        self.assertIn("dropped: clientIdFor(address, salt) is", report)
+
     def test_version_with_wrong_key_fails(self) -> None:
         link, entities = self._version()
         v = quire_read.parse_version_link(link)
@@ -700,7 +910,8 @@ class ReaderTests(unittest.TestCase):
 
     def test_version_chunk_rules(self) -> None:
         cases = {
-            "differs from its head's": dict(chunks=1, chunk_epoch=0),  # section 4
+            "differs from its head's": dict(chunks=1, chunk_epoch=1),  # section 4
+            "must be 0": dict(epoch=1),  # section 5: versions use epoch 0
             "flags": dict(chunks=1, chunk_flags=False),  # section 1: chunk flags follow the head
         }
         for reason, kw in cases.items():
@@ -724,6 +935,8 @@ class ReaderTests(unittest.TestCase):
             self.assertIn("chunks       1", out)
             self.assertIn("permissionless extension: yes", out)
             self.assertIn("membership not checkable", out)
+            self.assertIn("epoch        0", out)
+            self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']}  claimed", out)
             code, out = run_cli(quire_audit.main, "--vectors", path)
             self.assertEqual(code, 0, out)
         # A version head without permissionless extension fails the audit.

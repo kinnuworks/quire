@@ -42,8 +42,8 @@ Checks, per entity:
   readonly and allows permissionless extension; a chunk has either no flags
   (a snapshot chunk) or both (a version chunk), since it copies its head and
   the head is not visible without decrypting. When `creationFlags.raw` is
-  present, an entity with neither flag must have raw 0. PROTOCOL.md does not
-  give raw's bit layout, so raw is not checked otherwise.
+  present, bit 0 must equal `readonly`, bit 1 must equal
+  `permissionlessExtension`, and no other bit may be set.
 
 The printable-run limits are set so random ciphertext does not trip them.
 With any printable byte counted, a 12-byte run appears by chance in about 3%
@@ -82,9 +82,9 @@ each entry of `wraps` (an unlabelled list) until one opens, then opens the
 roster, checks that its `doc` and `epoch` match the ACL, and reads as usual.
 
 `--version-link` reads a published version: it fetches the head by entity
-key, decrypts it and its chunks with the version key from the link, and
-checks the frame against the entity's own `qd`, since the link carries no
-document id. It carries no link secret either, so the reader cannot open
+key, requires outer epoch 0, decrypts the head and its chunks with the
+version key from the link, and checks the frame against the entity's own
+`qd`, since the link carries no document id. It carries no link secret either, so the reader cannot open
 the ACL and cannot say whether the version's creator is a member. The
 `--verify` report for a version says so.
 
@@ -96,8 +96,10 @@ of each element concatenated.
 `ownerPublicKey` hashes to it, epoch, `keepUntil`, the number of wraps (and,
 for a member, which one opened), members and revocations when visible,
 whether each member's public key hashes to its address, the entities applied
-and ignored (grouped by reason), and which creator each Yjs client id is
-bound to and by which entity. A link holder without a member key sees the
+and ignored (grouped by reason), and who each Yjs client id belongs to:
+"proven" when an applied update from that address used it, "claimed" when it
+comes only from a snapshot's `authors` map. Dropped `authors` entries are
+listed. A link holder without a member key sees the
 wrap count and nothing that names a member. When the member key is the
 owner's, it also opens the join requests and checks that each request's
 public key hashes to its creator.
@@ -123,23 +125,36 @@ From section 5:
 - updates come from `qs >= newest base - 60`
 - an update or snapshot in an epoch older than the current one is ignored if
   its `createdAt` block is greater than the largest `atBlock` in `revoked`
-- client ids are bound first by the `authors` maps of the applied snapshots,
-  newest snapshot first; then each update binds the ids it uses that are
-  still unbound. An update is ignored if any of its structs uses a client id
-  already bound to another creator. Client ids are read from the struct
-  headers of the update, at any clock. A state vector of the update is not
-  enough, because it only reports runs that start at clock 0.
-
-Since binding depends on which update comes first, updates are applied in
-the order section 5 fixes: `createdAt`, then entity key.
+- client ids are derived: `clientIdFor(address, salt)` is the first 8 bytes
+  of keccak-256 over the 20 address bytes and the 16 salt bytes, big-endian,
+  masked to 53 bits, with 0 replaced by 1. An update is ignored unless every
+  client id with structs in it equals `clientIdFor($creator, salt)`, where
+  `salt` is the update header's. Client ids are read from the struct headers
+  of the update, at any clock, Skip structs included (as Yjs
+  `parseUpdateMeta` does); client ids that appear only in the delete set are
+  not checked. A state vector of the update is not enough,
+  because it only reports runs that start at clock 0. The check uses no
+  reader state, so updates can be applied in any order
+- a snapshot's `authors` entry `{clientId: {address, salt}}` counts only if
+  `clientIdFor(address, salt)` equals its client id. A valid entry is shown
+  as claimed attribution and binds nothing; an invalid one is dropped and
+  listed, and the snapshot is still applied
+- a version uses epoch 0 in its outer header and frames; its chunks use the
+  version key and the head's epoch
 
 Choices the spec leaves open, made here:
 
 - snapshot ties on `qs` are broken by `createdAt`, then key, so the newest
   snapshot does not depend on query order
-- when two applied snapshots map one client id to different addresses, the
-  newest snapshot's claim is kept and the disagreement is listed in the
-  trust report
+- an `authors` key must be a canonical decimal (no leading zeros) to count;
+  the schema allows `0123`, which would name the same integer as `123`
+- an `authors` entry whose address is not a current member (for example a
+  revoked one) still counts as claimed attribution; the report marks it
+  "revoked" or "no member"
+- updates are sorted by `createdAt`, then key, only so the applied list is
+  stable; the result does not depend on it
+- a version that is not readonly is reported by `--verify` and failed by the
+  audit, but still read
 - a chunk whose flags differ from its head's is rejected. Section 1 says a
   chunk has its head's flags, but section 5 does not list this among the
   reader checks
@@ -154,17 +169,28 @@ Reader tests are skipped when `cryptography` or `pycrdt` is not installed, and
 schema tests when `jsonschema` is not. Besides the expected texts, the tests
 build hostile entities with the vector keys:
 
-- updates under another member's client id, including one written before
-  any of that member's updates (caught only by the snapshot's `authors`) and
-  one under the revoked member's id
-- two updates in one block under one fresh client id, to pin the
-  `createdAt`, then key order
+- a foreign client group holding only a Skip struct, which must still fail
+  the check
+- `clientIdFor` against every update in the vectors, the 53-bit mask, the
+  zero-to-one rule and malformed salts
+- an update whose client id is not `clientIdFor(creator, salt)`; a member
+  writing under the owner's client id, with her own salt and with the owner's
+  salt copied from his headers; one under the revoked member's id; one
+  written before every owner update; updates with a missing or malformed
+  salt (with schema checks off, so the reader's own check is exercised)
+- the vectors' forged update by Mallory, which has a valid salt and her own
+  derived id, so only the member filter rejects it
+- a valid snapshot `authors` entry (accepted as claimed) and forged ones
+  (dropped while the snapshot is still applied), and the same for a version
+- `creationFlags.raw` bits in the audit: each combination against the
+  booleans, unknown bits, and a mismatch on a vector entity
 - old-epoch updates and snapshots after the revocation, and at its block
 - a chunked snapshot whose `of` names the entity key instead of the
   snapshot id, whose chunk is in another epoch, or whose chunk has flags
 - an ACL whose roster names another document or another epoch
 - a version built from a random key, with and without chunks, read from its
-  link in memory and through the CLI, plus the audit on it
+  link in memory and through the CLI, plus the audit on it; a version in
+  epoch 1 and one whose chunk is in another epoch are rejected
 
 ## Notes
 

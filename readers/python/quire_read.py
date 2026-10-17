@@ -196,6 +196,29 @@ def address_of(public_key: bytes | str) -> str:
     return "0x" + keccak256(raw[1:])[-20:].hex()
 
 
+CLIENT_ID_MASK = (1 << 53) - 1
+SALT_HEX = re.compile(r"^[0-9a-f]{32}$")
+ADDRESS_HEX = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+
+def client_id_for(address: str, salt: str | bytes) -> int:
+    """Section 5: the Yjs client id a writer must use.
+
+    The first 8 bytes of keccak-256(20 address bytes || 16 salt bytes),
+    big-endian, masked to 53 bits; 0 becomes 1.
+    """
+    if not isinstance(address, str) or not ADDRESS_HEX.match(address):
+        raise ValueError(f"not an address: {address!r}")
+    if isinstance(salt, str):
+        if not SALT_HEX.match(salt):
+            raise ValueError(f"salt must be 32 lowercase hex characters: {salt!r}")
+        salt = bytes.fromhex(salt)
+    if not isinstance(salt, (bytes, bytearray)) or len(salt) != 16:
+        raise ValueError("salt must be 16 bytes")
+    cid = int.from_bytes(keccak256(qa._hex_bytes(address) + salt)[:8], "big") & CLIENT_ID_MASK
+    return cid or 1
+
+
 # ---------------------------------------------------------------- link
 
 
@@ -415,16 +438,19 @@ def _content_length(c: _Cursor, ref: int) -> int:
 def update_clients(update: bytes) -> dict[int, list[tuple[int, int]]]:
     """Client ids whose structs a Yjs v1 update carries, at any clock.
 
-    Returns {client: [(start clock, end clock exclusive), ...]}. Skip
-    structs are left out (they write nothing). A state vector computed from
-    the update is not enough: it only covers runs that start at clock 0,
-    so an update continuing a client at clock 35 would show no client.
+    Returns {client: [(start clock, end clock exclusive), ...]}. Every
+    client with at least one struct is a key, as in Yjs `parseUpdateMeta`,
+    which counts Skip structs too; a Skip adds no range, since it writes
+    nothing. A state vector computed from the update is not enough: it only
+    covers runs that start at clock 0, so an update continuing a client at
+    clock 35 would show no client.
     """
     c = _Cursor(update)
-    out: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    out: dict[int, list[tuple[int, int]]] = {}
     for _ in range(c.uint()):
         n_structs, client, clock = c.uint(), c.uint(), c.uint()
         for _ in range(n_structs):
+            out.setdefault(client, [])
             info = c.u8()
             ref = info & 0x1F
             if ref == 10:  # skip
@@ -453,7 +479,7 @@ def update_clients(update: bytes) -> dict[int, list[tuple[int, int]]]:
             c.uint(), c.uint()
     if c.pos != len(update):
         raise Rejected("trailing bytes after Yjs update")
-    return dict(out)
+    return out
 
 
 # ---------------------------------------------------------------- sources
@@ -553,6 +579,22 @@ class JoinRequest:
 
 
 @dataclass
+class Author:
+    """Who a Yjs client id belongs to (section 5).
+
+    `proven` is True when an applied update by `address` used the id, which
+    the reader checked against clientIdFor($creator, salt). It is False for
+    an entry taken from a snapshot's `authors` map: the address and salt
+    derive the id, but the snapshot's content under it is one member's word.
+    """
+
+    address: str
+    salt: str
+    proven: bool
+    source: str  # "update <key>" or "snapshot <key>"
+
+
+@dataclass
 class ReadResult:
     text: str
     acl: dict[str, Any]
@@ -562,13 +604,32 @@ class ReadResult:
     revoked: list[dict[str, Any]] | None
     applied: list[str]
     ignored: list[tuple[str, str]]  # (entity key, reason)
-    bindings: dict[int, str]  # Yjs client id -> creator
+    authors: dict[int, Author]  # Yjs client id -> who owns it
     newest_snapshot: str | None
     doc: Doc  # the assembled Yjs document
     kinds: dict[str, str] = field(default_factory=dict)  # entity key -> kind
     creators: dict[str, str] = field(default_factory=dict)  # entity key -> creator
-    bound_by: dict[int, str] = field(default_factory=dict)  # client id -> "snapshot <key>" / "update <key>"
-    author_conflicts: list[str] = field(default_factory=list)  # snapshots disagreeing on authors
+    dropped_authors: list[str] = field(default_factory=list)  # snapshot `authors` entries that failed
+
+
+def author_problem(cid_text: Any, entry: Any) -> str | None:
+    """Why a snapshot `authors` entry does not count, or None if it does.
+
+    The key must be a canonical decimal client id and the value an object
+    {address, salt} whose clientIdFor equals that id (section 5).
+    """
+    text = str(cid_text)
+    if not text.isdigit() or str(int(text)) != text:
+        return "key is not a decimal client id"
+    if not isinstance(entry, dict) or set(entry) != {"address", "salt"}:
+        return "entry is not {address, salt}"
+    try:
+        derived = client_id_for(str(entry["address"]), entry["salt"])
+    except ValueError as exc:
+        return str(exc)
+    if derived != int(text):
+        return f"clientIdFor(address, salt) is {derived}"
+    return None
 
 
 def _block(value: Any) -> int:
@@ -596,9 +657,8 @@ class Reader:
         self.ignored: list[tuple[str, str]] = []
         self.kinds: dict[str, str] = {}
         self.creators: dict[str, str] = {}
-        self.bindings: dict[int, str] = {}
-        self.bound_by: dict[int, str] = {}
-        self.author_conflicts: list[str] = []
+        self.authors: dict[int, Author] = {}
+        self.dropped_authors: list[str] = []
 
     def _note(self, e: Entity) -> None:
         self.kinds[e.key] = e.kind
@@ -757,27 +817,26 @@ class Reader:
                 self._ignore(e, str(exc))
         return out, head, newest_base
 
-    def seed_bindings(self, snapshots: list[tuple[Entity, bytes, Frame]]) -> None:
-        """Section 5: client ids are bound first by the `authors` map of
-        the applied snapshots, newest first. Where two applied snapshots
-        claim one client id for different addresses, the newest wins and
-        the disagreement is recorded for the trust report."""
+    def snapshot_authors(self, snapshots: list[tuple[Entity, bytes, Frame]]) -> None:
+        """Section 5: a snapshot's `authors` entry counts only if
+        clientIdFor(address, salt) equals its client id. A valid entry is
+        attribution, shown as claimed; it binds nothing. Entries that fail
+        are dropped and listed for the trust report. Newest snapshot first,
+        so where two entries agree the newest one is named as the source."""
         for e, _data, frame in snapshots:
             authors = frame.header.get("authors") or {}
-            for cid_text, address in authors.items():
-                try:
-                    cid = int(str(cid_text), 10)
-                except ValueError:
+            if not isinstance(authors, dict):
+                self.dropped_authors.append(f"snapshot {e.key}: authors is not an object")
+                continue
+            for cid_text, entry in authors.items():
+                problem = author_problem(cid_text, entry)
+                if problem:
+                    self.dropped_authors.append(f"snapshot {e.key}: client id {cid_text}: {problem}")
                     continue
-                address = str(address).lower()
-                held = self.bindings.get(cid)
-                if held is None:
-                    self.bindings[cid] = address
-                    self.bound_by[cid] = f"snapshot {e.key}"
-                elif held != address:
-                    self.author_conflicts.append(
-                        f"snapshot {e.key} claims client id {cid} for {address};"
-                        f" kept {held} from {self.bound_by[cid]}"
+                cid = int(cid_text)
+                if cid not in self.authors:
+                    self.authors[cid] = Author(
+                        str(entry["address"]).lower(), entry["salt"], False, f"snapshot {e.key}"
                     )
 
     # Step 4: updates, with the section 5 rules on epochs and client ids.
@@ -785,7 +844,7 @@ class Reader:
         self, members: list[str], newest_base: int | None, current_epoch: int, last_revocation: int | None
     ) -> list[tuple[Entity, bytes]]:
         min_qs = max(0, newest_base - SNAPSHOT_WINDOW) if newest_base is not None else 0
-        candidates: list[tuple[Entity, bytes, dict[int, list[tuple[int, int]]]]] = []
+        accepted: list[tuple[Entity, bytes, str, list[int]]] = []
         for e in self.source.by_kind(self.link.doc, "u", members, min_qs):
             if e.creator not in members:
                 self._ignore(e, "creator not in ACL")
@@ -801,26 +860,29 @@ class Reader:
             if reason:
                 self._ignore(e, reason)
                 continue
-            candidates.append((e, frame.data, clients))
-        # Binding depends on which update is applied first, so section 5
-        # fixes the order: createdAt, then entity key. Keys are 0x + 64
-        # lowercase hex, so string order equals numeric order.
-        candidates.sort(key=lambda c: (c[0].created_at, c[0].key))
-        out: list[tuple[Entity, bytes]] = []
-        for e, data, clients in candidates:
-            taken = sorted(
-                cid for cid in clients if self.bindings.get(cid, e.creator) != e.creator
-            )
-            if taken:
-                owners = ", ".join(f"{cid} -> {self.bindings[cid]}" for cid in taken)
-                self._ignore(e, f"Yjs client id already bound to another creator ({owners})")
+            salt = frame.header.get("salt")
+            try:
+                own = client_id_for(e.creator, salt)  # type: ignore[arg-type]
+            except ValueError as exc:
+                self._ignore(e, f"update salt: {exc}")
                 continue
-            for cid in clients:
-                if cid not in self.bindings:
-                    self.bindings[cid] = e.creator
-                    self.bound_by[cid] = f"update {e.key}"
-            out.append((e, data))
-        return out
+            # Every client id with structs must be the creator's own. The
+            # check needs no reader state, so query order does not matter.
+            foreign = sorted(cid for cid in clients if cid != own)
+            if foreign:
+                ids = ", ".join(str(cid) for cid in foreign)
+                self._ignore(e, f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
+                continue
+            accepted.append((e, frame.data, str(salt), sorted(clients)))
+        # Any order gives the same document; sorting only keeps the applied
+        # list and the report stable across query orders.
+        accepted.sort(key=lambda u: (u[0].created_at, u[0].key))
+        for e, _data, salt, cids in accepted:
+            for cid in cids:
+                held = self.authors.get(cid)
+                if held is None or not held.proven:
+                    self.authors[cid] = Author(e.creator, salt, True, f"update {e.key}")
+        return [(e, data) for e, data, _salt, _cids in accepted]
 
     def join_requests(self, acl: dict[str, Any]) -> list[JoinRequest]:
         """Open join requests; only works when member_key is the owner's."""
@@ -851,14 +913,14 @@ class Reader:
             self.log(f"roster of epoch {epoch} is sealed; without a member key nothing is readable")
             return ReadResult(
                 "", acl, epoch, sorted(self.keys), None, None, self.applied, self.ignored,
-                self.bindings, None, doc, self.kinds, self.creators,
+                self.authors, None, doc, self.kinds, self.creators,
             )
         members = sorted({str(m["address"]).lower() for m in roster.get("members", [])})
         revoked = roster.get("revoked") or []
         last_revocation = max((_block(r["atBlock"]) for r in revoked), default=None)
 
         snapshots, newest, newest_base = self.load_snapshots(members, epoch, last_revocation)
-        self.seed_bindings(snapshots)
+        self.snapshot_authors(snapshots)
         updates = self.load_updates(members, newest_base, epoch, last_revocation)
 
         # Report entities the member filter excluded (e.g. forged writes).
@@ -874,8 +936,8 @@ class Reader:
         text = fragment_text(doc.get("default", type=XmlFragment))
         return ReadResult(
             text, acl, epoch, sorted(self.keys), roster.get("members", []), revoked,
-            self.applied, self.ignored, self.bindings, newest.key if newest else None,
-            doc, self.kinds, self.creators, self.bound_by, self.author_conflicts,
+            self.applied, self.ignored, self.authors, newest.key if newest else None,
+            doc, self.kinds, self.creators, self.dropped_authors,
         )
 
 
@@ -958,6 +1020,11 @@ def read_version(link: VersionLink, source: Source, schemas: Schemas | None = No
         return decrypt_frame(e, link.secret, doc_id)
 
     try:
+        # Section 5: a version uses epoch 0 in its outer header and frames,
+        # and its chunks use the version key and, like any chunk, the
+        # head's epoch (checked in assemble).
+        if outer_epoch(head) != 0:
+            raise Rejected(f"version outer epoch is {outer_epoch(head)}, must be 0")
         frame = open_frame(head)
         schemas.check("snapshot", frame.header)
         data = assemble(head, frame, source, open_frame, schemas)
@@ -980,13 +1047,21 @@ def version_report(result: VersionResult) -> str:
     lines.append(f"flags        {qa.flags_text(head)}  expected readonly, permissionless extension:"
                  f" {_yes(not qa.check_flags(head))}")
     lines.append(f"blocks       created {head.created_at}, expires {head.expires_at}")
-    lines.append(f"epoch        {result.epoch} (outer header; the version key is used directly)")
+    lines.append(f"epoch        {result.epoch} (must be 0; the version key is used directly for head and chunks)")
     lines.append(f"id           {header.get('id')}  base {header.get('base')}  size {header.get('size')}")
     lines.append(f"chunks       {len(result.chunks)} (creator, epoch, flags, i and of checked)")
     authors = header.get("authors") or {}
-    lines.append(f"authors      {len(authors)} (as claimed by the version's creator)")
-    for cid, who in sorted(authors.items(), key=lambda kv: (len(kv[0]), kv[0])):
-        lines.append(f"  {cid:<12} {who}")
+    if not isinstance(authors, dict):
+        authors = {}
+    good = {k: v for k, v in authors.items() if author_problem(k, v) is None}
+    lines.append(
+        f"authors      {len(good)} claimed by the version's creator, {len(authors) - len(good)} dropped"
+        " (an entry counts only if clientIdFor(address, salt) is its client id)"
+    )
+    for cid, entry in sorted(authors.items(), key=lambda kv: (len(str(kv[0])), str(kv[0]))):
+        problem = author_problem(cid, entry)
+        who = entry.get("address") if isinstance(entry, dict) else entry
+        lines.append(f"  {cid:<17} {who}  " + ("claimed" if problem is None else f"dropped: {problem}"))
     return "\n".join(lines)
 
 
@@ -1075,16 +1150,19 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
             kind = qa.KIND_NAMES.get(result.kinds.get(k, "?"), "?")
             lines.append(f"      {kind} {k} from {result.creators.get(k, '?')}")
 
-    if result.bindings:
+    if result.authors or result.dropped_authors:
         lines.append("")
-        lines.append("client ids   (bound by applied snapshots' authors, then the first applied update)")
+        lines.append("client ids   (each is clientIdFor(address, salt); proven by an applied update")
+        lines.append("              from that address, or claimed by a snapshot's authors map)")
         names = {str(m["address"]).lower(): m.get("name") for m in result.members or []}
-        for cid, who in sorted(result.bindings.items()):
-            how = result.bound_by.get(cid, "")
-            how = how[: how.find(" ") + 11] + "..." if how else ""
-            lines.append(f"  {cid:<12} {who} {names.get(who) or '':<8} {how}".rstrip())
-        for conflict in result.author_conflicts:
-            lines.append(f"  conflict: {conflict}")
+        gone = {str(r.get("address", "")).lower() for r in result.revoked or []}
+        for cid, a in sorted(result.authors.items()):
+            how = "proven " if a.proven else "claimed"
+            src = a.source[: a.source.find(" ") + 11] + "..."
+            label = names.get(a.address) or ("revoked" if a.address in gone else "no member")
+            lines.append(f"  {cid:<17} {a.address} {label:<8} {how} {src}")
+        for dropped in result.dropped_authors:
+            lines.append(f"  dropped: {dropped}")
 
     joins = reader.join_requests(acl) if reader.member_key is not None else []
     if reader.member_key is not None and public_key_hex(reader.member_key).lower() == owner_pub.lower():

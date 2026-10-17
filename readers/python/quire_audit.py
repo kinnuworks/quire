@@ -314,9 +314,9 @@ def check_flags(e: Entity) -> list[str]:
     the head is not visible without decrypting, so a chunk may carry either
     set: none (a snapshot chunk) or both (a version chunk).
 
-    `raw` is the chain's flag bitfield. PROTOCOL.md does not give its bit
-    layout, so the only check on it is that an entity with neither flag
-    also has raw 0: anything else is a flag this audit does not know.
+    `raw` is the chain's flag bitfield (section 5): bit 0 is readonly and
+    bit 1 is permissionless extension. When present it must agree with the
+    two booleans and set no other bit.
     """
     ro, pe = e.readonly, e.permissionless_extension
     name = KIND_NAMES.get(e.kind, e.kind)
@@ -334,8 +334,35 @@ def check_flags(e: Entity) -> list[str]:
             problems.append(f"{name} allows permissionless extension")
         if ro:
             problems.append(f"{name} is readonly, expected no flags")
-    if not ro and not pe and e.flags_raw not in (None, 0):
-        problems.append(f"{name} has raw flags {e.flags_raw} but neither readonly nor permissionless extension")
+    problems.extend(check_raw_flags(e))
+    return problems
+
+
+RAW_READONLY = 1 << 0
+RAW_PERMISSIONLESS = 1 << 1
+
+
+def raw_flags(readonly: bool, permissionless: bool) -> int:
+    """creationFlags.raw for the two booleans (section 5)."""
+    return (RAW_READONLY if readonly else 0) | (RAW_PERMISSIONLESS if permissionless else 0)
+
+
+def check_raw_flags(e: Entity) -> list[str]:
+    """`creationFlags.raw` against the booleans: bit 0 readonly, bit 1
+    permissionless extension, no other bits. Nothing to check without raw."""
+    raw = e.flags_raw
+    if raw is None:
+        return []
+    name = KIND_NAMES.get(e.kind, e.kind)
+    problems: list[str] = []
+    if raw < 0 or raw & ~(RAW_READONLY | RAW_PERMISSIONLESS):
+        problems.append(f"{name} raw flags {raw} set bits other than 0 (readonly) and 1 (permissionless extension)")
+    if bool(raw & RAW_READONLY) != e.readonly:
+        problems.append(f"{name} raw flags {raw} bit 0 disagrees with readonly={e.readonly}")
+    if bool(raw & RAW_PERMISSIONLESS) != e.permissionless_extension:
+        problems.append(
+            f"{name} raw flags {raw} bit 1 disagrees with permissionlessExtension={e.permissionless_extension}"
+        )
     return problems
 
 

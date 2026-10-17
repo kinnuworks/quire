@@ -21,7 +21,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 9 | RPC gateway | Python's default user agent gets HTTP 403 | Low |
 | 10 | `arkiv-encryption` | No associated data; plaintext cap below the payload cap; key-in-URL guidance | Low |
 | 11 | Docs | `atBlock` retention range is not stated | Low |
-| – | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | – |
+| 12 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
 ## 1. Keyless query budget: the SDK hangs on 429 without saying so
 

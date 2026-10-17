@@ -1141,15 +1141,13 @@ class Reader:
         list[Loaded], Entity | None, int | None
     ]:
         """Step 3. `refused` names snapshots set aside after the updates were
-        read (see refuse); they are ignored here, so the next one is used."""
+        read (see refuse). Returns the snapshots to apply, the newest of
+        them, and the base that step 4 reads updates from."""
         refused = refused or {}
         decoded: list[tuple[Entity, Frame]] = []
         for e in self.source.by_kind(self.link.doc, "s", members):
             if e.creator not in members:
                 self._ignore(e, "creator not in ACL")
-                continue
-            if e.key in refused:
-                self._ignore(e, refused[e.key])
                 continue
             try:
                 decoded.append((e, self._decode_snapshot(e)))
@@ -1163,28 +1161,34 @@ class Reader:
             data = self._snapshot_data(e, f)
             return Loaded(e, data, f, update_structs(data))
 
-        newest: Loaded | None = None
+        # Each member's newest snapshot that can be assembled, so one member's
+        # empty or stale snapshot cannot hide what another member's holds. A
+        # member whose newest one is refused contributes none: no fallback to
+        # an older one. Updates are read from the oldest base of these
+        # snapshots, refused ones included, so nothing between them is skipped.
+        out: list[Loaded] = []
+        done: set[str] = set()
+        window: int | None = None
         for e, f in decoded:
-            try:
-                newest = load(e, f)
-                break
-            except Exception as exc:
-                self._ignore(e, _why(exc))
-        if newest is None:
-            return [], None, None
-        newest_base = _block(newest.frame.header["base"])
-        out = [newest]
-        for e, f in decoded:
-            if e is newest.entity or any(k == e.key for k, _r in self.ignored):
+            if e.creator in done:
                 continue
-            if abs(_block(f.header["base"]) - newest_base) > SNAPSHOT_WINDOW:
-                self._ignore(e, "base not within 60 blocks of the newest snapshot")
+            if e.key in refused:
+                self._ignore(e, refused[e.key])
+                done.add(e.creator)
+                base = _block(f.header["base"])
+                window = base if window is None else min(window, base)
                 continue
             try:
                 out.append(load(e, f))
             except Exception as exc:
                 self._ignore(e, _why(exc))
-        return out, newest.entity, newest_base
+                continue
+            done.add(e.creator)
+            base = _block(f.header["base"])
+            window = base if window is None else min(window, base)
+        if not out:
+            return [], None, window
+        return out, out[0].entity, window
 
     def snapshot_authors(self, snapshots: list[Loaded]) -> None:
         """Section 5: a snapshot's `authors` entry counts only if
@@ -1244,8 +1248,8 @@ class Reader:
             raise Rejected(f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
         return frame, structs, str(salt), clients
 
-    def load_updates(self, members: list[str], newest_base: int | None) -> list[tuple[Entity, bytes, list[Struct]]]:
-        min_qs = max(0, newest_base - SNAPSHOT_WINDOW) if newest_base is not None else 0
+    def load_updates(self, members: list[str], window_base: int | None) -> list[tuple[Entity, bytes, list[Struct]]]:
+        min_qs = max(0, window_base - SNAPSHOT_WINDOW) if window_base is not None else 0
         accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
         for e in self.source.by_kind(self.link.doc, "u", members, min_qs):
             if e.creator not in members:
@@ -1350,15 +1354,15 @@ class Reader:
         revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
 
         # Read snapshots, then updates; if the updates show a snapshot must be
-        # refused, start over without it, so step 3 falls back to the next.
+        # refused, start over without it; its creator then contributes no snapshot.
         base_applied, base_ignored = list(self.applied), list(self.ignored)
         refused: dict[str, str] = {}
         while True:
             self.applied, self.ignored = list(base_applied), list(base_ignored)
             self.authors, self.dropped_authors = {}, []
-            snapshots, newest, newest_base = self.load_snapshots(members, refused)
+            snapshots, newest, window_base = self.load_snapshots(members, refused)
             self.snapshot_authors(snapshots)
-            updates = self.load_updates(members, newest_base)
+            updates = self.load_updates(members, window_base)
             verified = Verified()
             for _e, _data, structs in updates:
                 verified.add(structs)

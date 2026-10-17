@@ -1,10 +1,13 @@
 """Mutation check: removes each security rule in turn and confirms at least
 one test fails. Restores every file afterwards.
 
-    python3 scripts/mutants.py
+    python3 packages/y-arkiv/scripts/mutants.py   (from anywhere)
 """
+import os
 import subprocess
 import sys
+
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 P, A = "src/provider.ts", "src/acl.ts"
 MUTANTS = [
@@ -15,8 +18,12 @@ MUTANTS = [
     (P, "future qs on updates", "if (entity.attributes.seq > entity.createdAt) return this.reject()", "if (false) return this.reject()"),
     (P, "own client id in snapshots", "if (this.identity && ours !== undefined && ours >", "if (false && ours !== undefined && ours >"),
     (P, "whole-item provenance", "this.coveredByProven(client, clock, clock + length)", "this.coveredByProven(client, clock, clock + 1)"),
-    (P, "updates before snapshots", "const applied = await this.applySnapshotEntity(s, states)", "const applied = await this.applySnapshotEntity(s)"),
-    (P, "override detector", "if (JSON.stringify(have) !== JSON.stringify(want[i])) return true", "if (false) return true"),
+    (P, "verified clocks checked on load", "const verified = this.history.slice(historyBefore).map((h) => h.update)", "const verified: Uint8Array[] = []"),
+    (P, "override detector", "if (unitKey(doc, found, struct.id.clock + i - found.id.clock) !== unitKey(doc, struct, i)) return true", "if (false) return true"),
+    (P, "override: map key", "k === 0 ? (item.parentSub ?? \"\") : \"\"", "\"\""),
+    (P, "override: format value", "id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? \"\") : \"\", unit(item.content, k)]", "id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? \"\") : \"\", item.content.getContent()[k] ?? null]"),
+    (P, "refused snapshot never commits", "      if (overridesVerified(trial, verified)) {\n        this.reject()\n        continue", "      if (overridesVerified(trial, verified)) {\n        this.reject()\n        st.commit()\n        continue"),
+    (P, "versions must be readonly", "if (!entity.readonly) throw", "if (false) throw"),
     (P, "ACL creator check", "if (entity.creator.toLowerCase() !== this.link.owner.toLowerCase()) return", "if (false) return"),
     (P, "chunk creator", "chunk.creator.toLowerCase() === entity.creator.toLowerCase() ?", "true ?"),
     (P, "chunk names its snapshot", "cf.header.of !== frame.header.id", "false"),

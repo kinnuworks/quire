@@ -69,7 +69,7 @@ export type SdkStoreOptions = {
   accessKey?: string
 }
 
-type RpcEntity = {
+export type RpcEntity = {
   key: Hex
   owner: Hex
   creator: Hex
@@ -237,7 +237,7 @@ function fromSdkEntity(e: Entity): StoredEntity | null {
   }
 }
 
-function fromRpcEntity(e: RpcEntity): StoredEntity | null {
+export function fromRpcEntity(e: RpcEntity): StoredEntity | null {
   const attrs = new Map((e.attributes ?? []).map((a) => [a.name, a.value]))
   const qd = attrs.get("qd")
   const qk = attrs.get("qk")

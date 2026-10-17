@@ -558,8 +558,10 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("flags", dict(result.ignored)[head.key])
         self.assertNotEqual(result.newest_snapshot, head.key)
 
-    def _extra_snapshot(self, *, epoch: int, block: int, text: str):
-        """A full-state snapshot by the owner with one more paragraph."""
+    def _extra_snapshot(self, *, epoch: int, block: int, text: str, only_owner_snapshot: bool = False):
+        """A full-state snapshot by the owner with one more paragraph. Section 5
+        step 3 applies only each member's newest snapshot, so with
+        only_owner_snapshot the owner's other snapshots are left out."""
         reader, result = self._member_result()
         salt = os.urandom(16).hex()
         cid = quire_read.client_id_for(VEC["owner"], salt)
@@ -574,6 +576,8 @@ class ReaderTests(unittest.TestCase):
             payload=seal("s", epoch, snapshot_header(
                 data, block, authors={str(cid): author_entry(VEC["owner"], salt)}), data, reader.keys[epoch]),
         )
+        if only_owner_snapshot:
+            entities = [x for x in entities if not (x.kind == "s" and x.creator == VEC["owner"])]
         return e, self._reader(entities + [e]).read()
 
     def test_old_epoch_snapshot_after_revocation_is_applied(self) -> None:
@@ -586,7 +590,7 @@ class ReaderTests(unittest.TestCase):
 
     def test_old_epoch_snapshot_at_revocation_block_is_applied(self) -> None:
         # createdAt equal to atBlock is not "greater than", so it stays.
-        e, result = self._extra_snapshot(epoch=0, block=REVOKED_AT, text="Same block as the revocation.")
+        e, result = self._extra_snapshot(epoch=0, block=REVOKED_AT, text="Same block as the revocation.", only_owner_snapshot=True)
         self.assertIn(e.key, result.applied)
         self.assertIn("Same block as the revocation.", result.text)
 
@@ -1097,7 +1101,9 @@ class ReaderTests(unittest.TestCase):
                 payload=seal("s", 1, snapshot_header(data, older, authors={str(CAL_CLIENT): author_entry(bea, salt)}),
                              data, reader.keys[1]),
             )
-            result = self._reader(quire_audit.load_vectors(DOCUMENT)[1] + [snap]).read()
+            # the owner's newest snapshot, so step 3 applies it (after Bea's newer one)
+            others = [x for x in quire_audit.load_vectors(DOCUMENT)[1] if not (x.kind == "s" and x.creator == VEC["owner"])]
+            result = self._reader(others + [snap]).read()
         self.assertIn(snap.key, result.applied)
         self.assertEqual(result.authors[CAL_CLIENT].address, cal)
         self.assertIn(f"snapshot {snap.key}: client id {CAL_CLIENT}: already attributed to {cal}",
@@ -1224,9 +1230,18 @@ class ReaderTests(unittest.TestCase):
         forged = self._snapshot(d.get_update(), creator=VEC["members"]["bea"], block=13, key=fake_key(0xF0F))
         return forged, start, entities
 
+    def test_an_empty_newer_snapshot_cannot_erase_the_document(self) -> None:
+        # Section 5 step 3: each member's newest snapshot is applied, so Bea's
+        # empty one, newer than everything, replaces only her own contribution.
+        empty = Doc().get_update()
+        entities = quire_audit.load_vectors(DOCUMENT)[1]
+        e = self._snapshot(empty, creator=VEC["members"]["bea"], block=13, key=fake_key(0xE0E))
+        result = self._read(entities + [e])
+        self.assertIn(e.key, result.applied)
+        self.assertEqual(result.text, VEC["expected"]["memberText"])
+
     def test_snapshot_conflicting_with_a_verified_update_is_refused(self) -> None:
         forged, start, entities = self._forged_owner_snapshot()
-        honest = self._member_result()[1]
         for drop_first in (False, True):
             # With the owner's first update gone (expired), his last one waits
             # on clocks only the snapshots have: the pending case.
@@ -1240,7 +1255,10 @@ class ReaderTests(unittest.TestCase):
             self.assertRegex(reason, rf"^snapshot carries an item at client {OWNER_CLIENT} clock (\d+)"
                                      " that differs from a verified update's$")
             self.assertGreaterEqual(int(reason.split(" clock ")[1].split()[0]), start)
-            self.assertEqual(result.newest_snapshot, honest.newest_snapshot)  # step 3 falls back
+            # step 3: Bea's newest snapshot was refused, so she contributes none; the owner's stands
+            self.assertNotEqual(result.newest_snapshot, forged.key)
+            owner_newest = max((e for e in entities if e.kind == "s" and e.creator == VEC["owner"]), key=_qs)
+            self.assertIn(owner_newest.key, result.applied)
             self.assertEqual(result.text, VEC["expected"]["memberText"], drop_first)
 
     def test_updates_first_alone_does_not_stop_a_pending_override(self) -> None:

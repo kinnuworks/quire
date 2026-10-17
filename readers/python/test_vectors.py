@@ -11,6 +11,7 @@ import random
 import struct
 import sys
 import unittest
+from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VECTORS = os.path.join(HERE, "..", "..", "spec", "vectors")
@@ -41,12 +42,40 @@ with open(DOCUMENT, encoding="utf-8") as fh:
 
 OWNER_KEY = VEC["privateKeys"]["owner"]
 BEA_KEY = VEC["privateKeys"]["bea"]
-# Yjs client ids in the vectors, each clientIdFor(address, session salt).
-OWNER_CLIENT = 5514128972073175
-OWNER_SALT = "89ff1a0a12139420d2a8ba3f5c7d3493"  # visible to every member in the owner's update headers
-BEA_CLIENT = 7254637518696223
-CAL_CLIENT = 8055772141072627  # Cal is revoked; his edits live on only in the snapshot
 REVOKED_AT = 10  # Cal's atBlock in the sealed roster
+
+
+def _vector_sessions() -> dict:
+    """{creator: (client id, salt)} from the vectors' update headers.
+
+    Read from the file rather than written down, so a regenerated vectors
+    file does not need new constants. test_client_id_for_matches_the_vectors
+    checks each against the structs.
+    """
+    data, entities = quire_audit.load_vectors(DOCUMENT)
+    reader = quire_read.Reader(
+        quire_read.parse_link(data["link"]), quire_read.VectorSource(entities),
+        quire_read.load_private_key(BEA_KEY), schemas=quire_read.Schemas(enabled=False),
+    )
+    reader.roster(reader.load_acl())
+    out = {}
+    for e in entities:
+        if e.kind == "u":
+            salt = reader._content_frame(e).header["salt"]
+            out[e.creator] = (quire_read.client_id_for(e.creator, salt), salt)
+    return out
+
+
+# Yjs client ids in the vectors, each clientIdFor(address, session salt).
+# The owner's salt is visible to every member in his update headers. Cal is
+# revoked; his edits live on only in the snapshots.
+if not READER_SKIP:
+    _SESSIONS = _vector_sessions()
+    OWNER_CLIENT, OWNER_SALT = _SESSIONS[VEC["owner"]]
+    BEA_CLIENT = _SESSIONS[VEC["members"]["bea"]][0]
+    CAL_CLIENT = _SESSIONS[VEC["members"]["cal"]][0]
+else:
+    OWNER_CLIENT, OWNER_SALT, BEA_CLIENT, CAL_CLIENT = 0, "", 0, 0
 KEYS_BY_ADDRESS = {VEC["owner"]: OWNER_KEY, VEC["members"]["bea"]: BEA_KEY}
 OTHER_DOC = "0x" + "cd" * 32
 
@@ -61,7 +90,7 @@ def newest_snapshot(entities):
 
 
 def owner_late_update(entities):
-    """The owner's last update; its structs start at clock 35."""
+    """The owner's last update; its structs do not start at clock 0."""
     return max((e for e in entities if e.kind == "u" and e.creator == VEC["owner"]), key=lambda e: e.created_at)
 
 
@@ -490,12 +519,12 @@ class ReaderTests(unittest.TestCase):
         chunk_key = fake_key(0xC1)
         header = dict(frame.header, chunks=[chunk_key])
         new_head = make_entity(
-            head, key=fake_key(0x5A), kind="s", creator=head.creator, block=10,
+            head, key=fake_key(0x5A), kind="s", creator=head.creator, block=head.created_at,
             payload=seal("s", 1, header, frame.data[:100], reader.keys[1]),
         )
         of = frame.header["id"] if of_value is None else of_value
         chunk = make_entity(
-            head, key=chunk_key, kind="c", creator=head.creator, block=10,
+            head, key=chunk_key, kind="c", creator=head.creator, block=head.created_at,
             payload=seal("c", chunk_epoch, {"i": 1, "of": of}, frame.data[100:], reader.keys[chunk_epoch]),
             readonly=chunk_flags, permissionless=chunk_flags,
         )
@@ -547,13 +576,13 @@ class ReaderTests(unittest.TestCase):
         )
         return e, self._reader(entities + [e]).read()
 
-    def test_old_epoch_snapshot_after_revocation_is_ignored(self) -> None:
-        # Section 5: the old-epoch rule covers snapshots too. Cal still holds
-        # the epoch 0 key and could read this one.
+    def test_old_epoch_snapshot_after_revocation_is_applied(self) -> None:
+        # Section 5: a snapshot a writer sent under an older epoch, before it
+        # saw the rotation, is still applied (the old rule ignored it).
         e, result = self._extra_snapshot(epoch=0, block=REVOKED_AT + 2, text="Old key snapshot.")
-        self.assertNotIn(e.key, result.applied)
-        self.assertIn("snapshot created at block 12, after the revocation", dict(result.ignored)[e.key])
-        self.assertEqual(result.text, VEC["expected"]["memberText"])
+        self.assertIn(e.key, result.applied)
+        self.assertNotIn(e.key, dict(result.ignored))
+        self.assertTrue(result.text.endswith("Old key snapshot."))
 
     def test_old_epoch_snapshot_at_revocation_block_is_applied(self) -> None:
         # createdAt equal to atBlock is not "greater than", so it stays.
@@ -574,8 +603,8 @@ class ReaderTests(unittest.TestCase):
         data = reader._content_frame(owner_e1).data
         clients = quire_read.update_clients(data)
         self.assertEqual(set(clients), {OWNER_CLIENT})
-        self.assertEqual(clients[OWNER_CLIENT][0][0], 35)
-        # A state vector of this update is empty: it starts at clock 35.
+        self.assertGreater(clients[OWNER_CLIENT][0][0], 0)
+        # A state vector of this update is empty: it does not start at clock 0.
         self.assertEqual(get_state(data), b"\x00")
 
     def _forged_update(self, client_id: int | None, epoch: int, block: int, text: str,
@@ -657,8 +686,8 @@ class ReaderTests(unittest.TestCase):
         data = reader._content_frame(owner_e1).data
         clients = quire_read.update_clients(data)
         self.assertEqual(set(clients), {OWNER_CLIENT})
-        self.assertEqual(clients[OWNER_CLIENT][0][0], 35)
-        # A state vector of this update is empty: it starts at clock 35.
+        self.assertGreater(clients[OWNER_CLIENT][0][0], 0)
+        # A state vector of this update is empty: it does not start at clock 0.
         self.assertEqual(get_state(data), b"\x00")
 
     def test_skip_struct_under_another_client_id_counts(self) -> None:
@@ -788,7 +817,8 @@ class ReaderTests(unittest.TestCase):
             for entry in h.get("authors", {}).values():
                 self.assertEqual(quire_read.salt_signer(VEC["doc"], entry["salt"], entry["sig"]), entry["address"])
                 seen += 1
-        self.assertEqual(seen, 5 + 5)
+        updates = sum(1 for e in reader.source.entities if e.kind == "u")  # type: ignore[attr-defined]
+        self.assertGreater(seen, updates)
 
     def test_recovery_agrees_with_cryptography(self) -> None:
         from cryptography.hazmat.primitives import hashes
@@ -955,7 +985,7 @@ class ReaderTests(unittest.TestCase):
         cal = result.authors[CAL_CLIENT]
         self.assertEqual((cal.address, cal.proven), (VEC["members"]["cal"], False))
         self.assertEqual(cal.source, f"snapshot {result.newest_snapshot}")
-        self.assertEqual(cal.via, VEC["owner"])  # the snapshot's creator
+        self.assertEqual(cal.via, newest_snapshot(_reader.source.entities).creator)  # type: ignore[attr-defined]
         # The owner's and Bea's ids are also used by applied updates.
         self.assertTrue(result.authors[OWNER_CLIENT].proven)
         self.assertTrue(result.authors[BEA_CLIENT].proven)
@@ -1073,6 +1103,267 @@ class ReaderTests(unittest.TestCase):
         self.assertIn(f"snapshot {snap.key}: client id {CAL_CLIENT}: already attributed to {cal}",
                       " ".join(result.dropped_authors))
 
+    # -------------------------------------------------------- round 2 rules
+
+    def _snapshot(self, data: bytes, *, creator: str, block: int, key: str, authors=None,
+                  base: int | None = None, qs: int | None = None, header: dict | None = None, epoch: int = 1):
+        """A snapshot entity holding `data`, created at `block`."""
+        reader, _result = self._member_result()
+        template = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1])
+        h = header if header is not None else snapshot_header(data, block if base is None else base, authors=authors)
+        e = make_entity(template, key=key, kind="s", creator=creator, block=block,
+                        payload=seal("s", epoch, h, data, reader.keys[epoch]))
+        if qs is not None:
+            e.attributes = [quire_audit.Attribute(a.name, a.type, qs if a.name == "qs" else a.value)
+                            for a in e.attributes]
+        return e
+
+    def _read(self, entities, **kw):
+        data, _ = quire_audit.load_vectors(DOCUMENT)
+        return quire_read.Reader(
+            quire_read.parse_link(data["link"]), quire_read.VectorSource(entities),
+            quire_read.load_private_key(kw.pop("key", BEA_KEY)), **kw,
+        ).read()
+
+    def test_update_with_qs_after_created_at_is_ignored(self) -> None:
+        e, _ = self._forged_update(None, 1, 13, "From the future.")
+        for qs, applied in ((14, False), (13, True), (12, True)):
+            e.attributes = [quire_audit.Attribute(a.name, a.type, qs if a.name == "qs" else a.value)
+                            for a in e.attributes]
+            result = self._read(quire_audit.load_vectors(DOCUMENT)[1] + [e])
+            self.assertEqual(e.key in result.applied, applied, qs)
+            if not applied:
+                self.assertEqual(dict(result.ignored)[e.key], "qs 14 is after createdAt 13")
+
+    def test_snapshot_with_qs_or_base_after_created_at_is_ignored(self) -> None:
+        _reader, base_result = self._member_result()
+        data = base_result.doc.get_update()
+        cases = {
+            "qs": (dict(qs=14), "qs 14 is after createdAt 13"),
+            "base": (dict(base=14), "base 14 is after createdAt 13"),
+        }
+        for name, (kw, reason) in cases.items():
+            e = self._snapshot(data, creator=VEC["owner"], block=13, key=fake_key(0x5F0), **kw)
+            result = self._read(quire_audit.load_vectors(DOCUMENT)[1] + [e])
+            self.assertNotIn(e.key, result.applied, name)
+            self.assertIn(reason, dict(result.ignored)[e.key], name)
+            self.assertEqual(result.newest_snapshot, base_result.newest_snapshot, name)
+            self.assertEqual(result.text, VEC["expected"]["memberText"], name)
+        ok = self._snapshot(data, creator=VEC["owner"], block=13, key=fake_key(0x5F1), base=13, qs=13)
+        self.assertEqual(self._read(quire_audit.load_vectors(DOCUMENT)[1] + [ok]).newest_snapshot, ok.key)
+
+    def test_malformed_entities_never_stop_the_read(self) -> None:
+        # Section 5: undecodable Yjs data and bad header types are ignored,
+        # with and without schema checks, and the document still opens.
+        reader, base_result = self._member_result()
+        data = base_result.doc.get_update()
+        salt = os.urandom(16).hex()
+        signed = {"t": 1, "salt": salt, "sig": sign_salt(BEA_KEY, salt)}
+        template = bea_update(quire_audit.load_vectors(DOCUMENT)[1])
+
+        def update(n: int, header, body: bytes):
+            return make_entity(template, key=fake_key(0xBAD0 + n), kind="u", creator=VEC["members"]["bea"],
+                               block=13, payload=seal("u", 1, header, body, reader.keys[1]))
+
+        bad_header = dict(snapshot_header(data, 13), chunks="not a list", size="many", base=13)
+        hostile = [
+            update(1, signed, os.urandom(40)),  # random bytes as Yjs
+            update(2, signed, b"\x01\x01\xb9\x60\x00\x04\x01\x01\xff"),  # string that is not UTF-8
+            update(3, signed, data + b"\x00"),  # trailing bytes
+            update(4, dict(signed, t="noon"), b"\x00\x00"),
+            update(5, dict(signed, salt=12345), b"\x00\x00"),
+            update(6, dict(signed, sig=["not", "a", "string"]), b"\x00\x00"),
+            update(7, [1, 2, 3], b"\x00\x00"),  # header is not an object
+            self._snapshot(data, creator=VEC["owner"], block=13, key=fake_key(0xBAD8), header=bad_header),
+            self._snapshot(os.urandom(64), creator=VEC["owner"], block=13, key=fake_key(0xBAD9)),
+            self._snapshot(data, creator=VEC["owner"], block=13, key=fake_key(0xBADA),
+                           header=dict(snapshot_header(data, 13), authors=["x"])),
+        ]
+        for schemas in (quire_read.Schemas(enabled=False), None):
+            result = self._read(quire_audit.load_vectors(DOCUMENT)[1] + hostile, schemas=schemas)
+            self.assertEqual(result.text, VEC["expected"]["memberText"])
+            ignored = dict(result.ignored)
+            for e in hostile:
+                self.assertNotIn(e.key, result.applied, e.key)
+                self.assertIn(e.key, ignored, e.key)
+            # The newest valid snapshot is still found behind the broken ones.
+            self.assertEqual(result.newest_snapshot, base_result.newest_snapshot)
+        # Each is ignored for its own reason, not a crash in a later step.
+        result = self._read(quire_audit.load_vectors(DOCUMENT)[1] + hostile, schemas=quire_read.Schemas(enabled=False))
+        reasons = [dict(result.ignored)[e.key] for e in hostile]
+        self.assertIn("update header t is not an integer", reasons[3])
+        self.assertIn("update salt", reasons[4])
+        self.assertIn("sig is missing", reasons[5])
+        self.assertIn("frame header is not a JSON object", reasons[6])
+        self.assertIn("chunks is not a list", reasons[7])
+        self.assertIn("authors is not an object", reasons[9])
+
+    def test_updates_are_applied_before_snapshots(self) -> None:
+        _reader, result = self._member_result()
+        kinds = [result.kinds[k] for k in result.applied if result.kinds[k] in ("u", "s")]
+        self.assertEqual(kinds, sorted(kinds, key=lambda k: k != "u"))
+        self.assertIn("s", kinds)
+        self.assertIn("u", kinds)
+
+    def _forged_owner_snapshot(self):
+        """Bea's snapshot that carries, under the owner's id, a paragraph
+        at the clocks of the owner's last (verified) update."""
+        reader, _result = self._member_result()
+        entities = quire_audit.load_vectors(DOCUMENT)[1]
+        late = owner_late_update(entities)
+        start = quire_read.update_clients(reader._content_frame(late).data)[OWNER_CLIENT][0][0]
+        # The owner's state just before that update: the owner's own snapshot
+        # from before it, which holds his clocks up to `start`.
+        before = max((e for e in entities if e.kind == "s" and e.creator == VEC["owner"]
+                      and e.created_at < late.created_at), key=_qs)
+        d = Doc(client_id=OWNER_CLIENT)
+        d.apply_update(reader._content_frame(before).data)
+        self.assertEqual(quire_read.update_clients(d.get_update())[OWNER_CLIENT][-1][1], start)
+        d.get("default", type=XmlFragment).children.append(
+            XmlElement("paragraph", None, [XmlText("FORGED: the owner never wrote this.")]))
+        forged = self._snapshot(d.get_update(), creator=VEC["members"]["bea"], block=13, key=fake_key(0xF0F))
+        return forged, start, entities
+
+    def test_snapshot_conflicting_with_a_verified_update_is_refused(self) -> None:
+        forged, start, entities = self._forged_owner_snapshot()
+        honest = self._member_result()[1]
+        for drop_first in (False, True):
+            # With the owner's first update gone (expired), his last one waits
+            # on clocks only the snapshots have: the pending case.
+            ents = [e for e in entities if not (drop_first and e.kind == "u" and e.creator == VEC["owner"]
+                                                and e is not owner_late_update(entities))]
+            result = self._read(ents + [forged])
+            self.assertNotIn(forged.key, result.applied, drop_first)
+            self.assertEqual(
+                dict(result.ignored)[forged.key],
+                f"snapshot carries an item at client {OWNER_CLIENT} clock {start} that differs from a verified update's",
+            )
+            self.assertEqual(result.newest_snapshot, honest.newest_snapshot)  # step 3 falls back
+            self.assertEqual(result.text, VEC["expected"]["memberText"], drop_first)
+
+    def test_updates_first_alone_does_not_stop_a_pending_override(self) -> None:
+        # Why the refusal above exists. Without it, applying updates first
+        # protects a genuine update whose earlier clocks are already there,
+        # but not one still waiting on clocks only a snapshot has: when the
+        # snapshot fills the gap, Yjs takes the snapshot's struct.
+        forged, _start, entities = self._forged_owner_snapshot()
+        late = owner_late_update(entities)
+        original = quire_read.Reader.refuse
+        quire_read.Reader.refuse = lambda self, snapshots, verified: {}
+        try:
+            whole = self._read(entities + [forged])
+            pending = self._read([e for e in entities if not (e.kind == "u" and e.creator == VEC["owner"]
+                                                             and e is not late)] + [forged])
+        finally:
+            quire_read.Reader.refuse = original
+        self.assertNotIn("FORGED", whole.text)
+        self.assertIn("Written in epoch 1, after Cal left.", whole.text)
+        self.assertIn("FORGED", pending.text)
+        self.assertNotIn("Written in epoch 1, after Cal left.", pending.text)
+
+    def test_snapshot_under_the_readers_own_id_is_refused(self) -> None:
+        # Section 5: a snapshot with structs under the reader's own client id
+        # beyond what the reader wrote is someone writing as the reader.
+        _reader, base_result = self._member_result()
+        bea_salt = _SESSIONS[VEC["members"]["bea"]][1]
+        d = Doc(client_id=BEA_CLIENT)
+        d.apply_update(base_result.doc.get_update())
+        d.get("default", type=XmlFragment).children.append(
+            XmlElement("paragraph", None, [XmlText("The owner, writing as Bea.")]))
+        snap = self._snapshot(d.get_update(), creator=VEC["owner"], block=13, key=fake_key(0x0E0))
+        ents = quire_audit.load_vectors(DOCUMENT)[1] + [snap]
+        mine = self._read(ents, own_salt=bea_salt)
+        self.assertNotIn(snap.key, mine.applied)
+        self.assertIn(f"under this reader's own client id {BEA_CLIENT}", dict(mine.ignored)[snap.key])
+        self.assertEqual(mine.text, VEC["expected"]["memberText"])
+        # Another reader has no own id to protect: the snapshot is applied,
+        # and the new text is claimed, not proven.
+        other = self._read(ents)
+        self.assertIn(snap.key, other.applied)
+        self.assertTrue(other.text.endswith("The owner, writing as Bea."))
+        claimed = [r for r in other.ranges if r.client == BEA_CLIENT and not r.proven]
+        self.assertEqual(len(claimed), 1)
+        self.assertIn("The owner, writing as Bea.", claimed[0].text)
+        self.assertEqual(claimed[0].via, [VEC["owner"]])
+        # A Bea session with a different salt has a different id: no refusal.
+        self.assertIn(snap.key, self._read(ents, own_salt=os.urandom(16).hex()).applied)
+
+    def test_vector_text_ranges(self) -> None:
+        _reader, result = self._member_result()
+        by_client = defaultdict(list)
+        for r in result.ranges:
+            by_client[r.client].append(r)
+        # Owner and Bea: everything arrived in verified updates.
+        for cid in (OWNER_CLIENT, BEA_CLIENT):
+            self.assertTrue(all(r.proven for r in by_client[cid]), cid)
+        # Cal's update is out (he is no longer a member): his line is claimed,
+        # through every snapshot that carries it, newest first.
+        cal = by_client[CAL_CLIENT]
+        self.assertEqual([r.proven for r in cal], [False])
+        self.assertIn("Cal adds a line before being removed.", cal[0].text)
+        carriers = sorted((e for e in _reader.source.entities if e.kind == "s"  # type: ignore[attr-defined]
+                           and e.key in result.applied), key=_qs, reverse=True)
+        self.assertEqual(cal[0].via[0], carriers[0].creator)
+
+    def _merged(self, with_first_update: bool):
+        """Bea writes "Bea one" (update A), then " two" onto the same text
+        (update B). The owner's snapshot holds A. Yjs merges the two runs
+        into one item, "Bea one two"."""
+        reader, base_result = self._member_result()
+        bea = VEC["members"]["bea"]
+        salt = os.urandom(16).hex()
+        cid = quire_read.client_id_for(bea, salt)
+        d = Doc(client_id=cid)
+        d.apply_update(base_result.doc.get_update())
+        sv0 = d.get_state()
+        d.get("default", type=XmlFragment).children.append(XmlElement("paragraph", None, [XmlText("Bea one")]))
+        sv1 = d.get_state()
+        a_data, after_a = d.get_update(sv0), d.get_update()
+        text = d.get("default", type=XmlFragment).children[-1].children[0]
+        text += " two"
+        b_data = d.get_update(sv1)
+        header = {"t": 1, "salt": salt, "sig": sign_salt(BEA_KEY, salt)}
+        template = bea_update(quire_audit.load_vectors(DOCUMENT)[1])
+        a = make_entity(template, key=fake_key(0xA1), kind="u", creator=bea, block=12,
+                        payload=seal("u", 1, header, a_data, reader.keys[1]))
+        b = make_entity(template, key=fake_key(0xA2), kind="u", creator=bea, block=13,
+                        payload=seal("u", 1, header, b_data, reader.keys[1]))
+        snap = self._snapshot(after_a, creator=VEC["owner"], block=12, key=fake_key(0xA3),
+                              authors={str(cid): author_entry(bea, salt)})
+        ents = quire_audit.load_vectors(DOCUMENT)[1] + [snap, b] + ([a] if with_first_update else [])
+        result = self._read(ents)
+        b_range = quire_read.update_clients(b_data)[cid][0]
+        return result, cid, b_range
+
+    def test_merged_item_is_proven_only_if_wholly_covered(self) -> None:
+        result, cid, b_range = self._merged(with_first_update=True)
+        self.assertTrue(result.text.endswith("Bea one two"))
+        ranges = [r for r in result.ranges if r.client == cid]
+        self.assertTrue(all(r.proven for r in ranges))
+        # Without update A, A's clocks came only in the snapshot. B's clocks
+        # did arrive verified, but they are part of one merged item with A's,
+        # so the whole item is claimed.
+        result, cid, b_range = self._merged(with_first_update=False)
+        self.assertTrue(result.text.endswith("Bea one two"))
+        string = next(s for s in quire_read.update_structs(result.doc.get_update())
+                      if s.client == cid and s.text and "two" in s.text)
+        self.assertEqual(string.text, "Bea one two")  # one merged item
+        self.assertLess(string.clock, b_range[0])
+        self.assertEqual(string.end, b_range[1])
+        claimed = [r for r in result.ranges if r.client == cid and not r.proven]
+        self.assertEqual(len(claimed), 1)
+        self.assertIn("Bea one two", claimed[0].text)
+        self.assertLessEqual(claimed[0].start, string.clock)
+        self.assertEqual(claimed[0].end, b_range[1])
+        self.assertEqual(claimed[0].via, [VEC["owner"]])
+
+    def test_merged_ranges_in_the_report(self) -> None:
+        result, cid, _b = self._merged(with_first_update=False)
+        reader = self._reader()
+        out = quire_read.trust_report(reader, result)
+        self.assertIn("text ranges", out)
+        self.assertRegex(out, rf"{cid}\s+\d+\.\.\d+ claimed {VEC['members']['bea']} via {VEC['owner']}.*'Bea one two'")
+
     # -------------------------------------------------------- ACL
 
     def _acl_with_roster(self, change):
@@ -1119,11 +1410,11 @@ class ReaderTests(unittest.TestCase):
 
     # -------------------------------------------------------- epochs
 
-    def test_old_epoch_update_after_revocation_is_ignored(self) -> None:
+    def test_old_epoch_update_after_revocation_is_applied(self) -> None:
+        # Section 5: an update sent under an older epoch is still applied.
         e, result = self._forged_update(None, 0, 12, "Old key, after Cal left.")
-        self.assertNotIn(e.key, result.applied)
-        self.assertIn("after the revocation", dict(result.ignored)[e.key])
-        self.assertEqual(result.text, VEC["expected"]["memberText"])
+        self.assertIn(e.key, result.applied)
+        self.assertTrue(result.text.endswith("Old key, after Cal left."))
 
     def test_old_epoch_update_before_revocation_is_applied(self) -> None:
         e, result = self._forged_update(None, 0, 9, "Old key, before Cal left.")
@@ -1144,7 +1435,11 @@ class ReaderTests(unittest.TestCase):
         self.assertIn("2 x creator not in ACL", out)
         self.assertIn("join requests 2", out)
         self.assertIn(f"{OWNER_CLIENT}  {VEC['owner']} Owner    proven", out)
-        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  claimed via {VEC['owner']}", out)
+        via = newest_snapshot(quire_audit.load_vectors(DOCUMENT)[1]).creator
+        self.assertIn(f"{CAL_CLIENT}  {VEC['members']['cal']} revoked  claimed via {via}", out)
+        # Text ranges: Cal's line is claimed, through the snapshots that carry it.
+        self.assertRegex(out, rf"{CAL_CLIENT}\s+0\.\.\d+ claimed {VEC['members']['cal']} via ")
+        self.assertRegex(out, rf"{OWNER_CLIENT}\s+0\.\.\d+ proven ")
         self.assertIn("acl flags    permissionless extension (raw 2)  expected permissionless extension only: yes", out)
         self.assertNotIn("dropped:", out)
         self.assertNotIn(": NO", out)

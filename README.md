@@ -109,7 +109,46 @@ The Python reader was written from PROTOCOL.md and the test vectors alone, witho
 
 ## Submission evidence
 
-Filled in from the live run: demo document links, the addresses that created them, and transaction hashes.
+Two public demo documents live on Tiramisu. Their content is synthetic, and their keys were made for this demo only.
+
+**Open demo**: three members, readable by anyone with the link.
+https://quire-five.vercel.app/#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283
+
+**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you see that the document exists and has two members, but not who they are, and none of the text.
+https://quire-five.vercel.app/#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada
+
+Addresses that create Quire's entities:
+
+| Address | Role |
+|---|---|
+| `0x7ad475ff24a9d6d06b69f460005300fa914d8e11` | gas drip sponsor; funded every key below with a plain transfer |
+| `0xa3ed39176d6e55cd4b58134c7894b42615e16283` | open demo: owner (Asha); created the ACL, snapshots and edits |
+| `0xe03ca1f7480b05da8928270fc5a79413025ef6be` | open demo: writer (Bea); join request and edits |
+| `0xba964589a3bd9363c102dc9eabdd8863a90f109d` | open demo: writer (Ravi); join request and edits |
+| `0x0ea55b2eeecddc4e701417001460b596c12a2ada` | revocation demo: owner; created the ACL, rotated the key |
+| `0xbc9375026f9818a3ad5216509a8cd111527cee1a` | revocation demo: writer who stayed; wrote a snapshot under the new key |
+| `0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375` | revocation demo: removed member; only his join request remains |
+
+Document ids: open demo `0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578`, revocation demo `0x60567bef1262ba3a45e570aa02ac713c1f4f2a78b6c4de80ba5542bb3771975d`. Every entity carries `qd` equal to its document id, so this query lists them all:
+
+```
+qp = str('quire1') AND qd = bytes32(0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578)
+```
+
+Paste it into the [Data Explorer](https://data.arkiv.network), or look up any address above in the [block explorer](https://tiramisu.explorer.arkiv.network) to see the creating transactions.
+
+To reproduce what the app shows, without the app:
+
+```bash
+pnpm install
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
+python3 readers/python/quire_audit.py --doc 0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578 --owner 0xa3ed39176d6e55cd4b58134c7894b42615e16283
+```
+
+Expected: `verify` reports the owner found by `$creator`, epoch 0, three members, 1 snapshot and 4 updates applied, 0 ignored, and 3 queries. `read` prints the four lines of the Ward 14 log. The audit ends with `RESULT: PASS`. For the revocation demo, `verify` reports epoch 1 with the roster sealed ("this link sees only a count (2)"), and `read` prints nothing.
+
+The full live suite (`pnpm --dir packages/y-arkiv test:live`) passed on Tiramisu. It covers two keys collaborating, a cold reader opening the document in exactly 3 queries, a 250 KB paste written as chunks, a revocation and a published version.
 
 ## Repository
 

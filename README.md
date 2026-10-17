@@ -4,7 +4,7 @@ Quire is a collaborative document editor with no server holding your documents. 
 
 Under the editor is `y-arkiv`, a Yjs provider. Any Yjs app (Tiptap, BlockNote, CodeMirror, Excalidraw-style canvases) can swap `y-websocket` for it and get serverless, end-to-end encrypted sync.
 
-- Live app: **LIVE_URL**
+- Live app: **https://quire-five.vercel.app**
 - Protocol: [PROTOCOL.md](PROTOCOL.md)
 - Arkiv schema and queries: [arkiv/schema.md](arkiv/schema.md)
 - Friction report: [arkiv/friction.md](arkiv/friction.md)

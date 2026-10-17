@@ -1,0 +1,6 @@
+{
+  "description": "HKDF-SHA256, salt 'quire/v1', 32-byte output",
+  "linkSecret": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+  "metaKey": "b4b146343a608c8db36014cf03d5f6f1eea5b7f440f81081779529c171355477",
+  "epoch0Key": "46f9e048798ba6af4a300c3a0b3964f51a37df88be8f6ae7d7a8731382601db4"
+}

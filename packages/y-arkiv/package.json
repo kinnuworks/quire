@@ -19,7 +19,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "vectors": "tsx scripts/vectors.ts",
+    "test:live": "LIVE=1 vitest run test/live.test.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.8.1",
@@ -33,7 +35,25 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "fast-check": "^4.10.2",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
+  },
+  "bin": {
+    "quire": "./dist/cli.js"
+  },
+  "keywords": [
+    "yjs",
+    "crdt",
+    "arkiv",
+    "collaboration",
+    "encryption",
+    "local-first",
+    "provider"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kinnuworks/quire.git",
+    "directory": "packages/y-arkiv"
   }
 }

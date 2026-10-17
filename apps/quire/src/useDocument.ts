@@ -43,6 +43,19 @@ export type DocumentSession = {
   fullHistory: boolean
   /** Reopens with every edit still on chain, so text older than the newest snapshot is proven too. */
   loadFullHistory: () => void
+  /** True while queries go through Quire's relay (see api/rpc.ts). */
+  relay: boolean
+  /** The visitor chose the relay on the budget notice: reconnect with it, for this tab only. */
+  useRelay: () => void
+}
+
+const RELAY_FLAG = "quire.relay"
+function relayChosen(): boolean {
+  try {
+    return sessionStorage.getItem(RELAY_FLAG) === "1"
+  } catch {
+    return false
+  }
 }
 
 let nextId = 1
@@ -52,12 +65,14 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   const [attempt, setAttempt] = useState(0)
   // opt in: a long-edited document can have many edits still on chain, and each page costs a query
   const [fullHistory, setFullHistory] = useState(false)
+  // off unless the visitor opts in after their free budget runs out; remembered for this tab only
+  const [relay, setRelay] = useState(relayChosen)
   useEffect(() => setFullHistory(false), [link?.doc])
   // the client id is derived from our address before the editor binds to the doc
   const { doc, salt } = useMemo(() => {
     const d = new Y.Doc()
     return { doc: d, salt: identity ? prepareDoc(d, identity.address) : undefined }
-  }, [link?.doc, identity?.address, attempt, fullHistory])
+  }, [link?.doc, identity?.address, attempt, fullHistory, relay])
   const [provider, setProvider] = useState<ArkivProvider | null>(null)
   const [store, setStore] = useState<SdkStore | null>(null)
   const [error, setError] = useState<SessionError | null>(null)
@@ -67,7 +82,7 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
 
   useEffect(() => {
     if (!link) return
-    const s = new SdkStore(identity ? { privateKey: identity.privateKey } : {})
+    const s = new SdkStore({ ...(identity ? { privateKey: identity.privateKey } : {}), ...(relay ? { relayUrl: "/api/rpc" } : {}) })
     const p = new ArkivProvider(doc, { store: s, link, identity, salt, fullHistory })
     const log = (a: Omit<Activity, "id" | "at">) => {
       activity.current = [{ id: nextId++, at: Date.now(), ...a }, ...activity.current].slice(0, 200)
@@ -125,7 +140,18 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       void p.close().catch(() => undefined).finally(() => p.destroy())
       setProvider(null)
     }
-  }, [doc, link?.doc, identity?.address, attempt, fullHistory])
+  }, [doc, link?.doc, identity?.address, attempt, fullHistory, relay])
 
-  return { doc, provider, store, activity: activity.current, error, tick, latencies: latencies.current, fullHistory, loadFullHistory: () => setFullHistory(true) }
+  return { doc, provider, store, activity: activity.current, error, tick, latencies: latencies.current, fullHistory,
+    loadFullHistory: () => setFullHistory(true),
+    relay,
+    useRelay: () => {
+      try {
+        sessionStorage.setItem(RELAY_FLAG, "1")
+      } catch {
+        // storage blocked: the choice lasts until this page reloads
+      }
+      setRelay(true)
+    },
+  }
 }

@@ -504,7 +504,7 @@ export function Home() {
             <details>
               <summary>Is there really no server?</summary>
               <p>
-                There is one small function, and it only sends a little test gas to a new document key. It sees that key's address and your IP address, never document data. Reading and writing documents goes from your browser to Arkiv's public RPC endpoint, which sees your IP address and the document id but only ciphertext. You can also skip the drip and fund the key yourself.
+                There are two small functions, and neither touches document data. The drip sends a little test gas to a new document key; it sees that key's address and your IP address. You can skip it and fund the key yourself. The relay is off unless you turn it on: if your network runs out of Arkiv's free queries, the page offers it, and it then forwards your document queries to Arkiv with our access key. It sees what Arkiv's RPC sees (your IP address, the document id, the members' addresses) and keeps nothing. Everything else, live edits and writes included, goes from your browser straight to Arkiv's public RPC endpoint, which sees your IP address and the document id but only ciphertext.
               </p>
             </details>
             <details>

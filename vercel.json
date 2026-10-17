@@ -7,6 +7,9 @@
   "functions": {
     "api/drip.ts": {
       "maxDuration": 30
+    },
+    "api/rpc.ts": {
+      "maxDuration": 15
     }
   },
   "headers": [

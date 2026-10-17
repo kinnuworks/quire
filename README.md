@@ -84,7 +84,7 @@ python3 readers/python/quire_audit.py --doc <0x document id>
 
 The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 95 tests of its own, covering forged writes, forged snapshots, swapped authorship and malformed headers. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library. `pnpm --dir packages/y-arkiv compare-readers` runs both readers on the two live demos and on the vectors (as a member and as a link holder) and diffs their verdicts: the text, every entity applied, every outside write rejected. They agree on all four.
 
-The TypeScript suite has 90 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 33 security rules in turn and shows that a test fails every time.
+The TypeScript suite has 91 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 33 security rules in turn and shows that a test fails every time.
 
 ## How it uses Arkiv
 
@@ -116,6 +116,7 @@ The TypeScript suite has 90 tests (plus 2 that run only against Tiramisu), inclu
 
 - **Activity:** which addresses write to a document id, and when. Each flush waits a random extra delay of up to two seconds on top of the block interval, which blurs typing rhythm but does not hide activity.
 - **The RPC operator:** every query names the document id and member addresses, and every read comes from your IP address. Whoever runs the RPC endpoint can link your IP to the documents you open, and could also leave entities out of its answers. Use a VPN or Tor if the first matters to you. The CLI takes `--rpc` and `--ws`, so you can read through your own node or a second endpoint and compare.
+- **The relay, if you choose it:** when your network's free Arkiv queries run out, the page offers Quire's relay for that tab. It forwards only `arkiv_query` calls for Quire documents, adding our access key, so it sees exactly what the RPC operator sees: your IP address, the document id and the members' addresses in each query. It never sees text, names, keys or the link, and keeps nothing; Vercel logs each request's path, time, status and IP address. Live edits, reads by key and writes never go through it, and the header shows "via relay" while it is on.
 - **The drip:** it sees your IP address and the new key it funds, and Vercel logs requests. On this testnet deployment it also funds every key from one sponsor address, so an observer can tell those keys were funded by Quire. Funding from your own wallet instead links that wallet to the document key, and the app warns before it does that.
 - **Old ciphertext:** expiry, deletion and Shred remove entities from Arkiv's state, but the transactions that wrote them, encrypted payloads included, stay in block history for good. Anyone who has the link and an archive of old blocks can decrypt what was written under keys the link opens. Removing a member rotates the key, which protects everything written afterwards. A leaked link is the one thing Quire cannot take back: start a new document.
 - **The app itself:** it is JavaScript served by Vercel, so a malicious build could read the link from the fragment. The Content Security Policy only lets the page talk to itself and the Arkiv RPC, and the readers in this repository let you verify a document without our page.
@@ -175,7 +176,8 @@ The full live suite (`pnpm --dir packages/y-arkiv test:live`) passed on Tiramisu
 | `packages/y-arkiv` | the Yjs provider, the Arkiv adapter, an in-memory chain for tests, the CLI |
 | `examples/two-writers` | a second program on the package's public API: two writers, a link reader, a removal and `blame`, in one file |
 | `apps/quire` | the editor (Vite, React, Tiptap) |
-| `api/drip.ts` | the only server: sends a little test GLM to a new document key |
+| `api/drip.ts` | sends a little test GLM to a new document key |
+| `api/rpc.ts` | the optional query relay, used only after a visitor's free query budget runs out and they choose it |
 | `readers/python` | independent reader and a standard-library privacy audit |
 | `spec` | JSON Schema for every entity and header, and conformance vectors with a forged write |
 | `arkiv/probes` | raw results behind the friction report |

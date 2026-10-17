@@ -2,22 +2,26 @@ import { fileURLToPath } from "node:url"
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv, type Plugin } from "vite"
 
-/** Serves api/drip.ts during local development, funded by the dev key in the repo-root .env. */
+/** Serves api/drip.ts and api/rpc.ts during local development, with the dev key and access key from the repo-root .env. */
 function devDrip(): Plugin {
   return {
     name: "quire-dev-drip",
     configureServer(server) {
-      const env = loadEnv("development", fileURLToPath(new URL("../..", import.meta.url)), "QUIRE_")
+      const env = loadEnv("development", fileURLToPath(new URL("../..", import.meta.url)), ["QUIRE_", "ARKIV_"])
       process.env.QUIRE_SPONSOR_KEY ??= env.QUIRE_SPONSOR_KEY ?? env.QUIRE_DEV_PRIVATE_KEY
-      server.middlewares.use("/api/drip", async (req, res) => {
+      if (env.ARKIV_ACCESS_KEY) process.env.ARKIV_ACCESS_KEY ??= env.ARKIV_ACCESS_KEY
+      for (const name of ["drip", "rpc"]) server.middlewares.use(`/api/${name}`, async (req, res) => {
         let raw = ""
         for await (const chunk of req) raw += chunk
-        const { default: handler } = await server.ssrLoadModule(fileURLToPath(new URL("../../api/drip.ts", import.meta.url)))
+        const { default: handler } = await server.ssrLoadModule(fileURLToPath(new URL(`../../api/${name}.ts`, import.meta.url)))
         const reply = {
           code: 200,
           status(n: number) {
             this.code = n
             return this
+          },
+          setHeader(k: string, v: string) {
+            res.setHeader(k, v)
           },
           json(v: unknown) {
             res.statusCode = this.code

@@ -12,7 +12,7 @@ import { useDocument } from "../useDocument"
 
 type Tab = "people" | "activity" | "chain" | "history" | "lifetime"
 /** Shown when Arkiv's free read budget for this network is used up. Nothing is lost; the page retries by itself. */
-function BudgetCard({ retryAt }: { retryAt: number }) {
+function BudgetCard({ retryAt, relay, useRelay }: { retryAt: number; relay: boolean; useRelay: () => void }) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -26,6 +26,18 @@ function BudgetCard({ retryAt }: { retryAt: number }) {
         <p className="small">
           The public RPC gives every IP address a small query budget, and it refills on its own. Your document and its link are safe. This page reconnects in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}, or try from another network.
         </p>
+        {relay ? (
+          <p className="small">Quire's relay is busy too. It will be tried again when the page reconnects.</p>
+        ) : (
+          <>
+            <p className="small">
+              Or use Quire's relay for this tab. It forwards only the document queries to Arkiv with our access key. It sees what Arkiv's RPC sees: your IP address, this document's id and its members' addresses. It never sees the text, names, keys or the link, and keeps nothing. Live edits and writes still go straight to Arkiv.
+            </p>
+            <button className="btn btn-sm btn-outline" onClick={useRelay}>
+              Use Quire's relay
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -148,6 +160,7 @@ export function DocPage({ link }: { link: DocLink }) {
         <span className={`status ${statusClass}`}>
           <span className="s-dot" />
           {statusText}
+          {session.relay && <span title="Document queries go through Quire's relay for this tab (see the budget notice)"> · via relay</span>}
         </span>
         <div className="spacer" />
         <label className="toggle-row">
@@ -159,7 +172,7 @@ export function DocPage({ link }: { link: DocLink }) {
         </button>
       </header>
 
-      {session.error?.kind === "budget" && <BudgetCard retryAt={session.error.retryAt} />}
+      {session.error?.kind === "budget" && <BudgetCard retryAt={session.error.retryAt} relay={session.relay} useRelay={session.useRelay} />}
       {session.error?.kind === "other" && <div className="ws-banner error">{session.error.message}</div>}
       {role === "reader" && synced && (
         <div className="ws-banner accent">

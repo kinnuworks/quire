@@ -42,11 +42,14 @@ export class QueryBudgetError extends Error {
  * QueryBudgetError. Without this, viem honours a Retry-After of up to half an
  * hour without a word, and the app looks frozen (see friction.md).
  */
-function arkivFetch(accessKey: string | undefined): typeof fetch {
+function arkivFetch(accessKey: string | undefined, relayUrl?: string): typeof fetch {
   return async (input, init) => {
     const headers = new Headers(init?.headers)
     if (accessKey) headers.set("x-api-key", accessKey)
-    const res = await fetch(input, { ...init, headers })
+    // with a relay, only arkiv_query (the billed method) goes through it; reads by key, block
+    // numbers and writes still go straight to Arkiv
+    const viaRelay = relayUrl && typeof init?.body === "string" && /"method"\s*:\s*"arkiv_query"/.test(init.body)
+    const res = await fetch(viaRelay ? relayUrl : input, { ...init, headers })
     if (res.status === 429) {
       // Retry-After may be seconds or an HTTP date
       const raw = res.headers.get("retry-after") ?? "60"
@@ -67,6 +70,11 @@ export type SdkStoreOptions = {
   injected?: { provider: EIP1193Provider; address: Hex }
   /** An Arkiv access key, for scripts and servers. Never ship one in browser code: it would be public. */
   accessKey?: string
+  /**
+   * Send arkiv_query requests to this URL instead, for a relay that adds its own access key once a
+   * visitor's free budget is used up. The relay sees the queries: document ids and member addresses.
+   */
+  relayUrl?: string
 }
 
 export type RpcEntity = {
@@ -92,7 +100,7 @@ export class SdkStore implements ArkivStore {
 
   constructor(options: SdkStoreOptions = {}) {
     const chain = options.chain ?? tiramisu
-    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey), retryCount: 2 })
+    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey, options.relayUrl), retryCount: 2 })
     this.reader = createPublicClient({ chain, transport: transport() }) as PublicArkivClient<Transport, Chain>
     this.socket = createPublicClient({
       chain,

@@ -88,7 +88,7 @@ export function TryIt() {
                 <div className="bytes">{out ? hexPreview(out.payload, 220) : ""}</div>
                 <div>
                   <p className="t-micro" style={{ marginBottom: 8 }}>
-                    Every payload is padded to one of six sizes, so its length gives away little about what you typed.
+                    The plaintext is padded to one of six sizes before encryption, so the payload's length gives away little about what you typed. Payload = 6-byte header + padded frame + 28 bytes of encryption overhead.
                   </p>
                   <div className="buckets">
                     {PAD_BUCKETS.map((b) => (

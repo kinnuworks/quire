@@ -11,6 +11,26 @@ import { identityFor, newIdentity, preferredName, saveIdentity, setPreferredName
 import { useDocument } from "../useDocument"
 
 type Tab = "people" | "activity" | "chain" | "history" | "lifetime"
+/** Shown when Arkiv's free read budget for this network is used up. Nothing is lost; the page retries by itself. */
+function BudgetCard({ retryAt }: { retryAt: number }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const left = Math.max(0, Math.ceil((retryAt - now) / 1000))
+  return (
+    <div className="ws-banner accent budget">
+      <div>
+        <b>Arkiv's free reads for your network are used up for now.</b>
+        <p className="small">
+          The public RPC gives every IP address a small query budget, and it refills on its own. Your document and its link are safe. This page reconnects in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}, or try from another network.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 const TABS: { id: Tab; label: string }[] = [
   { id: "people", label: "People" },
   { id: "activity", label: "Live" },
@@ -125,7 +145,8 @@ export function DocPage({ link }: { link: DocLink }) {
         </button>
       </header>
 
-      {session.error && <div className="ws-banner error">{session.error}</div>}
+      {session.error?.kind === "budget" && <BudgetCard retryAt={session.error.retryAt} />}
+      {session.error?.kind === "other" && <div className="ws-banner error">{session.error.message}</div>}
       {role === "reader" && synced && (
         <div className="ws-banner accent">
           <span>{provider?.canRead ? "You are reading this document." : "This document's key changed. Ask the owner to add you again."}</span>

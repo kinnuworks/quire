@@ -117,7 +117,7 @@ await settle(a.p, b.p, c.p)
   const update = Y.encodeStateAsUpdate(forged, before)
   const { encodeFrame, encodeOuter } = await import("../src/codec.js")
   const { randomBytes, seal } = await import("../src/crypto.js")
-  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 0, header: { t: 0, salt: bytesToHex(forgedSalt) }, data: update }, randomBytes)
+  const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 0, header: { t: 0, salt: bytesToHex(forgedSalt), sig: await privateKeyToAccount(MALLORY_KEY).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(DOC), ...forgedSalt]) } }) }, data: update }, randomBytes)
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(SECRET), frame))
   await chain.store(mallory.address).batch({
     creates: [{ payload, attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],

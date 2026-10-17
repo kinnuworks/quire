@@ -256,6 +256,7 @@ describe("history and authorship", () => {
     await a.provider.compact()
     chain.mine()
     const late = await peer(chain, link, undefined)
-    expect(late.provider.authorOf(b.doc.clientID)).toEqual({ address: b.id!.address, proven: false })
+    // claimed, and we know whose snapshot carried it
+    expect(late.provider.authorOf(b.doc.clientID)).toEqual({ address: b.id!.address, proven: false, via: owner.address })
   })
 })

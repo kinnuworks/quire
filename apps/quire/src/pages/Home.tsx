@@ -141,7 +141,7 @@ function HeroVisual() {
               <dt>qs</dt>
               <dd>u64</dd>
               <dt>payload</dt>
-              <dd>1,034 bytes</dd>
+              <dd>1,058 bytes</dd>
             </dl>
             <div className="hex">51 01 00 00 00 00 9c 4e 0b 71 e2 3a d8 05 f6 1c 77 a9 30 be 52 c4 8d 19 e7 6a 02 f3 bb 48 d1 7e 0c 95 a6 21 4f e8 ca 13 70 9d …</div>
           </div>
@@ -272,11 +272,11 @@ export function Home() {
           <div className="split reveal">
             <div>
               <span className="eyebrow">
-                <LockIcon /> Private by construction
+                <LockIcon /> What the public sees
               </span>
               <h3>The explorer sees four fields and noise.</h3>
               <p className="lead">
-                Each entity carries a protocol tag, a random document id, a kind and a block number. The text, the title and the member list are encrypted and padded to one of six sizes. You also get a fresh address in every document, so nobody can link your documents together.
+                Each entity carries a protocol tag, a random document id, a kind and a block number. The text, the title and the member list are encrypted and padded to one of six sizes. You also get a fresh address in every document, so the chain alone does not tie your documents together.
               </p>
               <div className="chips">
                 <span className="chip">AES-256-GCM</span>
@@ -300,7 +300,7 @@ export function Home() {
                         <dt>qs</dt>
                         <dd>u64</dd>
                         <dt>size</dt>
-                        <dd>1,034 B</dd>
+                        <dd>1,058 B</dd>
                       </dl>
                     </div>
                     <div className="private">
@@ -327,7 +327,7 @@ export function Home() {
               </span>
               <h3>Every paragraph knows who wrote it.</h3>
               <p className="lead">
-                Turn on authorship and each paragraph gets a bar in the colors of the wallets that wrote it. The colors come from the on-chain creator of each edit, which nobody can fake. Writes from addresses outside the member list are never applied.
+                Turn on authorship and each paragraph gets a bar in the colors of the wallets that wrote it. Each live edit is checked against its on-chain creator and a salt that creator signed. Text that survives only inside a snapshot is shown as claimed, with the member who carried it. Writes from outside the member list are never applied.
               </p>
               <div className="chips">
                 <span className="chip">$creator checks</span>
@@ -363,7 +363,7 @@ export function Home() {
               </span>
               <h3>Documents live while people use them.</h3>
               <p className="lead">
-                A document rests on a snapshot with a 30-day lease. Opening it renews the lease, so a document nobody touches fades away on its own. The owner can keep it longer or delete it now, and any member can shred everything they wrote in one transaction.
+                A document rests on a snapshot with a 30-day lease. Members renew it when they open the document past the halfway mark, so a document nobody touches lapses on its own. The owner can keep it longer or delete it now, and any member can shred their own edit history in one transaction.
               </p>
               <div className="chips">
                 <span className="chip">Entity Expiration</span>
@@ -375,7 +375,7 @@ export function Home() {
               <div className="mini">
                 <div className="mini__head">
                   <span>Lifetime</span>
-                  <span className="pill-tag">renewed on open</span>
+                  <span className="pill-tag">renewed by members</span>
                 </div>
                 <div className="mini__body">
                   <div className="countdown">28d 4h</div>
@@ -498,13 +498,13 @@ export function Home() {
             <details>
               <summary>Is there really no server?</summary>
               <p>
-                There is one small function, and it only sends a few cents of test gas to a new document key. It sees an address and nothing else. Reading and writing documents goes straight from your browser to Arkiv. You can also skip the drip and fund the key yourself.
+                There is one small function, and it only sends a little test gas to a new document key. It sees that key's address and your IP address, never document data. Reading and writing documents goes straight from your browser to Arkiv. You can also skip the drip and fund the key yourself.
               </p>
             </details>
             <details>
               <summary>What can someone watching the chain learn?</summary>
               <p>
-                That a document id exists, which addresses write to it and roughly when. Not the text, the title, the members' names or who the addresses belong to. Your address is new in every document. One thing to know: on testnet the drip funds every key from the same wallet, so a careful observer can tell that two keys were funded by Quire.
+                From the chain: that a document id exists, which addresses write to it and roughly when. Not the text, the title, the members' names or who the addresses belong to, and your address is new in every document. Two more parties see a little more. On testnet the drip funds every key from one wallet, so an observer can tell keys were funded by Quire. And whoever runs the RPC endpoint sees your IP address next to the document ids you read. Use a VPN or Tor if that matters.
               </p>
             </details>
             <details>

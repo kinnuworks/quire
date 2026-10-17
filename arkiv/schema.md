@@ -17,7 +17,7 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 | Kind | `qk` | Creator | Payload (encrypted) | Expiration | Renewal | Flags |
 |---|---|---|---|---|---|---|
-| Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 30 days, or the owner's `keepUntil` | extended by the owner's sessions; changed only by `patchEntity` | none |
+| Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 30 days, or the owner's `keepUntil` | extended by any member's session; changed only by the owner with `patchEntity` | `permissionlessExtension` (it holds no text) |
 | Update | `u` | a member | Yjs update merging one writer's edits from about one block | as long as a new snapshot (30 days or `keepUntil`) | none: folded into a snapshot before it can expire | none |
 | Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or `keepUntil` | its creator extends it, or another member writes a fresh one | none |
 | Snapshot chunk | `c` | the snapshot's creator | next part of the state | same as its head | extended together with its head | none |
@@ -27,13 +27,14 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 ### Why these lifetimes
 
 - An update lives as long as a new snapshot would, so it can never expire before a snapshot covers it. Writers also compact about 30 seconds after they stop typing and when they leave the page, so most documents end every session fully folded into one snapshot.
-- A snapshot is a lease. A member who opens the document past the halfway mark renews it, by extending their own snapshot or writing a fresh one. If nobody opens it for a month, it expires and the chain forgets it. Nobody outside the member list can extend it, because a document's own entities carry no permissionless-extension flag.
+- A snapshot is a lease. A member who opens the document past the halfway mark renews it, by extending their own snapshot or writing a fresh one. If nobody opens it for a month, it expires from Arkiv's state. Nobody outside the member list can extend a snapshot, because snapshots and edits carry no permissionless-extension flag. The member list does carry it, so writers can keep a document open while the owner is away; it holds no text, so extending it keeps nothing readable alive.
 - The owner can keep the document longer (90 days to 3 years). The target is stored in the member list, so every later snapshot honours it. Arkiv only lets an extension move expiry later, so to end a document sooner the owner deletes it, which removes the member list and every entity the owner created in one batch.
 - A join request is answered within minutes or not at all, so it expires after an hour.
 - A published version is meant to outlive the document, and anyone who holds its link can extend it.
 
 ## Ownership and authorship
 
+- Each edit's Yjs client id must equal `clientIdFor($creator, salt)`, with the salt signed by the creator, so no member can write under another member's name.
 - Trust comes from `$creator`. The ACL is found with `$creator = owner` (from the link), and updates and snapshots are accepted only if their `$creator` is in the ACL. A copy of a valid ciphertext written by anyone else is never applied (`stats.rejectedWrites` in the app).
 - `$owner` controls writes. Only the owner can patch the ACL, and only an entity's own creator can delete it ("Shred my writing").
 - Each person uses a fresh key per document, so their `$creator` addresses in two documents cannot be linked.

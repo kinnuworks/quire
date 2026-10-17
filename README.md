@@ -11,40 +11,35 @@ Under the editor is `y-arkiv`, a Yjs provider. Any Yjs app (Tiptap, BlockNote, C
 
 Built for Arkiv: Global Tour Stop, in the Privacy, Open Source and Security tracks. Testnet only; all demo data is synthetic.
 
-## Who is exposed today
+## Who is harmed today
 
-A newsroom drafts a story in a hosted editor. The drafts, the comments and the list of who worked on them sit on the provider's servers in a form the provider can read. Whoever can compel the provider can get them without the newsroom knowing.
+**Privacy: people whose drafts sit on someone else's server.** A newsroom drafting in a hosted editor leaves its drafts, comments and contributor list on the provider's servers, readable by the provider and by anyone who can compel it. On 5 January 2021 the US Justice Department obtained a court order requiring Google, which ran the New York Times' email, to hand over email logs for four Times reporters, under a gag order that kept the paper's own executive editor from being told ([Boston Globe](https://www.bostonglobe.com/2021/06/08/business/new-york-times-requests-disclosure-court-filings-seeking-reporters-email-data-gag-order), [Freedom of the Press Foundation tracker](https://pressfreedomtracker.us/all-incidents/justice-department-attempts-to-seize-email-records-of-four-new-york-times-reporters/)). Google resisted and the order was withdrawn, which is the only reason nothing was handed over. Providers also read private files themselves: on 31 October 2017 Google Docs locked journalists out of their own drafts with a mistaken abuse flag, and Google confirmed it scans documents with automated pattern matching ([Fortune](https://fortune.com/2017/11/01/google-docs-bug-patch)).
 
-This is not hypothetical. On 5 January 2021 the US Justice Department obtained a court order requiring Google, which ran the New York Times' email, to hand over email logs for four Times reporters. A gag order kept Times executives from telling even their own executive editor. Google pushed back and the order was withdrawn in June 2021, but only because the provider chose to resist. The data was there to take.
+With Quire, there is no provider copy. Quire runs no server that sees text, and Arkiv holds only ciphertext padded to fixed sizes. A court order to us has nothing to collect.
 
-Providers also read private files on their own initiative:
+**Open Source: teams locked into a collaboration vendor.** On 15 February 2024 Atlassian ended support for Confluence Server and its other Server products, leaving customers its Cloud service or a Data Center licence as the only supported options ([Atlassian](https://www.atlassian.com/licensing/server-end-of-support)). Teams building collaborative features on Yjs face the same choice in small: run a sync server, or rent one from a hosted provider. `y-arkiv` is a third option that needs neither. The data format is a published protocol with a schema and test vectors, and a second implementation written from that spec alone (Python, `readers/python`) reads the same documents, so nobody needs our permission or our code.
 
-- On 31 October 2017 Google Docs locked journalists out of their own drafts with a mistaken "terms of service" flag, and Google confirmed it scans document content with automated pattern matching.
-- Google Drive restricts private files that its classifiers flag, including a user's screenshot of a film still in 2022.
-
-What changes with Quire from the first document: there is no provider copy to demand, scan or restrict. Quire runs no server that sees text. Arkiv holds only ciphertext, padded to fixed sizes, under four attributes that name nothing. A court order to us would get an empty answer, and an order to Arkiv would get encrypted blobs and a list of throwaway addresses. Only the people holding the link can read the document, and only current members can read what was written after a revocation.
+**Security: anyone who has to trust "edited by" labels.** In a hosted editor, the version history saying who wrote a sentence is the provider's say-so, and nobody outside can check it. In Quire, every edit is an entity whose on-chain creator nobody can forge. Readers accept an edit only if its creator is in the member list, and only if its Yjs client id derives from that creator's address with a salt the creator signed. Each paragraph shows the wallets that wrote it, and anyone can rerun the check from chain data with the CLI or the Python reader.
 
 ## Why Arkiv, and what stays off it
 
-Every existing way to sync a Yjs document breaks one of the properties above:
-
-| Option | What breaks |
+| Option | What breaks for Quire |
 |---|---|
-| y-websocket or a hosted provider (Liveblocks, Hocuspocus) | An operator stores every update and can be compelled, can read unencrypted documents, and can delete or lock them. It is exactly the newsroom problem. |
-| y-webrtc | Needs signalling servers, and the document vanishes when every peer is offline. Nobody can open it later. |
-| IPFS or a pinning service | No live push and no queries. Someone has to pin, and unpinned data disappears without warning. Finding "the updates since block N by these members" means running our own index, so our own server again. |
-| A subgraph | It indexes contract events. Tiramisu runs no contracts, and an indexer is one more operator in the path. |
-| Postgres behind our API | Everything in the first row, plus we become the party a court order goes to. |
+| y-websocket, Hocuspocus, Liveblocks | An operator stores every update. It can be compelled, can read unencrypted documents, and can delete or lock them |
+| y-webrtc | Needs signalling servers, and the document is gone when every peer is offline |
+| IPFS or a pinning service | No live push, no queries, and unpinned data disappears. Finding "updates since block N by these members" means running our own index, which means our own server again |
+| Nostr relays | Signed events and live push, but each relay decides what to keep and returns what it has. A document assembled from relays depends on which relays kept which events, nothing makes two writes land together (key rotation needs the new member list and the new snapshot at once), and there is no lease: data lives until a relay drops it |
+| Ciphertext in EVM contract logs | Contracts are not available on Tiramisu, logs cannot be queried by typed range or expire, and reading them back needs an indexer, which is an operator again |
+| Postgres behind our API | Every problem in the first row, and we become the party a court order goes to |
 
-What Arkiv gives that the product depends on:
+What Arkiv gives us that the product depends on:
 
-- Ordered, durable storage with nobody running a server for us.
+- Ordered, durable storage that nobody runs for us.
 - `$creator` that nobody can forge. The member list is trusted only from the owner's address, and edits only from members.
 - Typed range queries (`qs >= base - 60`), so a late joiner fetches exactly what it needs in three queries.
 - Push over WebSocket, with free reads by key.
-- Expiration as the garbage collector, and the lease as the rule that keeps an unused document from living forever.
-
-Take any one of those away and Quire needs a server again.
+- Atomic batches, so a key rotation and its new snapshot land together.
+- Expiration as the garbage collector, and the lease as the rule that lets an unused document lapse.
 
 Kept off Arkiv on purpose:
 
@@ -53,29 +48,30 @@ Kept off Arkiv on purpose:
 | Text, titles, names, the member list | Encrypted inside the payload; never in attributes |
 | The link secret | Only in the URL fragment, which browsers never send, and in the reader's browser |
 | Private keys | Stay in the browser that made them; the user can save a key file |
-| Cursors and presence | High-frequency and worthless after a second. Writing them to a chain would cost gas and leak typing rhythm |
-| Gas | The drip is a separate function that sees only an address |
+| Cursors and presence | High-frequency and worthless a second later. On chain they would cost gas and leak typing rhythm |
+| Gas | A separate drip function. It sees the new key's address and the visitor's IP address, never document data |
 
 ## Try it
 
-1. Open the live app and press **New document**. The page creates a key for this document only, gets it a little test gas, and writes the member list and first snapshot in one transaction.
+The fastest check uses the public demo documents listed under [Submission evidence](#submission-evidence). To try the full flow:
+
+1. Open the live app and press **New document**. The page creates a key for this document only, funds it with a little test gas, and writes the member list and first snapshot in one transaction.
 2. Press **Copy invite link** and open it in a private window. That window can read the document.
 3. In the private window, press **Ask to join**. The request is sealed to the owner's key, and the owner's window shows it live. Press **Add**.
-4. Type in either window. The other updates a block or two later. The **Live** tab shows each transaction and the measured delay.
-5. Turn on **Who wrote what**. Each paragraph gets a bar in the colors of the wallets that wrote it, taken from the on-chain creator of each edit.
+4. Type in either window. The other updates a block or two later, and the **Live** tab shows each transaction and the measured delay.
+5. Turn on **Who wrote what**. Each paragraph gets a bar in the colors of the wallets that wrote it.
 6. Open **Explorer** to see an entity as the public sees it next to what your browser decrypts.
-7. In the owner's window, remove the second member. The key rotates and the roster is sealed under the new key. The removed window keeps what it saw and gets nothing new, even with the old link.
+7. In the owner's window, remove the second member. The key rotates and the roster is sealed under the new key. The removed window keeps what it saw and gets nothing new.
 
-To check a document without the app:
+To check a document without our app:
 
 ```bash
 pnpm install
 pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '<document link>'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '<document link>'
 python3 readers/python/quire_audit.py --doc <0x document id>
 ```
 
-The Python reader was written from PROTOCOL.md and the test vectors alone, without reading the TypeScript.
+The Python reader was written from PROTOCOL.md and the test vectors alone, without reading the TypeScript. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`). The audit needs only the standard library.
 
 ## How it uses Arkiv
 
@@ -83,27 +79,37 @@ The Python reader was written from PROTOCOL.md and the test vectors alone, witho
 |---|---|---|
 | Typed attributes vs payload | Four attributes (`qp`, `qd`, `qk`, and `qs` as `u64`); everything else is encrypted payload | Explorer tab |
 | Queries | Compound predicates, a `u64` range on `qs`, `$creator` OR filters, cursor pages pinned with `atBlock` | Opening a document: three queries in the Live tab counter |
-| `$creator` | The member list is found by the owner's address. Edits are applied only from members, and a Yjs client id stays bound to the first creator that used it | People tab: "Ignored writes" |
+| `$creator` | The member list is found by the owner's address. Edits are applied only from members, and only if their client id is `clientIdFor($creator, salt)` with a salt the creator signed | People tab: "Ignored writes" |
 | Entity Expiration | Edits and snapshots live 30 days (or until the owner's chosen date), join requests 1 hour, versions 1 year | Lifetime tab |
 | Lifetime Extension | The newest snapshot is a lease. A member renews it by extending their own snapshot or writing a fresh one, and only when the new expiry is later | Lifetime tab countdown |
-| Creation flags | Only published versions allow permissionless extension, and they are readonly. A document's own entities can be extended only by their creator | Explorer tab, Publish version |
+| Creation flags | Published versions are readonly and anyone can extend them. The member list can be extended by any member. Edits and snapshots carry no flags, so only their creator can extend them | Explorer tab, Publish version |
 | Ownership | The owner patches the member list; only an entity's owner can delete it (Shred, Delete document) | Lifetime tab |
-| WebSocket events | `watchEntityEvents` over WebSocket with no `fromBlock`; each new entity is fetched with `arkiv_getEntity`, which the RPC does not bill | Live tab latency |
+| WebSocket events | `watchEntityEvents` over WebSocket with no `fromBlock`; each new entity is fetched with `arkiv_getEntity`, which is not billed | Live tab latency |
 | Batches | Create document (ACL and snapshot), key rotation (ACL patch and new snapshot), lease renewal, shred, delete | Live tab: one transaction each |
 | `atBlock` | Rebuild the document exactly as the chain held it at a past block | History tab: "Check against Arkiv" |
 
 ## Privacy model
 
-What the explorer sees for every entity: creator and owner address, creation and expiry block, the four attributes, the flags, and a payload in one of six fixed sizes.
+**What the explorer shows for every entity:**
+- creator and owner address
+- creation and expiry block
+- the four attributes and the flags
+- a payload in one of six fixed sizes
 
-What it does not see: text, titles, member names, the member list, or who an address belongs to. Each member gets a fresh key per document, so their addresses in two documents are unrelated. After a revocation, even the link no longer reveals the roster or new join requests.
+**What it does not show:** text, titles, member names, the member list (after the first revocation, link holders see only a member count), or who an address belongs to. Each member gets a fresh key per document, so their addresses in two documents are unrelated on chain.
 
-What still leaks, stated plainly:
+**What still leaks:**
 
-- Which addresses write to a document id, and when. Edits go out on block boundaries, which blurs typing rhythm but does not hide activity.
-- On this testnet deployment the drip funds every key from one sponsor address, so an observer can tell that those keys were funded by Quire. Funding from your own wallet instead links that wallet to the document key, and the app warns before it does.
-- The app is JavaScript served by Vercel. A malicious build could read the link from the fragment. The Content Security Policy only lets the page talk to itself and the Arkiv RPC, and the readers in this repository let you verify a document without our page at all.
-- Keys live in browser storage. Anyone with access to the browser profile has them. The app offers a key file so that clearing site data does not lose ownership.
+- **Activity:** which addresses write to a document id, and when. Edits go out on block boundaries, which blurs typing rhythm but does not hide activity.
+- **The RPC operator:** every query names the document id and member addresses, and every read comes from your IP address. Whoever runs the RPC endpoint can link your IP to the documents you open. Use a VPN or Tor if that matters to you.
+- **The drip:** it sees your IP address and the new key it funds, and Vercel logs requests. On this testnet deployment it also funds every key from one sponsor address, so an observer can tell those keys were funded by Quire. Funding from your own wallet instead links that wallet to the document key, and the app warns before it does that.
+- **Old ciphertext:** expiry and deletion remove entities from Arkiv's state, but the transactions that wrote them, including their encrypted payloads, can remain in block history. Anyone who keeps an old link can decrypt old payloads they captured. Rotating the key protects everything written afterwards.
+- **The app itself:** it is JavaScript served by Vercel, so a malicious build could read the link from the fragment. The Content Security Policy only lets the page talk to itself and the Arkiv RPC, and the readers in this repository let you verify a document without our page.
+- **Keys in the browser:** keys live in browser storage, so anyone with access to the browser profile has them. The app offers a key file, so clearing site data does not lose ownership.
+
+## Submission evidence
+
+Filled in from the live run: demo document links, the addresses that created them, and transaction hashes.
 
 ## Repository
 
@@ -111,9 +117,14 @@ What still leaks, stated plainly:
 |---|---|
 | `packages/y-arkiv` | the Yjs provider, the Arkiv adapter, an in-memory chain for tests, the CLI |
 | `apps/quire` | the editor (Vite, React, Tiptap) |
-| `api/drip.ts` | the only server: sends a little test GLM to a new document key and sees nothing else |
+| `api/drip.ts` | the only server: sends a little test GLM to a new document key |
 | `readers/python` | independent reader and a standard-library privacy audit |
 | `spec` | JSON Schema for every entity and header, and conformance vectors with a forged write |
+| `arkiv/probes` | raw results behind the friction report |
+
+## How this was built
+
+Everything here was written during the challenge window, in one long working session on 17 and 18 October 2026, and the commit history is the actual history of that session. No code predates the challenge. The libraries used are Yjs, Tiptap, viem, `@arkiv-network/sdk`, `arkiv-encryption`, noble curves and hashes, React and Vite.
 
 ## Run it locally
 
@@ -123,7 +134,7 @@ pnpm --dir packages/y-arkiv test
 pnpm --dir apps/quire dev
 ```
 
-Put a funded Tiramisu key in `.env` as `QUIRE_DEV_PRIVATE_KEY` to enable the local gas drip and the live tests (`pnpm --dir packages/y-arkiv test:live`).
+Put a funded Tiramisu key in `.env` as `QUIRE_DEV_PRIVATE_KEY` to enable the local gas drip and the live tests (`pnpm --dir packages/y-arkiv test:live`). An `ARKIV_ACCESS_KEY` in the same file raises the query budget for scripts and tests.
 
 ## License
 

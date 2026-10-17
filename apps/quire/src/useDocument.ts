@@ -13,12 +13,26 @@ export type Activity = {
   author?: string
 }
 
+export type SessionError = { kind: "budget"; retryAt: number } | { kind: "other"; message: string }
+
+/** Plain words for a connection error: the query budget gets its own card, anything else one short line. */
+export function describeError(e: unknown): SessionError {
+  let cause: unknown = e
+  for (let i = 0; i < 8 && cause; i++) {
+    const c = cause as { name?: string; retryAfterSeconds?: number; cause?: unknown }
+    if (c.name === "QueryBudgetError") return { kind: "budget", retryAt: Date.now() + (c.retryAfterSeconds ?? 60) * 1000 }
+    cause = c.cause
+  }
+  const err = e as { shortMessage?: string; message?: string }
+  return { kind: "other", message: (err.shortMessage ?? err.message ?? "Something went wrong").split("\n")[0]!.slice(0, 200) }
+}
+
 export type DocumentSession = {
   doc: Y.Doc
   provider: ArkivProvider | null
   store: SdkStore | null
   activity: Activity[]
-  error: string | null
+  error: SessionError | null
   /** Bumps on every provider event, so components re-read provider state. */
   tick: number
   latencies: number[]
@@ -34,7 +48,9 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   }, [link?.doc, identity?.address])
   const [provider, setProvider] = useState<ArkivProvider | null>(null)
   const [store, setStore] = useState<SdkStore | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<SessionError | null>(null)
+  // bumping this reconnects, after a budget wait for example
+  const [attempt, setAttempt] = useState(0)
   const [tick, bump] = useReducer((n: number) => n + 1, 0)
   const activity = useRef<Activity[]>([])
   const latencies = useRef<number[]>([])
@@ -59,13 +75,21 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
     p.on("lease", () => bump())
     p.on("history", () => bump())
     p.on("status", () => bump())
-    p.on("error", (e: Error) => log({ kind: "error", text: e.message }))
+    p.on("error", (e: Error) => {
+      const d = describeError(e)
+      log({ kind: "error", text: d.kind === "budget" ? "Free read budget used up; retrying later" : d.message })
+    })
     setStore(s)
     setProvider(p)
     setError(null)
+    let retry: ReturnType<typeof setTimeout> | undefined
     p.connect().then(
       () => bump(),
-      (e: Error) => setError(e.message),
+      (e: Error) => {
+        const d = describeError(e)
+        setError(d)
+        if (d.kind === "budget") retry = setTimeout(() => setAttempt((n) => n + 1), Math.max(5_000, d.retryAt - Date.now()))
+      },
     )
     // fold the last edits into a snapshot when the tab is hidden or closed, so nothing outlives its cover
     const onHide = () => {
@@ -74,12 +98,13 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
     document.addEventListener("visibilitychange", onHide)
     window.addEventListener("pagehide", onHide)
     return () => {
+      if (retry) clearTimeout(retry)
       document.removeEventListener("visibilitychange", onHide)
       window.removeEventListener("pagehide", onHide)
       void p.close().catch(() => undefined).finally(() => p.destroy())
       setProvider(null)
     }
-  }, [doc, link?.doc, identity?.address])
+  }, [doc, link?.doc, identity?.address, attempt])
 
   return { doc, provider, store, activity: activity.current, error, tick, latencies: latencies.current }
 }

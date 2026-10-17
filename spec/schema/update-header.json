@@ -5,7 +5,8 @@
   "type": "object",
   "required": [
     "t",
-    "salt"
+    "salt",
+    "sig"
   ],
   "properties": {
     "t": {
@@ -16,6 +17,11 @@
       "type": "string",
       "pattern": "^[0-9a-f]{32}$",
       "description": "session salt: the Yjs client id is clientIdFor(creator, salt)"
+    },
+    "sig": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{130}$",
+      "description": "EIP-191 signature by the creator over 'quire1:salt:' || doc (32) || salt (16)"
     }
   },
   "additionalProperties": false

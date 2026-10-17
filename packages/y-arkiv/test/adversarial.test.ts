@@ -74,13 +74,34 @@ describe("a removed member learns nothing new", () => {
 })
 
 describe("expiry belongs to the document's people", () => {
-  it("strangers cannot extend the document's snapshot or member list", async () => {
+  it("strangers cannot extend the document's snapshots; the member list alone keeps nothing readable", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "content lives in snapshots")
+    await a.provider.close()
     const stranger = chain.store(identity("x").address)
     await expect(stranger.batch({ extensions: [{ key: a.provider.snapshot!.key, lifetimeSeconds: 10 * 365 * 86400 }] })).rejects.toThrow(/not permitted/)
-    await expect(stranger.batch({ extensions: [{ key: a.provider.aclKey!, lifetimeSeconds: 10 * 365 * 86400 }] })).rejects.toThrow(/not permitted/)
+    // the member list may be renewed by anyone (so writers keep a document open), but it holds no text:
+    // once the snapshots and edits expire, a reader finds an empty document
+    await stranger.batch({ extensions: [{ key: a.provider.aclKey!, lifetimeSeconds: 10 * 365 * 86400 }] })
+    a.provider.destroy()
+    chain.mine((40 * 86400) / 2)
+    const later = await peer(chain, link, undefined)
+    expect(text(later)).toBe("")
+  })
+
+  it("a writer renews the member list while the owner is away", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const b = await peer(chain, link, identity("bea"))
+    await admit(chain, a, b)
+    a.provider.destroy()
+    const before = b.provider.aclExpiresAt!
+    chain.mine(Number((before - chain.block) / 2n) + 20)
+    await b.provider.renewLeaseIfDue()
+    expect(b.provider.aclExpiresAt!).toBeGreaterThan(before)
   })
 
   it("a member renews the lease by writing their own snapshot when someone else wrote the current one", async () => {

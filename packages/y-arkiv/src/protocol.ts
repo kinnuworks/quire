@@ -40,8 +40,6 @@ export type Kind = (typeof KIND)[keyof typeof KIND]
 
 /** Seconds. Each kind lives as long as the product needs it, and no longer. */
 export const LIFETIME = {
-  /** Updates only need to survive until a snapshot covers them. */
-  update: 7 * 24 * 3600,
   /** Snapshots are a lease: every active session extends the newest one. */
   snapshot: 30 * 24 * 3600,
   /** The ACL follows the document. Extended together with the snapshot. */
@@ -79,7 +77,7 @@ export const MAX_CHUNK_PLAINTEXT = PAD_BUCKETS[PAD_BUCKETS.length - 1]! - 64
 export const FLUSH_INTERVAL_MS = 2000
 
 /** How many entities from non-members an owner's session fetches per minute, looking for join requests. */
-export const STRANGER_FETCHES_PER_MINUTE = 30
+export const STRANGER_FETCHES_PER_MINUTE = 240
 
 /**
  * Payload bytes per transaction. Payloads travel hex-encoded in the

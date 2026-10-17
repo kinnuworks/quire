@@ -10,14 +10,14 @@ A document is a set of Arkiv entities that share a random 32-byte document id. T
 
 | Kind | `qk` | Created by | Purpose | Lifetime | Flags |
 |---|---|---|---|---|---|
-| ACL | `a` | owner | member list and wrapped epoch keys | 30 days, extended by the owner | none |
+| ACL | `a` | owner | member list and wrapped epoch keys | 30 days, extended by any member's session | permissionless extension |
 | update | `u` | any member | one writer's edits from about one block, merged | same as a new snapshot (30 days, or the owner's `keepUntil`) | none |
 | snapshot | `s` | any member | the full document state | 30 days, or until the owner's `keepUntil` | none |
 | chunk | `c` | the snapshot's creator | continuation of a snapshot or version | same as its head | same as its head |
 | join request | `j` | anyone with the link | asks the owner to add a public key | 1 hour | none |
 | version | `v` | any member | frozen copy with its own key | 1 year | readonly, permissionless extension |
 
-Only versions, and the chunks of a version, allow permissionless extension; both are also readonly. Every other entity, including a snapshot's chunks, carries no flags and can be extended only by its own creator, so nobody outside the member list can keep a document alive.
+Versions and their chunks are readonly with permissionless extension. The ACL has permissionless extension, so any member's session can keep it alive while the owner is away; it holds no text. Every other entity (updates, snapshots and their chunks, join requests) carries no flags and can be extended only by its own creator, so nobody outside the member list can keep a document's content alive.
 
 The link a person shares carries three values in the URL fragment: the document id, a 32-byte link secret, and the owner's address. The fragment is never sent to any server.
 
@@ -96,8 +96,8 @@ Headers by kind:
 | Kind | Header fields | Data |
 |---|---|---|
 | ACL | `v` (1), `owner`, `ownerPublicKey`, `epoch`, `keepUntil` (block or null), `wraps` (list of hex, unlabelled); epoch 0: `members[] {address, publicKey, name, role, addedAtBlock}` and `revoked[] {address, atBlock}`; epoch 1+: `roster` (hex envelope of `{doc, epoch, members, revoked}`, see section 3) | empty |
-| update | `t`: writer's clock in ms; `salt`: 16 random bytes as 32 hex characters, fixed for the writer's session | a Yjs v1 update |
-| snapshot | `id` (16 random bytes, 32 hex characters without `0x`), `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: {address, salt}}` | the first part of a Yjs v1 state update |
+| update | `t`: writer's clock in ms; `salt`: 16 random bytes as 32 hex characters, fixed for the writer's session; `sig`: the writer's signature over the salt (below) | a Yjs v1 update |
+| snapshot | `id` (16 random bytes, 32 hex characters without `0x`), `base` (block, decimal string), `t`, `chunks[]` (entity keys), `size`, `authors {clientId: {address, salt, sig}}` | the first part of a Yjs v1 state update |
 | chunk | `i` (1-based index), `of` (the snapshot's `id`) | the next part. Its outer epoch MUST equal its head's |
 | join | `publicKey` (65-byte hex), `name` | empty |
 | version | same as snapshot | same as snapshot |
@@ -112,11 +112,11 @@ Headers by kind:
 
 Readers MUST ignore updates and snapshots whose `$creator` is not in the ACL, even if they decrypt.
 
-Client ids are derived from addresses. A writer picks a random 16-byte `salt` per session and uses the Yjs client id `clientIdFor(address, salt)`: the first 8 bytes of keccak-256 over the 20 address bytes followed by the 16 salt bytes, read big-endian and masked to 53 bits (a result of 0 becomes 1). Every update carries its `salt` in the header.
+Client ids are derived from addresses. A writer picks a random 16-byte `salt` per session and uses the Yjs client id `clientIdFor(address, salt)`: the first 8 bytes of keccak-256 over the 20 address bytes followed by the 16 salt bytes, read big-endian and masked to 53 bits (a result of 0 becomes 1). Every update carries its `salt` in the header, and `sig`: an EIP-191 personal signature by the writer over the bytes `"quire1:salt:"` (UTF-8) followed by the 32-byte document id and the 16-byte salt. Readers MUST ignore an update whose `sig` does not recover to its `$creator`.
 
-Readers MUST ignore an update unless every client id that has structs in it equals `clientIdFor($creator, salt)`. Client ids are taken from the update's structs at any clock (Yjs `parseUpdateMeta`), not from a state vector derived from the update, which only counts runs that start at clock 0. No reader state is involved, so the check gives the same answer on every reader and in every order, and writing under another member's client id needs a 2^53 preimage search. "Has structs" includes Skip structs, exactly as `parseUpdateMeta` reports them. Delete sets are not checked: in a shared document any member may delete any text, as in every collaborative editor, so deletions carry no attribution.
+Readers MUST ignore an update unless every client id that has structs in it equals `clientIdFor($creator, salt)`. Client ids are taken from the update's structs at any clock (Yjs `parseUpdateMeta`), not from a state vector derived from the update, which only counts runs that start at clock 0. Readers MUST also ignore an update whose client id is already attributed, by an earlier update or a valid snapshot `authors` entry, to a different address. Together the two rules mean an attacker would have to find a 53-bit collision for a victim's client id before the victim's random salt is published, which they cannot do, since the salt first appears in the victim's own first update. The derivation alone is a 53-bit margin (days of GPU time), which is why the second rule matters. "Has structs" includes Skip structs, exactly as `parseUpdateMeta` reports them. Delete sets are not checked: in a shared document any member may delete any text, as in every collaborative editor, so deletions carry no attribution.
 
-A snapshot's `authors` map lets readers attribute text whose updates have expired. An entry counts only if `clientIdFor(address, salt)` equals its client id; even then it says who owns that client id, not that the snapshot's content under it is genuine, because a snapshot is one member's word. Readers SHOULD show such attribution as claimed rather than proven.
+A snapshot's `authors` map lets readers attribute text whose updates have expired. An entry counts only if `clientIdFor(address, salt)` equals its client id and `sig` recovers to `address`, so a compactor cannot invent a client id for someone who never wrote. Even a valid entry only says who owns that client id. The snapshot's content under it is still the compactor's word, so readers SHOULD show such attribution as claimed, naming the snapshot's creator.
 
 Readers MUST ignore an update or snapshot encrypted for an epoch older than the ACL's current epoch if its `createdAt` is greater than the largest `atBlock` in `revoked`: a removed member could read it.
 
@@ -158,7 +158,7 @@ In `creationFlags.raw`, bit 0 is readonly and bit 1 is permissionless extension.
 - Any member MAY compact. Before writing a snapshot, a writer MUST re-read updates since the previous snapshot's base minus 60 blocks, so the new snapshot contains everything older than its own base. Compaction MUST NOT delete other entities; covered updates expire on their own.
 - An update MUST be given at least the lifetime a new snapshot would get, so it never expires before a snapshot covers it. Writers SHOULD compact shortly after they stop typing and before they leave.
 - A snapshot larger than one entity is split into chunks. Chunks are written first, in transactions whose payloads total at most 100,000 bytes (payloads travel hex-encoded and the public RPC answers BAD_REQUEST once a request passes about 256 KiB: 120,000 bytes of payload lands, 130,000 does not). The head is written last and lists the chunk keys.
-- The lease: when less than half of the newest snapshot's lifetime remains, an active member renews it. If they created it and nothing is uncovered, they extend it and its chunks; otherwise they write a fresh snapshot. The owner extends the ACL the same way. An extension MUST only be sent if it moves expiry later, because Arkiv reverts one that does not.
+- The lease: when less than half of the newest snapshot's lifetime remains, an active member renews it. If they created it and nothing is uncovered, they extend it and its chunks; otherwise they write a fresh snapshot. Any member extends the ACL the same way. An extension MUST only be sent if it moves expiry later, because Arkiv reverts one that does not.
 - The owner MAY set `keepUntil` in the ACL; later snapshots and updates then live at least until that block. The owner MAY end a document by deleting the ACL and their own entities in one batch; without the ACL no reader can verify any edit.
 - Membership changes are a `patchEntity` of the ACL by the owner. A revocation's ACL patch and the new-epoch snapshot head MUST be in the same transaction.
 

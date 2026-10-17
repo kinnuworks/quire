@@ -406,7 +406,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
           <i style={{ width: `${pct}%` }} />
         </div>
         <p className="muted small" style={{ marginTop: 10 }}>
-          The newest snapshot is a lease. When a member opens the document past its halfway mark, it is renewed. If nobody opens it, it expires and Arkiv forgets it. Only the document's own members can renew it.
+          The newest snapshot is a lease. When a member opens the document past its halfway mark, it is renewed. If nobody opens it, it expires from Arkiv's state. Only the document's own members can renew it. Old encrypted payloads can remain in block history, readable only with the old link.
         </p>
       </section>
       {p.role === "owner" && (

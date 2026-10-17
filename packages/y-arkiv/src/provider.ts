@@ -8,6 +8,8 @@
  * renews; updates expire once snapshots make them redundant.
  */
 import * as Y from "yjs"
+import { recoverMessageAddress } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 import { Observable } from "lib0/observable"
 import { type Acl, emptyAcl, fromHeader, isMember, type Member, memberAddresses, toHeader } from "./acl.js"
 import { decodeFrame, decodeOuter, encodeFrame, encodeOuter, equalBytes, type Frame } from "./codec.js"
@@ -66,7 +68,8 @@ export type RemoteEdit = {
 
 export type HistoryEntry = { block: bigint; author: Hex; update: Uint8Array; entity: Hex }
 
-export type Authorship = { address: Hex; proven: boolean }
+/** `via`: for claimed authorship, the member whose snapshot carried it. */
+export type Authorship = { address: Hex; proven: boolean; via?: Hex }
 
 export type FlushInfo = { txHash: Hex; block: bigint; bytes: number; entity: Hex }
 
@@ -137,8 +140,13 @@ export class ArkivProvider extends Observable<string> {
   private readonly claimedAuthors = new Map<number, Hex>()
   /** This session's client id salt, sent with every edit so readers can check the id against our address. */
   private readonly salt: Uint8Array
-  /** Salt for every client id we can attribute, carried forward into snapshot headers. */
+  /** Salt and signature for every client id we can attribute, carried forward into snapshot headers. */
   private readonly salts = new Map<number, string>()
+  private readonly sigs = new Map<number, Hex>()
+  /** For text attributed only through a snapshot: who wrote that snapshot. */
+  private readonly claimedVia = new Map<number, Hex>()
+  /** Our signature over (document, salt): proof that this client id is ours, for later snapshots to carry. */
+  private saltSig: Hex | null = null
   /** Every edit applied since the newest snapshot, oldest first, for time travel. */
   readonly history: HistoryEntry[] = []
   /** The newest snapshot's state: the starting point for time travel. */
@@ -252,7 +260,7 @@ export class ArkivProvider extends Observable<string> {
     const proven = this.authors.get(clientId)
     if (proven) return { address: proven, proven: true }
     const claimed = this.claimedAuthors.get(clientId)
-    return claimed ? { address: claimed, proven: false } : undefined
+    return claimed ? { address: claimed, proven: false, via: this.claimedVia.get(clientId) } : undefined
   }
 
   members(): Member[] {
@@ -263,6 +271,10 @@ export class ArkivProvider extends Observable<string> {
 
   async connect(): Promise<void> {
     this.setStatus("connecting")
+    if (this.identity && !this.saltSig) {
+      this.saltSig = await privateKeyToAccount(this.identity.privateKey).signMessage({ message: { raw: saltMessage(this.link.doc, this.salt) } })
+      this.sigs.set(this.doc.clientID, this.saltSig)
+    }
     try {
       this.unwatch = this.store.watch(
         (e) => this.enqueue(() => this.onChainEvent(e)),
@@ -348,8 +360,8 @@ export class ArkivProvider extends Observable<string> {
 
   private async loadJoinRequests(): Promise<void> {
     this.stats.queries++
-    const page = await this.store.query({ doc: this.link.doc, kind: KIND.join, limit: 50 })
-    for (const e of page.entities) await this.applyJoinEntity(e)
+    const all = await queryAll(this.store, { doc: this.link.doc, kind: KIND.join })
+    for (const e of all.entities) await this.applyJoinEntity(e)
   }
 
   private enqueue(fn: () => Promise<void>): void {
@@ -457,7 +469,7 @@ export class ArkivProvider extends Observable<string> {
     // the removed member could still read it
     if (frame.epoch < this.acl.epoch && entity.createdAt > this.lastRevocationBlock()) return this.reject()
     // a writer may only add structs under Yjs client ids that are new or already theirs
-    if (!this.checkAuthors(frame.data, entity.creator, frame.header.salt)) return this.reject()
+    if (!(await this.checkAuthors(frame.data, entity.creator, frame.header.salt, frame.header.sig))) return this.reject()
     Y.applyUpdate(this.doc, frame.data, this)
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.stats.updatesApplied++
@@ -517,11 +529,20 @@ export class ArkivProvider extends Observable<string> {
     const state = concat(parts)
     const claimed = frame.header.authors
     if (claimed && typeof claimed === "object") {
-      for (const [client, entry] of Object.entries(claimed as Record<string, { address?: string; salt?: string }>)) {
-        // a claim counts only if the address and salt really derive that client id
-        if (typeof entry?.address === "string" && typeof entry.salt === "string" && /^[0-9a-f]{32}$/.test(entry.salt) && clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client)) {
+      for (const [client, entry] of Object.entries(claimed as Record<string, { address?: string; salt?: string; sig?: string }>)) {
+        // a claim counts only if the address and salt derive that client id and the address signed the salt;
+        // a compactor cannot invent a client id for someone who never wrote
+        if (
+          typeof entry?.address === "string" &&
+          typeof entry.salt === "string" &&
+          /^[0-9a-f]{32}$/.test(entry.salt) &&
+          clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client) &&
+          (await signedBy(this.link.doc, entry.salt, entry.sig, entry.address as Hex))
+        ) {
           this.claimedAuthors.set(Number(client), entry.address.toLowerCase() as Hex)
+          this.claimedVia.set(Number(client), entity.creator.toLowerCase() as Hex)
           this.salts.set(Number(client), entry.salt)
+          this.sigs.set(Number(client), entry.sig as Hex)
         }
       }
     }
@@ -569,15 +590,22 @@ export class ArkivProvider extends Observable<string> {
    * from the salt in the edit's header: clientIdFor(creator, salt). Anything
    * else is someone writing under another member's name.
    */
-  private checkAuthors(update: Uint8Array, author: Hex, salt: unknown): boolean {
+  private async checkAuthors(update: Uint8Array, author: Hex, salt: unknown, sig: unknown): Promise<boolean> {
     if (typeof salt !== "string" || !/^[0-9a-f]{32}$/.test(salt)) return false
+    // the writer signed (document, salt), so a later snapshot can carry this attribution with proof
+    if (!(await signedBy(this.link.doc, salt, sig, author))) return false
     const expected = clientIdFor(author, hexToBytes(salt))
     // parseUpdateMeta covers structs at any clock; encodeStateVectorFromUpdate only counts
     // runs that start at clock 0, so it misses every update after a writer's first
     const clients = [...Y.parseUpdateMeta(update).from.keys()]
     if (clients.some((c) => c !== expected)) return false
+    // and a client id already in use by one address cannot be taken over by another: a collision
+    // would have to be found before the victim's random salt was ever published
+    const holder = this.authors.get(expected) ?? this.claimedAuthors.get(expected)
+    if (holder && holder !== author.toLowerCase()) return false
     this.authors.set(expected, author.toLowerCase() as Hex)
     this.salts.set(expected, salt)
+    this.sigs.set(expected, sig as Hex)
     return true
   }
 
@@ -645,7 +673,7 @@ export class ArkivProvider extends Observable<string> {
       }
       const { epoch, key } = this.currentContentKey()
       const head = await this.store.head()
-      const header = { t: this.now(), salt: bytesToHex(this.salt) }
+      const header = { t: this.now(), salt: bytesToHex(this.salt), sig: this.saltSig }
       const payload = encodeOuter(epoch, await seal(key, encodeFrame({ kind: KIND.update, doc: hexToBytes(this.link.doc), epoch, header, data: merged }, randomBytes)))
       let result
       try {
@@ -702,6 +730,8 @@ export class ArkivProvider extends Observable<string> {
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: memberAddresses(this.acl), seqGte: from })
     const before = this.stats.updatesApplied
     for (const u of [...updates.entities].reverse()) await this.applyUpdateEntity(u, false)
+    // a join request missed live (socket gap, stranger-fetch cap) is picked up here
+    if (this.role === "owner") await this.loadJoinRequests()
     return this.stats.updatesApplied - before
   }
 
@@ -768,7 +798,7 @@ export class ArkivProvider extends Observable<string> {
     const due = (expiresAt: bigint | null) => expiresAt !== null && expiresAt - head < BigInt(Math.floor(Number(life) * LEASE_RENEW_FRACTION))
     const me = this.identity.address.toLowerCase()
     const snapshotDue = due(this.snapshot.expiresAt)
-    const aclDue = this.role === "owner" && due(this.aclExpiresAt)
+    const aclDue = due(this.aclExpiresAt)
     if (!snapshotDue && !aclDue) return false
     if (snapshotDue && (this.snapshot.creator !== me || this.updatesSinceSnapshot > 0)) {
       // a fresh snapshot renews the lease and folds in every uncovered edit at once
@@ -823,7 +853,7 @@ export class ArkivProvider extends Observable<string> {
    * Owner: ends the document now. Deletes the member list and every entity the
    * owner created, in one batch. Without the member list no reader can verify
    * any edit, so the document stops opening immediately; members' remaining
-   * encrypted entities run out on their own expiry (7 to 30 days).
+   * encrypted entities run out on their own expiry (30 days, or the keepUntil date).
    */
   async deleteDocument(): Promise<number> {
     if (this.role !== "owner" || !this.identity) throw new Error("only the owner deletes the document")
@@ -983,11 +1013,12 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /** client id to address, proven entries first. Stored in snapshot headers. */
-  private authorTable(): Record<string, { address: Hex; salt: string }> {
-    const out: Record<string, { address: Hex; salt: string }> = {}
+  private authorTable(): Record<string, { address: Hex; salt: string; sig: Hex }> {
+    const out: Record<string, { address: Hex; salt: string; sig: Hex }> = {}
     for (const [c, a] of [...this.claimedAuthors, ...this.authors]) {
       const salt = this.salts.get(c)
-      if (salt) out[String(c)] = { address: a, salt }
+      const sig = this.sigs.get(c)
+      if (salt && sig) out[String(c)] = { address: a, salt, sig }
     }
     return out
   }
@@ -1084,7 +1115,9 @@ function blocks(seconds: number): bigint {
 async function aclSpec(doc: Hex, metaKey: Uint8Array, acl: Acl, epochKey: Uint8Array | undefined, head: bigint): Promise<CreateSpec> {
   const header = (await toHeader(acl, epochKey, doc)) as unknown as Record<string, unknown>
   const payload = encodeOuter(0, await seal(metaKey, encodeFrame({ kind: KIND.acl, doc: hexToBytes(doc), epoch: 0, header, data: new Uint8Array() }, randomBytes)))
-  return { payload, attributes: { doc, kind: KIND.acl, seq: head }, lifetimeSeconds: LIFETIME.acl }
+  // the member list is tiny and reveals nothing; any member's session may renew it, so a document
+  // stays open while its writers use it even if the owner is away. Its snapshots still expire on their own.
+  return { payload, attributes: { doc, kind: KIND.acl, seq: head }, lifetimeSeconds: LIFETIME.acl, permissionlessExtension: true }
 }
 
 /**
@@ -1103,7 +1136,7 @@ async function writeSnapshotEntities(
   head: bigint,
   now: number,
   kind: Kind,
-  authors: Record<string, { address: Hex; salt: string }>,
+  authors: Record<string, { address: Hex; salt: string; sig: Hex }>,
   lifetime: number,
   extra: BatchSpec,
   readonly = false,
@@ -1143,6 +1176,27 @@ async function writeSnapshotEntities(
   transactions++
   bytes += headSpec.payload.length
   return { result, headKey: result.created[(extra.creates ?? []).length]!, chunks, bytes, transactions }
+}
+
+/** What a writer signs to prove a client id salt is theirs: "quire1:salt:" || document id (32) || salt (16). */
+function saltMessage(doc: Hex, salt: Uint8Array): Uint8Array {
+  const prefix = new TextEncoder().encode("quire1:salt:")
+  const out = new Uint8Array(prefix.length + 48)
+  out.set(prefix, 0)
+  out.set(hexToBytes(doc), prefix.length)
+  out.set(salt, prefix.length + 32)
+  return out
+}
+
+/** True if `sig` is an EIP-191 signature by `address` over saltMessage(doc, salt). */
+async function signedBy(doc: Hex, salt: string, sig: unknown, address: Hex): Promise<boolean> {
+  if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig)) return false
+  try {
+    const signer = await recoverMessageAddress({ message: { raw: saltMessage(doc, hexToBytes(salt)) }, signature: sig as Hex })
+    return signer.toLowerCase() === address.toLowerCase()
+  } catch {
+    return false
+  }
 }
 
 function shuffle<T>(xs: T[]): T[] {

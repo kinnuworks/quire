@@ -113,7 +113,11 @@ def _int(value: Any) -> int:
 
 
 def _hex_bytes(value: str) -> bytes:
-    return bytes.fromhex(value[2:] if value.lower().startswith("0x") else value)
+    digits = value[2:] if value.lower().startswith("0x") else value
+    # strict: bytes.fromhex would skip spaces and newlines, and readers must agree byte for byte
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", digits):
+        raise ValueError("not a hex string")
+    return bytes.fromhex(digits)
 
 
 def _infer_type(value: Any) -> str:
@@ -122,7 +126,7 @@ def _infer_type(value: Any) -> str:
         return "bool"
     if isinstance(value, int):
         return "u64"
-    if isinstance(value, str) and HEX32.match(value):
+    if isinstance(value, str) and HEX32.fullmatch(value):
         return "bytes32"
     if isinstance(value, str):
         return "str"
@@ -280,7 +284,7 @@ def check_attributes(e: Entity, doc: str | None) -> list[str]:
     if e.attr("qp") != "quire1":
         problems.append(f"qp = {e.attr('qp')!r}")
     qd = e.attr("qd")
-    if not isinstance(qd, str) or not HEX32.match(qd):
+    if not isinstance(qd, str) or not HEX32.fullmatch(qd):
         problems.append(f"qd = {qd!r} is not bytes32")
     elif doc and qd.lower() != doc.lower():
         problems.append(f"qd = {qd} is another document")
@@ -477,7 +481,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             doc = data.get("doc")
             owner = args.owner or data.get("owner")
         else:
-            if not HEX32.match(args.doc):
+            if not HEX32.fullmatch(args.doc):
                 ap.error("--doc must be 0x followed by 64 hex characters")
             doc, owner = args.doc.lower(), args.owner
             entities = fetch_document(args.rpc, doc)

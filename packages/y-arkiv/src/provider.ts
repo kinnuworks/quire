@@ -85,7 +85,7 @@ export type ProviderStats = {
 }
 
 /** A snapshot that decoded and passed its own checks, waiting on the verified-clock check before it counts. */
-type PendingSnapshot = { state: Uint8Array; commit: (trimHistory: boolean) => void; registerClaims: () => void }
+type PendingSnapshot = { key: Hex; state: Uint8Array; commit: (trimHistory: boolean) => void; registerClaims: () => void }
 
 export type ProviderOptions = {
   store: ArkivStore
@@ -169,6 +169,8 @@ export class ArkivProvider extends Observable<string> {
   outsidersTruncated = false
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
+  /** Base block of every snapshot this session applied, so a reload knows them without re-reading. */
+  private readonly snapshotBases = new Map<Hex, bigint>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
   private readonly refusedSnapshots = new Set<Hex>()
   /** Our signature over (document, salt): proof that this client id is ours, for later snapshots to carry. */
@@ -204,12 +206,14 @@ export class ArkivProvider extends Observable<string> {
     // every query page is counted here, so stats.queries is what the RPC billed, cursor pages included
     const inner = options.store
     const stats = () => this.stats
+    // read-only sessions refuse every write at the one place all writes pass through
+    const readOnly = options.readOnly ?? false
     this.store = {
       get address() {
         return inner.address
       },
       head: () => inner.head(),
-      batch: (spec) => inner.batch(spec),
+      batch: (spec) => (readOnly ? Promise.reject(new Error("this session was opened read-only")) : inner.batch(spec)),
       predictKeys: (n) => inner.predictKeys(n),
       query: (spec) => (stats().queries++, inner.query(spec)),
       get: (key, block) => inner.get(key, block),
@@ -457,6 +461,7 @@ export class ArkivProvider extends Observable<string> {
       Y.applyUpdate(trial, st.state)
       if (overridesVerified(trial, verified)) {
         this.reject()
+        this.refusedSnapshots.add(st.key)
         continue
       }
       this.applyRemote(st.state)
@@ -596,6 +601,20 @@ export class ArkivProvider extends Observable<string> {
     return (this.carried.get(client) ?? []).find((r) => r.from <= clock && clock < r.to)?.via
   }
 
+  /** True if the update carries, at a clock an applied update already proved, an item other than that one. */
+  private conflictsWithProven(update: Uint8Array): boolean {
+    for (const st of Y.decodeUpdate(update).structs) {
+      if (!(st instanceof Y.Item)) continue
+      for (let k = 0; k < st.length; k++) {
+        const clock = st.id.clock + k
+        if (!this.coveredByProven(st.id.client, clock, clock + 1)) continue
+        const found = Y.getItem(this.doc.store, Y.createID(st.id.client, clock)) as Y.Item | Y.GC
+        if (found instanceof Y.Item && !found.deleted && unitKey(this.doc, found, clock - found.id.clock) !== unitKey(this.doc, st, k)) return true
+      }
+    }
+    return false
+  }
+
   private coveredByProven(client: number, from: number, to: number): boolean {
     const ranges = [...(this.proven.get(client) ?? [])].sort((x, y) => x[0] - y[0])
     let reach = from
@@ -690,6 +709,9 @@ export class ArkivProvider extends Observable<string> {
     if (entity.attributes.seq + CATCH_UP_MARGIN_BLOCKS < entity.createdAt) return this.reject()
     // the edit's client id must derive from its creator's address with a salt the creator signed
     if (!(await this.checkAuthors(frame.data, entity.creator, frame.header.salt, frame.header.sig))) return this.reject()
+    // a writer's two edits that claim the same clocks with different content cannot both count: the
+    // earlier one (by creation block, then key, on load; by arrival, live) stands and this one is ignored
+    if (this.conflictsWithProven(frame.data)) return this.reject()
     const svBefore = Y.decodeStateVector(Y.encodeStateVector(this.doc))
     this.applyRemote(frame.data)
     if (overridesVerified(this.doc, [frame.data])) {
@@ -739,7 +761,9 @@ export class ArkivProvider extends Observable<string> {
   }
 
   private async applySnapshotEntityInner(entity: StoredEntity, collect: PendingSnapshot[]): Promise<bigint | null> {
-    if (this.seen.has(entity.key)) return this.snapshot?.key === entity.key ? this.snapshot.base : null
+    // seen before: an applied one still counts as this member's choice (with its base), so a reload
+    // after an ACL patch does not fall back to an older one; anything else stays as it was
+    if (this.seen.has(entity.key)) return this.snapshotBases.get(entity.key) ?? null
     if (!this.acl || !isMember(this.acl, entity.creator)) {
       this.seen.add(entity.key)
       this.reject()
@@ -814,6 +838,7 @@ export class ArkivProvider extends Observable<string> {
     // (see overridesVerified) and commits it only if it passes, so a refused snapshot never becomes
     // the lease, the history base or a source of claimed authors
     collect.push({
+      key: entity.key,
       state,
       commit: (trimHistory) => this.commitSnapshot(entity, base, chunks, state, claims, trimHistory),
       registerClaims: () => this.registerClaims(entity, claims),
@@ -828,6 +853,7 @@ export class ArkivProvider extends Observable<string> {
    */
   private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[], trimHistory: boolean): void {
     this.registerClaims(entity, claims)
+    this.snapshotBases.set(entity.key, base)
     // remember what this snapshot carried, struct by struct; snapshots commit newest first on load,
     // and a live one is newer than all of them, so it goes to the front
     const via = entity.creator.toLowerCase() as Hex
@@ -870,6 +896,7 @@ export class ArkivProvider extends Observable<string> {
       Y.applyUpdate(trial, st.state)
       if (overridesVerified(trial, this.history.map((h) => h.update))) {
         this.reject()
+        this.refusedSnapshots.add(st.key)
         continue
       }
       this.applyRemote(st.state)

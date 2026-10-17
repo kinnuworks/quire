@@ -176,10 +176,18 @@ describe("ACL parsing", () => {
   it("refuses an ACL that does not list its owner", async () => {
     await expect(fromHeader({ ...base, members: [{ ...member, role: "writer" }] }, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/owner/)
   })
+  it("refuses an ACL whose fields do not match its epoch", async () => {
+    await expect(fromHeader({ ...base, note: "extra" }, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/wrong fields/)
+    const { members: _m, ...noMembers } = base as Record<string, unknown>
+    await expect(fromHeader(noMembers, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/wrong fields/)
+    await expect(fromHeader({ ...base, roster: "0x00" }, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/wrong fields/)
+  })
+
   it("refuses a roster sealed for another document or epoch", async () => {
     const key = randomBytes(32)
     const roster = await seal(key, new TextEncoder().encode(JSON.stringify({ doc: `0x${"cd".repeat(32)}`, epoch: 1, members: [member], revoked: [] })))
-    const header = { ...base, epoch: 1, members: undefined, revoked: undefined, roster: `0x${bytesToHex(roster)}` }
+    const { members: _m, revoked: _r, ...rest } = base as Record<string, unknown>
+    const header = { ...rest, epoch: 1, roster: `0x${bytesToHex(roster)}` }
     await expect(fromHeader(header, owner.address.toLowerCase() as Hex, () => key, doc)).rejects.toThrow(/another document/)
   })
 })

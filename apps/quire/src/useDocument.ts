@@ -60,6 +60,8 @@ function relayChosen(): boolean {
 
 let nextId = 1
 
+const rebuilds: number[] = []
+
 export function useDocument(link: DocLink | null, identity: Identity | undefined): DocumentSession {
   // bumping this reconnects with a fresh doc: after a budget wait, or to heal a divergence
   const [attempt, setAttempt] = useState(0)
@@ -95,7 +97,7 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       log({ kind: "remote", text: `Edit applied`, entity: e.entity, author: e.author, latencyMs: e.latencyMs })
     })
     p.on("join-request", (j: JoinRequest) => log({ kind: "join", text: `${j.name || "Someone"} asked to join`, author: j.address }))
-    p.on("rejected", (n: number) => log({ kind: "rejected", text: `Ignored a write from outside the member list (${n} so far)` }))
+    p.on("rejected", (n: number) => log({ kind: "rejected", text: `Refused a write: from outside the member list, under someone else's client id, conflicting or malformed (${n} so far)` }))
     // the first ACL load is not news; only later changes are
     let aclLoads = 0
     p.on("acl", () => {
@@ -105,9 +107,18 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
     p.on("lease", () => bump())
     // a snapshot clashed with a genuine edit: rebuild this session from the chain, where the
     // updates-first load and the override check settle it in the genuine edit's favour
+    // Never compact here: a snapshot of a diverged state would carry the clash forward. Send only what
+    // this tab typed, then reload. At most twice a minute, so a persistent clash cannot loop.
     p.on("diverged", () => {
+      const now = Date.now()
+      rebuilds.splice(0, rebuilds.length, ...rebuilds.filter((t) => now - t < 60_000))
+      if (rebuilds.length >= 2) {
+        log({ kind: "rejected", text: "A snapshot conflicts with a checked edit again; not reloading. Reopen the page to rebuild." })
+        return
+      }
+      rebuilds.push(now)
       log({ kind: "rejected", text: "A snapshot conflicted with a checked edit; reloading from Arkiv" })
-      void p.close().catch(() => undefined).finally(() => setAttempt((n) => n + 1))
+      void p.flush().catch(() => undefined).finally(() => setAttempt((n) => n + 1))
     })
     p.on("history", () => bump())
     p.on("status", () => bump())

@@ -993,7 +993,11 @@ class ReaderTests(unittest.TestCase):
             first, _ = self._forged_update(None, 1, 12, "Session one.", salt=s1)
             second, result = self._forged_update(None, 1, 13, "Session two.", salt=s2, extra=[first])
         self.assertIn(first.key, result.applied)
-        self.assertIn(second.key, result.applied)
+        # not a takeover: same address. But both sessions wrote the same
+        # clocks from one base, so the later one conflicts and is ignored
+        reason = dict(result.ignored)[second.key]
+        self.assertNotIn("already attributed", reason)
+        self.assertIn("puts different content at client", reason)
 
     def test_update_check_does_not_depend_on_order(self) -> None:
         good, _ = self._forged_update(None, 1, 13, "Bea, valid.", key=fake_key(0x02))

@@ -111,6 +111,10 @@ export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined, doc: 
 export async function fromHeader(header: Record<string, unknown>, owner: Hex, epochKey: (epoch: number) => Uint8Array | undefined, doc: Hex): Promise<Acl> {
   const h = header as unknown as AclHeader
   if (h.v !== 1 || typeof h.epoch !== "number" || typeof h.owner !== "string" || typeof h.ownerPublicKey !== "string") throw new Error("malformed ACL")
+  // the field set of spec/schema/acl-header.json: members and revoked at epoch 0, a sealed roster after
+  const fields = h.epoch === 0 ? ["v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps", "members", "revoked"] : ["v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps", "roster"]
+  const keys = Object.keys(header)
+  if (fields.some((f) => !keys.includes(f)) || keys.some((k) => !fields.includes(k))) throw new Error("malformed ACL: wrong fields for its epoch")
   if (h.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("ACL owner does not match the link")
   let members: Member[] = []
   let revoked: Revoked[] = []
@@ -122,6 +126,8 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
     const key = epochKey(h.epoch)
     if (key && h.roster) {
       const r = JSON.parse(dec.decode(await open(key, hexToBytes(h.roster)))) as { doc: string; epoch: number; members: Member[]; revoked: Revoked[] }
+      const rk = Object.keys(r).sort().join()
+      if (rk !== "doc,epoch,members,revoked") throw new Error("malformed ACL roster: wrong fields")
       if (r.doc !== doc.toLowerCase() || r.epoch !== h.epoch) throw new Error("ACL roster belongs to another document or epoch")
       members = r.members
       revoked = r.revoked

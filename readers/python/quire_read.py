@@ -317,16 +317,16 @@ def _signer(doc: str, salt: str, sig: str) -> str | None:
 def salt_signer(doc: str, salt: Any, sig: Any) -> str | None:
     """The address whose EIP-191 signature `sig` is over this document's
     salt message, or None if `sig` is malformed or recovers nothing."""
-    if not isinstance(salt, str) or not SALT_HEX.match(salt):
+    if not isinstance(salt, str) or not SALT_HEX.fullmatch(salt):
         return None
-    if not isinstance(sig, str) or not SIG_HEX.match(sig):
+    if not isinstance(sig, str) or not SIG_HEX.fullmatch(sig):
         return None
     return _signer(doc.lower(), salt, sig.lower())
 
 
 def sig_problem(doc: str, address: str, salt: Any, sig: Any) -> str | None:
     """Why `sig` is not `address`'s signature over the salt, or None."""
-    if not isinstance(sig, str) or not SIG_HEX.match(sig):
+    if not isinstance(sig, str) or not SIG_HEX.fullmatch(sig):
         return "sig is missing or not 0x and 130 hex characters"
     signer = salt_signer(doc, salt, sig)
     if signer is None:
@@ -347,10 +347,10 @@ def client_id_for(address: str, salt: str | bytes) -> int:
     The first 8 bytes of keccak-256(20 address bytes || 16 salt bytes),
     big-endian, masked to 53 bits; 0 becomes 1.
     """
-    if not isinstance(address, str) or not ADDRESS_HEX.match(address):
+    if not isinstance(address, str) or not ADDRESS_HEX.fullmatch(address):
         raise ValueError(f"not an address: {address!r}")
     if isinstance(salt, str):
-        if not SALT_HEX.match(salt):
+        if not SALT_HEX.fullmatch(salt):
             raise ValueError(f"salt must be 32 lowercase hex characters: {salt!r}")
         salt = bytes.fromhex(salt)
     if not isinstance(salt, (bytes, bytearray)) or len(salt) != 16:
@@ -776,6 +776,21 @@ def text_ranges(state: bytes, verified: Verified, carriers: list[tuple[str, list
 # ---------------------------------------------------------------- sources
 
 
+KINDS = {"a", "u", "s", "c", "j", "v"}
+ATTRIBUTE_TYPES = {"qp": "str", "qd": "bytes32", "qk": "str", "qs": "u64"}
+
+
+def well_formed(e: Entity) -> bool:
+    """spec/schema/entity.json: exactly the four typed attributes, qp = quire1,
+    qd a bytes32, qk a known kind, qs a u64. Anything else is not a Quire
+    entity, and both readers drop it before reading, as if it were absent."""
+    if len(e.attributes) != 4 or {a.name: a.type for a in e.attributes} != ATTRIBUTE_TYPES:
+        return False
+    qd, qk, qs = e.attr("qd"), e.attr("qk"), e.attr("qs")
+    return (e.attr("qp") == "quire1" and isinstance(qd, str) and qa.HEX32.fullmatch(qd) is not None
+            and qk in KINDS and _is_int(qs) and 0 <= qs < 2**64)
+
+
 class Source:
     """Where entities come from. Queries mirror section 5."""
 
@@ -802,7 +817,7 @@ class VectorSource(Source):
     """Applies the section 5 query filters to a vectors file in memory."""
 
     def __init__(self, entities: list[Entity]) -> None:
-        self.entities = entities
+        self.entities = [e for e in entities if well_formed(e)]
 
     def _match(self, e: Entity, doc: str, kind: str) -> bool:
         return (
@@ -848,7 +863,7 @@ class RpcSource(Source):
         return f"qp = str('quire1') AND qd = bytes32({doc.lower()}) AND qk = str('{kind}')"
 
     def _run(self, query: str) -> list[Entity]:
-        return [qa.parse_entity(r) for r in qa.query_all(self.url, query)]
+        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query)) if well_formed(e)]
 
     def acl(self, doc: str, owner: str) -> list[Entity]:
         return self._run(self._base(doc, "a") + f" AND $creator = addr({owner})")
@@ -867,7 +882,8 @@ class RpcSource(Source):
 
     def entity(self, key: str) -> Entity | None:
         raw = qa.get_entity(self.url, key)
-        return qa.parse_entity(raw) if raw else None
+        e = qa.parse_entity(raw) if raw else None
+        return e if e is not None and well_formed(e) else None
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         # one query with no kind or creator filter
@@ -1000,14 +1016,14 @@ def header_problem(kind: str, h: dict[str, Any]) -> str | None:
         if not _is_safe_int(h.get("t")):
             return "update header t is not an integer"
     elif kind in ("s", "v"):
-        if not isinstance(h.get("id"), str) or not SNAPSHOT_ID.match(h["id"]):
+        if not isinstance(h.get("id"), str) or not SNAPSHOT_ID.fullmatch(h["id"]):
             return "snapshot header id is not 32 lowercase hex characters"
         if not isinstance(h.get("base"), str) or not re.fullmatch(r"[0-9]+", h["base"]):
             return "snapshot header base is not a decimal string"
         if not _is_safe_int(h.get("t")):
             return "snapshot header t is not an integer"
         chunks = h.get("chunks")
-        if not isinstance(chunks, list) or not all(isinstance(k, str) and qa.HEX32.match(k) for k in chunks):
+        if not isinstance(chunks, list) or not all(isinstance(k, str) and qa.HEX32.fullmatch(k) for k in chunks):
             return "snapshot header chunks is not a list of entity keys"
         if not _is_safe_int(h.get("size")) or h["size"] < 0:
             return "snapshot header size is not a non-negative integer"
@@ -1019,14 +1035,14 @@ def header_problem(kind: str, h: dict[str, Any]) -> str | None:
                 return f"snapshot header authors key {cid!r} is not a decimal client id"
             if not isinstance(entry, dict) or set(entry) != {"address", "salt", "sig"}:
                 return f"snapshot header authors entry {cid} does not have exactly address, salt and sig"
-            if not (isinstance(entry["address"], str) and ADDRESS_LOWER.match(entry["address"])
-                    and isinstance(entry["salt"], str) and SALT_HEX.match(entry["salt"])
-                    and isinstance(entry["sig"], str) and SIG_HEX.match(entry["sig"])):
+            if not (isinstance(entry["address"], str) and ADDRESS_LOWER.fullmatch(entry["address"])
+                    and isinstance(entry["salt"], str) and SALT_HEX.fullmatch(entry["salt"])
+                    and isinstance(entry["sig"], str) and SIG_HEX.fullmatch(entry["sig"])):
                 return f"snapshot header authors entry {cid} has a malformed field"
     elif kind == "c":
         if not _is_safe_int(h.get("i")) or h["i"] < 1:
             return "chunk header i is not a positive integer"
-        if not isinstance(h.get("of"), str) or not SNAPSHOT_ID.match(h["of"]):
+        if not isinstance(h.get("of"), str) or not SNAPSHOT_ID.fullmatch(h["of"]):
             return "chunk header of is not 32 lowercase hex characters"
     return None
 
@@ -1111,6 +1127,11 @@ class Reader:
             try:
                 header = decrypt_frame(e, mkey, self.link.doc).header
                 self.schemas.check("acl", header)
+                # the same field-set rules without jsonschema, so the verdict never depends on it
+                epoch0 = header.get("epoch") == 0
+                fields = {"v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps"} | ({"members", "revoked"} if epoch0 else {"roster"})
+                if not isinstance(header, dict) or set(header) != fields:
+                    raise Rejected("ACL header has the wrong fields for its epoch")
             except Exception as exc:  # a malformed ACL entity is skipped
                 self._ignore(e, _why(exc))
                 continue
@@ -1173,6 +1194,8 @@ class Reader:
             self.schemas.check("roster", roster)
         except Rejected as exc:
             raise RuntimeError(str(exc)) from exc
+        if set(roster) != {"doc", "epoch", "members", "revoked"}:
+            raise RuntimeError("ACL roster has the wrong fields")
         # Section 3: the roster is bound to its document and epoch, so one
         # cannot be replayed into another document or an older epoch.
         if str(roster.get("doc", "")).lower() != self.link.doc.lower():
@@ -1349,6 +1372,10 @@ class Reader:
         # every other check attribute an id.
         accepted.sort(key=lambda u: (u[0].created_at, u[0].key))
         kept: list[tuple[Entity, bytes, list[Struct]]] = []
+        # Section 5: an update that puts different content at a clock an
+        # earlier accepted update already wrote is ignored, so a writer's
+        # two conflicting edits cannot both count.
+        so_far = Verified()
         for e, data, structs, salt, cids in accepted:
             taken = [(cid, self.authors[cid]) for cid in cids
                      if cid in self.authors and self.authors[cid].address != e.creator]
@@ -1356,6 +1383,11 @@ class Reader:
                 cid, held = taken[0]
                 self._ignore(e, f"Yjs client id {cid} is already attributed to {held.address} by {held.source}")
                 continue
+            clash = next(((s.client, c) for s in structs if (c := so_far.conflict(s)) is not None), None)
+            if clash is not None:
+                self._ignore(e, f"update puts different content at client {clash[0]} clock {clash[1]}, which an earlier update wrote")
+                continue
+            so_far.add(structs)
             for cid in cids:
                 held = self.authors.get(cid)
                 if held is None or not held.proven:
@@ -1429,7 +1461,7 @@ class Reader:
         raw_members = roster.get("members") if isinstance(roster.get("members"), list) else []
         members = sorted({
             str(m["address"]).lower() for m in raw_members
-            if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.match(m["address"])
+            if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.fullmatch(m["address"])
         })
         revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
         self.revoked_at = {
@@ -1559,7 +1591,7 @@ def read_version(link: VersionLink, source: Source, schemas: Schemas | None = No
     if head.kind != "v":
         raise RuntimeError(f"entity {link.key} is kind {head.kind!r}, not a version")
     doc_id = head.attr("qd")
-    if not isinstance(doc_id, str) or not qa.HEX32.match(doc_id):
+    if not isinstance(doc_id, str) or not qa.HEX32.fullmatch(doc_id):
         raise RuntimeError("version has no bytes32 qd")
     doc_id = doc_id.lower()
 

@@ -50,6 +50,14 @@ export default async function handler(req: Req, res: Res) {
   if (call?.method !== "arkiv_query" || typeof query !== "string" || !QUIRE_QUERY.test(query)) {
     return res.status(400).json({ error: "The relay forwards only arkiv_query calls for a Quire document." })
   }
+  // and only the options Quire sends: what to select, a page of at most 200, a cursor, a block
+  const opts = Array.isArray(call.params) ? call.params[1] : undefined
+  const allowed = ["select", "limit", "cursor", "atBlock"]
+  const limit = opts && typeof opts === "object" ? (opts as { limit?: unknown }).limit : undefined
+  const pageOk = limit === undefined || (typeof limit === "string" && /^0x[0-9a-fA-F]{1,4}$/.test(limit) && Number(limit) <= 200) || (typeof limit === "number" && limit <= 200)
+  if ((call.params as unknown[]).length > 2 || (opts !== undefined && (typeof opts !== "object" || opts === null || Object.keys(opts).some((k) => !allowed.includes(k)) || !pageOk))) {
+    return res.status(400).json({ error: "The relay forwards only Quire's own query options." })
+  }
 
   const ip = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]!.trim() || "unknown"
   const now = Date.now()

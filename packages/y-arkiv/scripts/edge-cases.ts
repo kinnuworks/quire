@@ -82,25 +82,26 @@ async function setup() {
 }
 
 /** Bea's raw entity: an update or snapshot whose frame the case controls. */
-async function beaWrites(chain: MemoryChain, link: DocLink, kind: Kind, frame: Uint8Array, seq: bigint) {
-  await chain.store(bea.address).batch({
+async function beaWrites(chain: MemoryChain, link: DocLink, kind: Kind, frame: Uint8Array, seq: bigint): Promise<Hex> {
+  const r = await chain.store(bea.address).batch({
     creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind, seq }, lifetimeSeconds: 3600 }],
   })
   chain.mine()
+  return r.created[0]!
 }
 
-async function beaUpdate(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string, header: (salt: Uint8Array, sig: string) => string, opts: { bom?: boolean; seq?: bigint } = {}) {
-  const salt = randomBytes(16)
+async function beaUpdate(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string, header: (salt: Uint8Array, sig: string) => string, opts: { bom?: boolean; seq?: bigint; salt?: Uint8Array } = {}): Promise<Hex> {
+  const salt = opts.salt ?? randomBytes(16)
   const d = new Y.Doc()
   d.clientID = clientIdFor(bea.address, salt)
   Y.applyUpdate(d, Y.encodeStateAsUpdate(base))
   const sv = Y.encodeStateVector(d)
   para(d, line)
   const frame = rawFrame(KIND.update, link.doc, 0, header(salt, await sigFor(link.doc, salt)), Y.encodeStateAsUpdate(d, sv), opts.bom)
-  await beaWrites(chain, link, KIND.update, frame, opts.seq ?? chain.block)
+  return beaWrites(chain, link, KIND.update, frame, opts.seq ?? chain.block)
 }
 
-async function beaSnapshot(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string | null, opts: { sizeDelta?: number; qs?: bigint } = {}) {
+async function beaSnapshot(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string | null, opts: { sizeDelta?: number; qs?: bigint; id?: string } = {}): Promise<Hex> {
   const salt = randomBytes(16)
   const d = new Y.Doc()
   d.clientID = clientIdFor(bea.address, salt)
@@ -108,8 +109,13 @@ async function beaSnapshot(chain: MemoryChain, link: DocLink, base: Y.Doc, line:
   if (line) para(d, line)
   const state = Y.encodeStateAsUpdate(d)
   const qs = opts.qs ?? chain.block
-  const header = JSON.stringify({ id: bytesToHex(randomBytes(16)), base: qs.toString(), t: 0, chunks: [], size: state.length + (opts.sizeDelta ?? 0), authors: {} })
-  await beaWrites(chain, link, KIND.snapshot, rawFrame(KIND.snapshot, link.doc, 0, header, state), qs)
+  const header = JSON.stringify({ id: opts.id ?? bytesToHex(randomBytes(16)), base: qs.toString(), t: 0, chunks: [], size: state.length + (opts.sizeDelta ?? 0), authors: {} })
+  return beaWrites(chain, link, KIND.snapshot, rawFrame(KIND.snapshot, link.doc, 0, header, state), qs)
+}
+
+/** Rewrites one exported entity's attributes, for cases about the attributes themselves. */
+function withAttributes(vec: ReturnType<typeof exportCase>, key: Hex, change: (attrs: { name: string; type: string; value: string }[]) => { name: string; type: string; value: string }[]) {
+  return { ...vec, entities: vec.entities.map((e) => (e.key === key ? { ...e, attributes: change(e.attributes) } : e)) }
 }
 
 function exportCase(chain: MemoryChain, link: DocLink, order?: (es: StoredEntity[]) => StoredEntity[]) {
@@ -190,5 +196,43 @@ const header = (t: string) => (salt: Uint8Array, sig: string) => `{"t":${t},"sal
     "Two snapshots from one member with the same qs: the later createdAt wins (then the higher key), whatever order the node lists them in.",
     exportCase(chain, link, (es) => [...es].sort((x, y) => (x.createdAt < y.createdAt ? -1 : 1))),
   )
+}
+{
+  const { chain, link, b } = await setup()
+  await beaUpdate(chain, link, b.doc, "Bea, salt with a newline.", (salt, sig) => `{"t":1,"salt":"${bytesToHex(salt)}\\n","sig":"${sig}"}`)
+  await write("update-salt-newline", "A salt with a trailing newline is not 32 hex characters, so the update is ignored.", exportCase(chain, link))
+}
+{
+  const { chain, link, b } = await setup()
+  await beaUpdate(chain, link, b.doc, "Bea, sig with a newline.", (salt, sig) => `{"t":1,"salt":"${bytesToHex(salt)}","sig":"${sig}\\n"}`)
+  await write("update-sig-newline", "A signature with a trailing newline is not a 65-byte hex string, so the update is ignored.", exportCase(chain, link))
+}
+{
+  const { chain, link, b } = await setup()
+  await beaSnapshot(chain, link, b.doc, "Bea, snapshot id with a newline.", { id: `${bytesToHex(randomBytes(16))}\n` })
+  await write("snapshot-id-newline", "A snapshot id with a trailing newline is not 32 hex characters, so the snapshot is ignored.", exportCase(chain, link))
+}
+{
+  const { chain, link, b } = await setup()
+  const key = await beaSnapshot(chain, link, b.doc, "Bea, snapshot without qs.")
+  await write("snapshot-no-qs", "An entity without its qs attribute is not a Quire entity, so the snapshot is ignored.", withAttributes(exportCase(chain, link), key, (a) => a.filter((x) => x.name !== "qs")))
+}
+{
+  const { chain, link, b } = await setup()
+  const key = await beaSnapshot(chain, link, b.doc, "Bea, snapshot with qs as a string.")
+  await write("snapshot-qs-string", "qs must be a u64; as a str the entity is not a Quire entity, so the snapshot is ignored.", withAttributes(exportCase(chain, link), key, (a) => a.map((x) => (x.name === "qs" ? { ...x, type: "str", value: "5" } : x))))
+}
+{
+  const { chain, link, b } = await setup()
+  const key = await beaSnapshot(chain, link, b.doc, "Bea, snapshot with a fifth attribute.")
+  await write("snapshot-extra-attribute", "An entity with a fifth attribute is not a Quire entity, so the snapshot is ignored.", withAttributes(exportCase(chain, link), key, (a) => [...a, { name: "note", type: "str", value: "hi" }]))
+}
+{
+  const { chain, link, b } = await setup()
+  // two valid updates under one salt, from one base: they claim the same clocks with different text
+  const salt = randomBytes(16)
+  await beaUpdate(chain, link, b.doc, "Bea one.", header("1"), { salt })
+  await beaUpdate(chain, link, b.doc, "Bea two.", header("1"), { salt })
+  await write("update-duplicate-clocks", "Two updates that put different content at the same clocks: the earlier one (by createdAt, then key) stands and the later is ignored.", exportCase(chain, link))
 }
 process.exit(0)

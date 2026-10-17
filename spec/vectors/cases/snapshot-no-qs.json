@@ -1,0 +1,180 @@
+{
+  "description": "An entity without its qs attribute is not a Quire entity, so the snapshot is ignored.",
+  "link": "/d/95ZaHvUHrarC8t4yEzHiGPw-dkk2d7M-ozvdDjMPW0w.BBQea7tcnKxFpz9hhokZCiFN3vHmL-UXhTnLV0XhV5k.19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+  "head": "6",
+  "entities": [
+    {
+      "key": "0x9d48d5321cbe9c7d497e32f4f9805776493b3a99042b3735e2b47ea7b72e9fbf",
+      "creator": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "owner": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "createdAt": "0x4",
+      "expiresAt": "0x13c684",
+      "creationFlags": {
+        "readonly": false,
+        "permissionlessExtension": false,
+        "raw": 0
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xf7965a1ef507adaac2f2de321331e218fc3e76493677b33ea33bdd0e330f5b4c"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "u"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x4"
+        }
+      ],
+      "payload": "0x5101000000000488a25806545dc8457a5a04e7c81be834ced6310fe3b0bf2f28a944f7edc71f99be149363cafc8fcfe938ddebe097b08696f90d5ddded6e99ce9208be1c21c4e930a6eae4cbb1dd711563ad61d379db1272351aee408e75213565723aef4b591ce02be3df1e1fff9ccc97dc9838633ad7bdd825e4f2861634c47a32b46bea4fffdb028df9df0e89515768869c06ac2ba3d4c0b351822d33f190f37b2e89068381046f370e53f0740805937fb36a313b74ac9c7620decc6b664d0603cdf3dc7a9ece038cdb0470bf0b04a2b4e3de2c394cdec38baa97ed2496ee7bb2a8b28fdf89541ea72510bfb3c8373d9eade5a3d89afd0ac3378881427b5b857b10e4323e1a589367515e135bf65eb5b24bb367f005af64ae874bd53975016de1bc5bb988a2505094c5563c098bfb809e333c9afa5964b50efa2e273d60275951939e25e48dd6b3e5d5653ec08ea9ca23954dae919ba388085cac943b746b24d1448ef82f8e922805b1d3684a09b3570f2627a70f6abb427f2cded2200471eaf53a187ced72f804e7955637ecee5a371da955dee415f1df63170ebeffb78ef4da90f7243e75e5631540182da2b0d399f51ce6a5cd0cee78e091a17f95039632c23c722721c86e07b8ba4ce437f5785bf347308703512051d415ba42d7fe92d1a5305c6b8cf0dd88651c4964cc45a95f5182255181027545074b987e14028d4cbd6d8897d421ec503e7e40dbd0dab6b36e6d4bb8cb6767fc158d9f884750045326ccd7ce156355caf21cedd295a7498c3644603ee3691605eedb0b9eff4c009ebfeb4b93de56ead6a91395169bf767d2b572cbe912b4ac0385ca1fdfff0d5e6521157e4f3737e76893280d9984c253b1e8dcc88dbba930983b9085be014bf919bbc0d493963a0016591416edb5e45dbe231431c9e81d53366e513ae0b227179101e5357805bea8a4c7fb2d285e0408be42c7a89540215aa7453b6bdb283dd59634fdec40c2ab0cc327745caeec90eb45790ae9f3b087c5ba2de8971cf2c0293f6826637c32c45c44de23776eebaba62d4fefeaaa0b55e69a75899f49fef3a942f76cebb25e7c7b7a4cc0b6ce12e4f9c43b58685eb487f2119b424d3f0336d3a3f3882072d578bbe98d016dc029cbabb160d6e3e97af705b6a74a9e6465690d783d88d916eaaa21b664ca22ccaf47b06ac45f157ec52061d24ff0565c5fdc29c4d0821ad5a3d7c712eebb68b000c8100524c15a14b52cf3d26bec393318368a4a79dc99e720dcebbffeb565a59a88d206ca2349c7dd5f08b020d33a59220401471871096a68c61621b043feb14ea7f2c6b9f56bb15bbe4ca8b27d05feef71ae8235b631ce2d2cc01d8628cc2c0f1e7cb4f7f20dd162d82cd905d5baeb985794ceeb3f1cfe2fba44fddac86e7e00f18e2744310c833ff4793f862db1fa0fe72ecc605e6e1fa02734596b318f497841594d372247453db6d5093a3ec8a502965a7a9b"
+    },
+    {
+      "key": "0xa15ce4287f8ae1a20d8d9e6b6c0fcdd5ba1ac4ee6656ae465488c543048d0e8e",
+      "creator": "0x1563915e194d8cfba1943570603f7606a3115508",
+      "owner": "0x1563915e194d8cfba1943570603f7606a3115508",
+      "createdAt": "0x5",
+      "expiresAt": "0x70d",
+      "creationFlags": {
+        "readonly": false,
+        "permissionlessExtension": false,
+        "raw": 0
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xf7965a1ef507adaac2f2de321331e218fc3e76493677b33ea33bdd0e330f5b4c"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "s"
+        }
+      ],
+      "payload": "0x510100000000d85b006e5a82d78eaf9eaa8509d57069ca76efe22076842a2b8b5c2fe66d9e762bd9ab50df7b83651a2222dbcb12e2d2edec5d14096d144585b1eef9033c02e02d06508f215a4c7dcc5a20c222553eac4f40fc6fe3a29f4563655bbf2c94d9216b5b378fe8758ccb858ecfe295d1945893592c59603a9e86ccb50ff166b6cb49e147f55146c0ec06e3309b4b79d0fc10c6528ae5c64f80261a466b8a5f26d9d6cdc36ae3bd5f8db976b9421e99c8b7c37ff94a59b0d877291027f15c1d88aca804537eaba686a6c7fa6a54877703a061b3ddb2e7d26fcc6e8651694b2581e51d224c666fa8de68b257317de5f70d824612eb3f1541cfc4582246735c74607b34043f3e415f484e25ec02c7430bb1fb977b80134e0cf2a64d0048d93d6902569503bfaedb333fe7af31405eb9f4336b428417305c57ef20dcd2ce0eadec63d01631fe8c33ba4933b0eb95d1df6e977661150842a2e55f53d6ce4abf3709663b45abe0f15d5242231b07bd75e344f93b8d3a3c94f88bfd0bdc1343b2545e750b86248a57abfb8799e17f2b861b4ba282fe3b42cc90f50af35a44a9252fd8a5c0acd0fa5b3affb680c7c4273281a1d4bfcef6e0dd684ee5c7010a2d5e989058dfb34b42aa8d092763831f507c71df3e267762025d24ac478657b33c31ca1c9bac187c1c45f43fac04196516374e327c13840a95e60f7452df0e36bb39a20d04542eb839e254a54054579a3650deddbc20c7c8d169c7574e2206f625943f65a5e752e26aa7b6288c15fe71e835367a4aab1165aa88a35e276b39debbecf8734cc1bd537202c8f0cde86bdc97a43fa2d845b242e45de5315e8156494764f92e61f7eafae9aaad0b1e9e331301a86bbdc90375239d06abc4f8e1b42745a502c6584c39be7b5b7425b15d430b7e36e2299ecfdd8efc6adf76eaf9aad0aa84cea4e148b8df68b0d6b84eecf8e201deabceb773a27b156073a65c12360ca48b3a397c78121a03ce16200d920ed6fa02d6707ea9cfbdf1d7a4b31dc0293e1efc3d827c5b7d575f5aae0e0c366fb5cd351b6f3938493a130be2c0ac140817100557ab7468760adb13df733005082f8f1caae32dbf1594ed36acad3969bdf9556958417e3a766284c51b09897138418cd00e1e045ea07bd652cc2a051f204a308b6a761e460a1c872f23651e33ff95144d61617453b41c8cf92bd24be0613265183d30499974d1183a30de232bb63b4c7aefa3a55009857297d60207bbc95bc3c058b9c1488941d2ba479014e32b951da84f1fb44a78a63677b19e02e11765a052e4b275694d0214febe2add1c9bbf8dcd8b5f1a9124563065e9bc4742a0facff73b91b90952a0e5227a09ed2fc00c69e0fbde2ec76dd352c0e87a686c98b251512820c3cace8a5caadc0e672e805e18d67ab1ae9af01f443559c702d6a1dd0acf2606cdbf1e7b546a3413be2831475c96db8039483ff1f4b9bfd2d25fb63cf12aed"
+    },
+    {
+      "key": "0x77f881ac2e63a699c91e7fbd904eebc41521be0915cf0836e6a4ce55606e2c14",
+      "creator": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "owner": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "createdAt": "0x1",
+      "expiresAt": "0x13c681",
+      "creationFlags": {
+        "readonly": false,
+        "permissionlessExtension": false,
+        "raw": 0
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xf7965a1ef507adaac2f2de321331e218fc3e76493677b33ea33bdd0e330f5b4c"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "s"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x1"
+        }
+      ],
+      "payload": "0x51010000000073052147e378216cd8afe56625b0a2cc2f9c284c5f5518760d4234445ecf0316a70813a88c239564b17df1413fa83ba039ebf1f1f2674645c9f22e4399003b8ea87af116fa0220aaba8391d88e66224412d4b3ef810ee43095d322a087fffca6b2adbd56f042ac7a88b5e61f46a49b863063189d0aca296557bde51d111674f5b433a1712b7020afbc1517bb63e80f0f252f7a6576308d4efbd57c4c567d47531f6c28db469a1214bfcbd713eb04f44ac9acdc70d7f13419b86c3a46eb32291f9a8b3ec227144d54b6b3a1e2ed89ac54f831b2bb819a6a1f149957eed59ca86bceffc95af115a8113d1fdaa886d3e1036fefa858fe7019b06259a6b2ce78bcd8261dd0bc1f5421c8bf990f7194486054fc928dce6cda84a64dd6d9ea"
+    },
+    {
+      "key": "0x458828dc1c705a9ef9dfcdb62d8a5709c51d76d9e2b1ec2d2f061062436a5410",
+      "creator": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "owner": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "createdAt": "0x1",
+      "expiresAt": "0x13c681",
+      "creationFlags": {
+        "readonly": false,
+        "permissionlessExtension": true,
+        "raw": 2
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xf7965a1ef507adaac2f2de321331e218fc3e76493677b33ea33bdd0e330f5b4c"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "a"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x3"
+        }
+      ],
+      "payload": "0x510100000000fe18697f8f56913931686ff3352902e33c5ad33897cbc3a43da081b03aa0cf1b0294817ecf5cf2360633e0ec9757fc44140047aae27260003d8f990f9f71f9e85c3fa8db8932f80c78b80c5319aaafac092caf2b96fc294b10368395939eed956919a0d1e3035d9e7d8e199fdd5973fc08aa8516066ad17ac83b4141df08283bfab5358173b9a8498381e614d478f2898b4066e7e50f27f07c29add8af8164e98e081c6620f7877bd30ff474d59af0a520c6ffef4072bb1e3d35974134b59cb90eee270f0e11a10e51f8fed7eefd57bd0772fcf72142c6f4872156815f1dad5a5af9c3abc40114da1b182cfad8f957071b0d61d67f255d2352b5d0308de6ebf14db189434f9b8bf67a8dc28fe487ed081544fffd355e84e01e20aa073768e063b3c4f1ffb013d8748d4049ad82768854e2456ce4345551739580bae017f12e205bce3101c2803fee46dcd78c70064f9a0416ccfc5891abb0199df507b69030c6e0cc55592fa165f0bc13664b46485c8184baff2022453777309defa543bc288894eceaddf2f349dc76717393d4ef6de6bb0bc209a199cfdb4db3bff9fa6f6f30e1d459c73b2ac00c1a5ba74e058088e1244eb953eec0f2f29b9478b4c0f5070e043cea406421bcb2c87b13ad8650fdab1dcdd44ec5fefaaff5ad105984a351f9d909b930bef756a6b51b1a316075e9ea94b7060424b95d2a485e20580b938ddfbff55991f78eae7745dd481cdebf0cbf11844796279fc02542ab310607f2a1532353f6ed74b84294539297a2c614fdcf948e56451347ebd68a25466e252e6cf55226ec6979b10f9928c3dd972d80dc50fdd46752687479598c457b77dfc32875fecc2a97984cfeb40969c03a6d022dd5d1e4201f50666f5f3713e42e42bec9ff36fc1c58f8aa5c4317436b2f6c38f95e786e5dc3b07dce618dbcb22c83b6cef461244fc4d9bf10fbe362c708de190c9847e12ccf44e91b142f3c55a0aa63f2754b232082e0a8d239289a5faade794f8056db962da0378072113d4929d5b4bd631a0df455e97dbf07e741f9f74e306abcc8dbc12e85127535e26e160c9c966ce1b9d1e136566ebd9c4c865ab6b138ea52a51414d200d3c48114cb723720a497996a017e1684914ce1f528e52be7645befe381f6d8999484520a3fdbd40ff3ad798905834a6d73d213ceef5ea5b768130a7adda3a4d72b66ba8fc677633af1cf9f23622b3a91bdbcb9d6f92f97860ad98740bdf57c60f139300edcaf704994254fdfdc3ee24d6864da55790691f4556ace335186f2e9be176479b61861429aed4b14b13325bad5137ae0b288245bee2c6dd41d3240cdaeb184eca55a00df435a6fb46b17efa9b3d4aa67c2302560181d6b89746635b6a93310bbc916083901ea8295c14237ad81d8dc8626b1f2fe3c39c2cf3511d376ab179b30d46059e5ce7aa4a87441ecb72a26c4dc5065d820fd5feb765fab53b5dfaa43d37a7dc9"
+    },
+    {
+      "key": "0x13f108e3a746e51f34eb9761ec01d80cddd244fe3dbf212890477d0bee338b3d",
+      "creator": "0x1563915e194d8cfba1943570603f7606a3115508",
+      "owner": "0x1563915e194d8cfba1943570603f7606a3115508",
+      "createdAt": "0x2",
+      "expiresAt": "0x70a",
+      "creationFlags": {
+        "readonly": false,
+        "permissionlessExtension": false,
+        "raw": 0
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xf7965a1ef507adaac2f2de321331e218fc3e76493677b33ea33bdd0e330f5b4c"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "j"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x2"
+        }
+      ],
+      "payload": "0x51010000000004ef2d7f751ac6a54176d0cba77d401c49543abc1c0581933cecd2be4493f0b907030fd47580e8d024467ba01e8c8e3e4defb944f11d1985c0d4b8865630b4d628b967e740b3875057ea40634ec68ad0909b784d069f09d831cddeed49d84940e979ff13c8971bbc048577cdb7b76f0213093cafe5da06aef2f983d9e2c28bb31a05c50e7e5dfd94960643da9f380ac03a9cfbf06d211854246f1f3e29ed97b13b520ad92b3d0fc6bceeebe81a5efa363d8aeaeec4cf525a8584d0bcf8dc5ba477afbba417282bf40a635b31df3ec5d2e8b51dd2199fe366a30d107406f2f207ecd89826d4f893aacc9b499a9e47339b6297bd4aa4780cd07313407e0a63f60e3613600fa561cc7f3bb6bd8b64cc2f26dc3f5bfd92d652d8ba1b781208477180390035cc10b71d0aa03c8daee60c6dbe6acecf47934c521ac1f78dd5b119dab5602f4693edfc2edf4d7fd52bcbd8ac9be48fd037f7d1cfeb5fa45e3138"
+    }
+  ],
+  "expected": {
+    "text": "Owner line."
+  }
+}

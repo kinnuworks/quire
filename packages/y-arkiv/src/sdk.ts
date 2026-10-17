@@ -231,14 +231,16 @@ function fromSdkEntity(e: Entity): StoredEntity | null {
   const qd = a.qd?.value
   const qk = a.qk?.value
   const qs = a.qs?.value
-  if (!e.key || !e.creator || !e.owner || typeof qd !== "string" || typeof qk !== "string" || !KINDS.has(qk)) return null
+  // exactly the four typed attributes (spec/schema/entity.json); a qs that is not a u64 makes the entity malformed
+  if (!e.key || !e.creator || !e.owner || a.qp?.value !== PROTOCOL_TAG || typeof qd !== "string" || typeof qk !== "string" || !KINDS.has(qk) || typeof qs !== "bigint") return null
+  if (Object.keys(a).some((k) => !["qp", "qd", "qk", "qs"].includes(k))) return null
   return {
     key: lower(e.key),
     creator: lower(e.creator),
     owner: lower(e.owner),
     createdAt: e.createdAt ?? 0n,
     expiresAt: e.expiresAt ?? 0n,
-    attributes: { doc: lower(qd), kind: qk as Kind, seq: typeof qs === "bigint" ? qs : 0n },
+    attributes: { doc: lower(qd), kind: qk as Kind, seq: qs },
     payload: e.payload ?? new Uint8Array(),
     readonly: !!e.creationFlags?.readonly,
     permissionlessExtension: !!e.creationFlags?.permissionlessExtension,
@@ -246,11 +248,15 @@ function fromSdkEntity(e: Entity): StoredEntity | null {
 }
 
 export function fromRpcEntity(e: RpcEntity): StoredEntity | null {
-  const attrs = new Map((e.attributes ?? []).map((a) => [a.name, a.value]))
-  const qd = attrs.get("qd")
-  const qk = attrs.get("qk")
-  const qs = attrs.get("qs")
-  if (typeof qd !== "string" || typeof qk !== "string" || !KINDS.has(qk)) return null
+  // exactly the four typed attributes (spec/schema/entity.json), or the entity is malformed
+  const list = e.attributes ?? []
+  const typed = (name: string, type: string) => list.find((a) => a.name === name && a.type === type)?.value
+  const qd = typed("qd", "bytes32")
+  const qk = typed("qk", "str")
+  const qs = typed("qs", "u64")
+  if (list.length !== 4 || typed("qp", "str") !== PROTOCOL_TAG) return null
+  if (typeof qd !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(qd) || typeof qk !== "string" || !KINDS.has(qk)) return null
+  if (typeof qs !== "string" || !/^(0x[0-9a-fA-F]{1,16}|[0-9]{1,20})$/.test(qs)) return null
   const flags = typeof e.creationFlags === "number" ? { readonly: !!(e.creationFlags & 1), permissionlessExtension: !!(e.creationFlags & 2) } : (e.creationFlags ?? {})
   return {
     key: lower(e.key),
@@ -258,7 +264,7 @@ export function fromRpcEntity(e: RpcEntity): StoredEntity | null {
     owner: lower(e.owner),
     createdAt: BigInt(e.createdAt),
     expiresAt: BigInt(e.expiresAt),
-    attributes: { doc: lower(qd), kind: qk as Kind, seq: typeof qs === "string" ? BigInt(qs) : 0n },
+    attributes: { doc: lower(qd), kind: qk as Kind, seq: BigInt(qs) },
     payload: e.payload ? hexToBytes(e.payload) : new Uint8Array(),
     readonly: !!flags.readonly,
     permissionlessExtension: !!flags.permissionlessExtension,

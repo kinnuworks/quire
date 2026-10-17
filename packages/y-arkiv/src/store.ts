@@ -75,8 +75,8 @@ export interface ArkivStore {
   batch(spec: BatchSpec): Promise<BatchResult>
   predictKeys(count: number): Promise<{ key: Hex; salt: bigint }[]>
   query(spec: QuerySpec): Promise<QueryPage>
-  /** One entity by key, or null if it is gone. Uses the cheapest read the network offers. */
-  get(key: Hex): Promise<StoredEntity | null>
+  /** One entity by key, or null if it is gone (at `block`, if given). Uses the cheapest read the network offers. */
+  get(key: Hex, block?: bigint): Promise<StoredEntity | null>
   /** Live events. Must push (no polling loop) where the transport allows it. */
   watch(onEvent: (event: ChainEvent) => void, onError?: (error: Error) => void): () => void
 }

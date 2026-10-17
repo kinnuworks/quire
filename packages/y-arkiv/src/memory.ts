@@ -167,9 +167,9 @@ export class MemoryChain {
     return { entities: page, cursor: next, block: at }
   }
 
-  get(key: Hex): StoredEntity | null {
+  get(key: Hex, block?: bigint): StoredEntity | null {
     this.stats.gets++
-    return this.live(key, this.block)
+    return this.live(key, block ?? this.block)
   }
 
   watch(listener: (e: ChainEvent) => void): () => void {
@@ -195,7 +195,7 @@ export class MemoryChain {
         })
       },
       query: async (spec) => chain.query(spec),
-      get: async (key) => chain.get(key),
+      get: async (key, block) => chain.get(key, block),
       watch: (onEvent) => chain.watch(onEvent),
     }
   }

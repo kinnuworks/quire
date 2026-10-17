@@ -47,7 +47,12 @@ function arkivFetch(accessKey: string | undefined): typeof fetch {
     const headers = new Headers(init?.headers)
     if (accessKey) headers.set("x-api-key", accessKey)
     const res = await fetch(input, { ...init, headers })
-    if (res.status === 429) throw new QueryBudgetError(Number(res.headers.get("retry-after") ?? "60"))
+    if (res.status === 429) {
+      // Retry-After may be seconds or an HTTP date
+      const raw = res.headers.get("retry-after") ?? "60"
+      const seconds = /^\d+$/.test(raw) ? Number(raw) : Math.max(1, Math.round((Date.parse(raw) - Date.now()) / 1000)) || 60
+      throw new QueryBudgetError(seconds)
+    }
     return res
   }
 }
@@ -87,7 +92,7 @@ export class SdkStore implements ArkivStore {
 
   constructor(options: SdkStoreOptions = {}) {
     const chain = options.chain ?? tiramisu
-    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey), retryCount: 0 })
+    const transport = () => http(options.httpUrl ?? TIRAMISU_HTTP, { fetchFn: arkivFetch(options.accessKey), retryCount: 2 })
     this.reader = createPublicClient({ chain, transport: transport() }) as PublicArkivClient<Transport, Chain>
     this.socket = createPublicClient({
       chain,
@@ -127,12 +132,14 @@ export class SdkStore implements ArkivStore {
       deletes: spec.deletes?.map((k) => ({ entityKey: k })),
       ownershipChanges: spec.ownershipChanges?.map((o) => ({ entityKey: o.key, newOwner: o.newOwner })),
     })
-    const receipt = await this.reader.getTransactionReceipt({ hash: result.txHash })
-    return {
-      txHash: result.txHash,
-      created: result.createdEntities.map((k) => k.toLowerCase() as Hex),
-      block: receipt.blockNumber,
+    // executeBatch already waited for the receipt; a failure to fetch it again must not turn a landed write into an error
+    let block: bigint
+    try {
+      block = (await this.reader.getTransactionReceipt({ hash: result.txHash })).blockNumber
+    } catch {
+      block = await this.reader.getBlockNumber()
     }
+    return { txHash: result.txHash, created: result.createdEntities.map((k) => k.toLowerCase() as Hex), block }
   }
 
   async query(spec: QuerySpec): Promise<QueryPage> {
@@ -151,9 +158,10 @@ export class SdkStore implements ArkivStore {
     return { entities, cursor: page.cursor, block: page.blockNumber }
   }
 
-  async get(key: Hex): Promise<StoredEntity | null> {
+  async get(key: Hex, block?: bigint): Promise<StoredEntity | null> {
     this.calls.getEntity++
-    const raw = (await this.reader.request({ method: "arkiv_getEntity", params: [key] } as never)) as RpcEntity | null
+    const params = block === undefined ? [key] : [key, Number(block)]
+    const raw = (await this.reader.request({ method: "arkiv_getEntity", params } as never)) as RpcEntity | null
     return raw ? fromRpcEntity(raw) : null
   }
 

@@ -133,6 +133,8 @@ export class ArkivProvider extends Observable<string> {
   snapshot: { key: Hex; base: bigint; expiresAt: bigint; chunks: Hex[]; creator: Hex } | null = null
   /** Expiry block of the ACL entity. */
   aclExpiresAt: bigint | null = null
+  /** `qs` of the ACL version we applied: a patch always writes a newer one. */
+  private aclSeq: bigint | null = null
 
   private readonly metaKey: Uint8Array
   private readonly epochKeys = new Map<number, Uint8Array>()
@@ -301,7 +303,7 @@ export class ArkivProvider extends Observable<string> {
     // housekeeping never fails the connection: a lost race with another member is fine
     this.renewLeaseIfDue().catch((e) => this.emit("error", [e]))
     if (this.resyncInterval > 0) {
-      this.resyncTimer = setInterval(() => void this.resync().catch((e) => this.emit("error", [e])), this.resyncInterval)
+      this.resyncTimer = setInterval(() => void this.resync({ joins: true }).catch((e) => this.emit("error", [e])), this.resyncInterval)
     }
   }
 
@@ -312,10 +314,17 @@ export class ArkivProvider extends Observable<string> {
 
   private async loadAcl(): Promise<void> {
     this.stats.queries++
-    const page = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], limit: 5 })
-    const entity = page.entities[0]
-    if (!entity) throw new Error("document not found: no ACL from the owner in the link")
-    await this.applyAclEntity(entity)
+    const page = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], limit: 20 })
+    // the first entity that is really the owner's ACL; an RPC that ignores the creator filter cannot slip in another
+    for (const entity of page.entities) {
+      try {
+        await this.applyAclEntity(entity)
+      } catch {
+        continue
+      }
+      if (this.aclKey === entity.key) return
+    }
+    throw new Error("document not found: no ACL from the owner in the link")
   }
 
   private async applyAclEntity(entity: StoredEntity): Promise<void> {
@@ -339,6 +348,7 @@ export class ArkivProvider extends Observable<string> {
     const acl = await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc)
     this.acl = acl
     this.aclKey = entity.key
+    this.aclSeq = entity.attributes.seq
     this.aclExpiresAt = entity.expiresAt
     this.joinRequests = this.joinRequests.filter((j) => !isMember(acl, j.address))
     this.emit("acl", [acl])
@@ -353,14 +363,21 @@ export class ArkivProvider extends Observable<string> {
     // order by the writer's block height (qs), newest first; Arkiv does not promise any order.
     // Apply every snapshot close to the newest base, which covers concurrent compactions.
     const ordered = [...snaps.entities].sort((x, y) => (x.attributes.seq === y.attributes.seq ? 0 : x.attributes.seq > y.attributes.seq ? -1 : 1))
-    let newestBase = -1n
+    // Apply the newest readable snapshot of EACH member, not just the newest overall: one member's
+    // (possibly empty or stale) snapshot must not hide what another member's snapshot holds.
+    // Updates are read from the oldest of those bases, so nothing between them is skipped.
     const states: Uint8Array[] = []
+    const covered = new Set<string>()
+    let oldestBase: bigint | null = null
     for (const s of ordered) {
+      const creator = s.creator.toLowerCase()
+      if (covered.has(creator)) continue
       const applied = await this.applySnapshotEntity(s, states)
-      if (applied !== null && applied > newestBase) newestBase = applied
-      if (newestBase >= 0n && applied !== null && applied < newestBase - CATCH_UP_MARGIN_BLOCKS) break
+      if (applied === null) continue
+      covered.add(creator)
+      if (oldestBase === null || applied < oldestBase) oldestBase = applied
     }
-    const from = newestBase > CATCH_UP_MARGIN_BLOCKS ? newestBase - CATCH_UP_MARGIN_BLOCKS : 0n
+    const from = oldestBase !== null && oldestBase > CATCH_UP_MARGIN_BLOCKS ? oldestBase - CATCH_UP_MARGIN_BLOCKS : 0n
     this.stats.queries++
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: writers, seqGte: from })
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
@@ -385,10 +402,14 @@ export class ArkivProvider extends Observable<string> {
     this.updatesSinceSnapshot = updates.entities.length
   }
 
+  /**
+   * One page of join requests (up to 200). The document id is public, so anyone can write junk
+   * `j` entities; following every page would let them drain the owner's query budget.
+   */
   private async loadJoinRequests(): Promise<void> {
     this.stats.queries++
-    const all = await queryAll(this.store, { doc: this.link.doc, kind: KIND.join })
-    for (const e of all.entities) await this.applyJoinEntity(e)
+    const page = await this.store.query({ doc: this.link.doc, kind: KIND.join, limit: 200 })
+    for (const e of page.entities) await this.applyJoinEntity(e)
   }
 
   private enqueue(fn: () => Promise<void>): void {
@@ -451,7 +472,18 @@ export class ArkivProvider extends Observable<string> {
       return
     }
     if (entity.attributes.kind === KIND.update) await this.applyUpdateEntity(entity, true)
-    else if (entity.attributes.kind === KIND.snapshot) await this.applySnapshotEntity(entity)
+    else if (entity.attributes.kind === KIND.snapshot) {
+      // a live snapshot gets the same check as on load: it must not change text any verified edit wrote
+      const states: Uint8Array[] = []
+      await this.applySnapshotEntity(entity, states)
+      for (const st of states) {
+        const trial = new Y.Doc()
+        Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
+        Y.applyUpdate(trial, st)
+        if (overridesVerified(trial, this.history.map((h) => h.update))) this.reject()
+        else this.applyRemote(st)
+      }
+    }
   }
 
   /** Clock ranges per client id that arrived in verified live updates: the only text we call proven. */
@@ -573,8 +605,18 @@ export class ArkivProvider extends Observable<string> {
     // the edit's client id must derive from its creator's address with a salt the creator signed
     if (!(await this.checkAuthors(frame.data, entity.creator, frame.header.salt, frame.header.sig))) return this.reject()
     const meta = Y.parseUpdateMeta(frame.data)
+    const svBefore = Y.decodeStateVector(Y.encodeStateVector(this.doc))
     this.applyRemote(frame.data)
-    this.markProven(meta)
+    if (overridesVerified(this.doc, [frame.data])) {
+      // a snapshot already put different text at this edit's clocks: this session has diverged from
+      // the chain's genuine edits. Nothing here is proven; a fresh load (updates before snapshots) heals it.
+      this.emit("diverged", [entity.key])
+    } else {
+      // proven: only clocks this update actually integrated, not ones a snapshot had already filled
+      const fresh = { from: new Map<number, number>(), to: meta.to }
+      for (const [c, from] of meta.from) fresh.from.set(c, Math.max(from, svBefore.get(c) ?? 0))
+      this.markProven(fresh)
+    }
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.stats.updatesApplied++
     this.updatesSinceSnapshot++
@@ -790,28 +832,31 @@ export class ArkivProvider extends Observable<string> {
       this.assertWriter()
       const updates = this.pending
       this.pending = []
+      try {
+        return await this.flushUpdates(updates)
+      } catch (e) {
+        // nothing landed: put the edits back in front of anything typed meanwhile
+        this.pending = [...updates, ...this.pending]
+        throw e
+      }
+    })
+  }
+
+  private async flushUpdates(updates: Uint8Array[]): Promise<FlushInfo | null> {
+    {
       const merged = Y.mergeUpdates(updates)
       if (merged.length > MAX_CHUNK_PLAINTEXT - 256) {
-        // too big for one update: fold everything into a snapshot instead. writeSnapshot holds
-        // pending aside and restores it if the write fails, so put the edits back first.
-        this.pending = updates
+        // too big for one update: fold everything into a snapshot instead (the state already holds these edits)
         return this.writeSnapshot()
       }
       const { epoch, key } = this.currentContentKey()
       const head = await this.store.head()
       const header = { t: this.now(), salt: bytesToHex(this.salt), sig: this.saltSig }
       const payload = encodeOuter(epoch, await seal(key, encodeFrame({ kind: KIND.update, doc: hexToBytes(this.link.doc), epoch, header, data: merged }, randomBytes)))
-      let result
-      try {
-        result = await this.store.batch({
-          // an edit lives as long as a snapshot would: it must never expire before one covers it
-          creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: this.snapshotLifetime(head) }],
-        })
-      } catch (e) {
-        // keep the edits: they go out with the next flush
-        this.pending.unshift(merged)
-        throw e
-      }
+      const result = await this.store.batch({
+        // an edit lives as long as a snapshot would: it must never expire before one covers it
+        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: this.snapshotLifetime(head) }],
+      })
       this.stats.writes++
       const entity = result.created[0]!
       this.seen.add(entity)
@@ -831,7 +876,7 @@ export class ArkivProvider extends Observable<string> {
         void this.compact().catch((e) => this.emit("error", [e]))
       }
       return info
-    })
+    }
   }
 
   /**
@@ -848,16 +893,27 @@ export class ArkivProvider extends Observable<string> {
    * contain all updates older than its own base (minus the in-flight margin),
    * or a late joiner would never see an edit this session missed live.
    */
-  async resync(): Promise<number> {
-    if (!this.acl || this.acl.rosterHidden) return 0
+  async resync(options: { joins?: boolean } = {}): Promise<number> {
+    if (!this.acl) return 0
+    // a member-list change missed during a socket gap: re-read the ACL by key (not billed as a query)
+    if (this.aclKey) {
+      const acl = await this.fetch(this.aclKey)
+      if (acl && (acl.attributes.seq !== this.aclSeq || this.acl.rosterHidden)) {
+        const before = this.acl.epoch
+        await this.applyAclEntity(acl)
+        if (this.acl.epoch !== before) await this.loadState()
+      }
+    }
+    if (this.acl.rosterHidden) return 0
     const base = this.snapshot?.base ?? 0n
     const from = base > CATCH_UP_MARGIN_BLOCKS ? base - CATCH_UP_MARGIN_BLOCKS : 0n
     this.stats.queries++
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: memberAddresses(this.acl), seqGte: from })
     const before = this.stats.updatesApplied
-    for (const u of [...updates.entities].reverse()) await this.applyUpdateEntity(u, false)
-    // a join request missed live (socket gap, stranger-fetch cap) is picked up here
-    if (this.role === "owner") await this.loadJoinRequests()
+    const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+    for (const u of byAge) await this.applyUpdateEntity(u, false)
+    // a join request missed live (socket gap, stranger-fetch cap) is picked up on the periodic resync
+    if (options.joins && this.role === "owner") await this.loadJoinRequests()
     return this.stats.updatesApplied - before
   }
 
@@ -1071,6 +1127,8 @@ export class ArkivProvider extends Observable<string> {
         await this.store.batch(patch)
         this.stats.writes++
       } else {
+        // PROTOCOL section 6: re-read recent updates so the new-epoch snapshot holds every edit
+        await this.resync()
         // the new member list and a snapshot under the new key land in the same transaction
         const lifetime = this.snapshotLifetime(head)
         const w = await writeSnapshotEntities(this.store, this.link.doc, snapshot.epoch, snapshot.key, Y.encodeStateAsUpdate(this.doc), head, this.now(), KIND.snapshot, this.authorTable(Y.encodeStateAsUpdate(this.doc)), lifetime, patch)
@@ -1161,6 +1219,8 @@ export class ArkivProvider extends Observable<string> {
   /** client id to address, proven entries first. Stored in snapshot headers. */
   private authorTable(state?: Uint8Array): Record<string, { address: Hex; salt: string; sig: Hex }> {
     const out: Record<string, { address: Hex; salt: string; sig: Hex }> = {}
+    // at most this many entries (about 250 bytes each), so the head always fits under the 100,000 byte limit
+    const cap = 240
     // only client ids that still have structs in the state: the table does not grow with every session
     const present = state ? new Set(Y.parseUpdateMeta(state).from.keys()) : null
     for (const [c, a] of [...this.claimedAuthors, ...this.authors]) {
@@ -1169,6 +1229,13 @@ export class ArkivProvider extends Observable<string> {
       const sig = this.sigs.get(c)
       if (salt && sig) out[String(c)] = { address: a, salt, sig }
     }
+    // keep the client ids that hold the most text when there are too many to carry
+    const keys = Object.keys(out)
+    if (keys.length <= cap || !state) return out
+    const sizes = Y.parseUpdateMeta(state)
+    const weight = (c: string) => (sizes.to.get(Number(c)) ?? 0) - (sizes.from.get(Number(c)) ?? 0)
+    const keep = new Set(keys.sort((x, y) => weight(y) - weight(x)).slice(0, cap))
+    for (const k of keys) if (!keep.has(k)) delete out[k]
     return out
   }
 
@@ -1261,7 +1328,7 @@ export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, id
     query: (spec) => store.query({ ...spec, atBlock: spec.atBlock ?? block }),
     watch: () => () => undefined,
     head: async () => block,
-    get: (key) => store.get(key),
+    get: (key, b) => store.get(key, b ?? block),
     batch: () => Promise.reject(new Error("read-only")),
     predictKeys: () => Promise.reject(new Error("read-only")),
   }

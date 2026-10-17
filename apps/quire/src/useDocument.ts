@@ -44,16 +44,16 @@ export type DocumentSession = {
 let nextId = 1
 
 export function useDocument(link: DocLink | null, identity: Identity | undefined): DocumentSession {
+  // bumping this reconnects with a fresh doc: after a budget wait, or to heal a divergence
+  const [attempt, setAttempt] = useState(0)
   // the client id is derived from our address before the editor binds to the doc
   const { doc, salt } = useMemo(() => {
     const d = new Y.Doc()
     return { doc: d, salt: identity ? prepareDoc(d, identity.address) : undefined }
-  }, [link?.doc, identity?.address])
+  }, [link?.doc, identity?.address, attempt])
   const [provider, setProvider] = useState<ArkivProvider | null>(null)
   const [store, setStore] = useState<SdkStore | null>(null)
   const [error, setError] = useState<SessionError | null>(null)
-  // bumping this reconnects, after a budget wait for example
-  const [attempt, setAttempt] = useState(0)
   const [tick, bump] = useReducer((n: number) => n + 1, 0)
   const activity = useRef<Activity[]>([])
   const latencies = useRef<number[]>([])
@@ -81,6 +81,12 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       else bump()
     })
     p.on("lease", () => bump())
+    // a snapshot clashed with a genuine edit: rebuild this session from the chain, where the
+    // updates-first load and the override check settle it in the genuine edit's favour
+    p.on("diverged", () => {
+      log({ kind: "rejected", text: "A snapshot conflicted with a checked edit; reloading from Arkiv" })
+      void p.close().catch(() => undefined).finally(() => setAttempt((n) => n + 1))
+    })
     p.on("history", () => bump())
     p.on("status", () => bump())
     p.on("error", (e: Error) => {

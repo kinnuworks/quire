@@ -10,7 +10,12 @@
       "Bea": "0xe03ca1f7480b05da8928270fc5a79413025ef6be",
       "Ravi": "0xba964589a3bd9363c102dc9eabdd8863a90f109d"
     },
-    "revoked": []
+    "revoked": [],
+    "forgery": {
+      "by": "0x42885193a50ab941ea8ea6fd180397c46a59041d",
+      "entity": "0xddf75be1f359945ed49ce996fe2aa4309b1b9653c589a4f9b4c777830b4d4715",
+      "tx": "0xde278f79a973f7f25ea0740f10a91fb162e77a1cfcb12c2138c993c15b0373db"
+    }
   },
   "revoked": {
     "link": "#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada",

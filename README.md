@@ -71,14 +71,16 @@ pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '<document link>'
 python3 readers/python/quire_audit.py --doc <0x document id>
 ```
 
-The Python reader was written from PROTOCOL.md and the test vectors alone, without reading the TypeScript. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`). The audit needs only the standard library.
+The Python reader was written from PROTOCOL.md and the test vectors alone, without reading the TypeScript. It has 92 tests of its own, including every attack below.
+
+The TypeScript suite has 76 tests, including a property-based convergence check and attacks from three rounds of adversarial review. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 25 security rules in turn and shows that a test fails every time. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`). The audit needs only the standard library.
 
 ## How it uses Arkiv
 
 | Arkiv feature | What Quire does with it | Where you see it |
 |---|---|---|
 | Typed attributes vs payload | Four attributes (`qp`, `qd`, `qk`, and `qs` as `u64`); everything else is encrypted payload | Explorer tab |
-| Queries | Compound predicates, a `u64` range on `qs`, `$creator` OR filters, cursor pages pinned with `atBlock` | Opening a document: three queries in the Live tab counter |
+| Queries | Compound predicates, a `u64` range on `qs`, `$creator` OR filters, cursor pages pinned with `atBlock` | Opening a document: three queries in the Live tab counter (the owner pays one more, for join requests) |
 | `$creator` | The member list is found by the owner's address. Edits are applied only from members, and only if their client id is `clientIdFor($creator, salt)` with a salt the creator signed | People tab: "Ignored writes" |
 | Entity Expiration | Edits and snapshots live 30 days (or until the owner's chosen date), join requests 1 hour, versions 1 year | Lifetime tab |
 | Lifetime Extension | The newest snapshot is a lease. A member renews it by extending their own snapshot or writing a fresh one, and only when the new expiry is later | Lifetime tab countdown |

@@ -1751,6 +1751,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--own-salt", help="your writing session's salt (32 hex): refuse snapshots that write"
                     " under your own client id beyond your verified updates; needs --member-key")
     ap.add_argument("--verify", action="store_true", help="print a trust report instead of the text")
+    ap.add_argument("--json", action="store_true", help="print the verdict as JSON (text, applied, ignored), for comparing readers")
     ap.add_argument("--no-schema", action="store_true", help="skip JSON Schema checks")
     ap.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -1774,8 +1775,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0
         link = parse_link(args.link or data.get("link") or "")
         key = load_private_key(args.member_key) if args.member_key else None
-        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt, scan_outsiders=args.verify or isinstance(source, VectorSource))
+        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt, scan_outsiders=args.verify or args.json or isinstance(source, VectorSource))
         result = reader.read()
+        if args.json:
+            print(json.dumps({
+                "text": result.text,
+                "applied": sorted(result.applied),
+                "ignored": sorted([k, r] for k, r in result.ignored),
+            }, indent=2))
+            return 0
         if args.verify:
             print(trust_report(reader, result))
             return 0

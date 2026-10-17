@@ -15,6 +15,7 @@ import argparse
 import json
 import re
 import sys
+import os
 import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
@@ -203,7 +204,12 @@ def rpc_call(url: str, method: str, params: list[Any]) -> Any:
         url,
         data=body,
         # Some gateways reject the default Python-urllib user agent.
-        headers={"content-type": "application/json", "user-agent": "quire-reader-python/1"},
+        headers={
+            "content-type": "application/json",
+            "user-agent": "quire-reader-python/1",
+            # optional: an Arkiv access key raises the public endpoint's query budget
+            **({"x-api-key": os.environ["ARKIV_ACCESS_KEY"]} if os.environ.get("ARKIV_ACCESS_KEY") else {}),
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

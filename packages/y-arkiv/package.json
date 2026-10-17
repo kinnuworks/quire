@@ -24,6 +24,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "vectors": "tsx scripts/vectors.ts",
+    "compare-readers": "tsx scripts/compare-readers.ts",
     "test:live": "LIVE=1 vitest run test/live.test.ts"
   },
   "dependencies": {

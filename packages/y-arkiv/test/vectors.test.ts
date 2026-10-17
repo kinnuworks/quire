@@ -10,32 +10,12 @@ import * as Y from "yjs"
 import { parseDocLink } from "../src/link.js"
 import { ArkivProvider } from "../src/provider.js"
 import { fromRpcEntity, type RpcEntity } from "../src/sdk.js"
-import type { ArkivStore, Hex, StoredEntity } from "../src/store.js"
+import type { Hex, StoredEntity } from "../src/store.js"
+import { vectorStore } from "../src/vectors.js"
 
 const VEC = JSON.parse(readFileSync(new URL("../../../spec/vectors/document.json", import.meta.url), "utf8"))
 const entities = (VEC.entities as RpcEntity[]).map(fromRpcEntity).filter((e): e is StoredEntity => e !== null)
-
-/** The vector file as a read-only chain frozen at its head block. */
-const store: ArkivStore = {
-  address: undefined,
-  head: async () => BigInt(VEC.head),
-  batch: async () => {
-    throw new Error("the vectors are read-only")
-  },
-  predictKeys: async () => [],
-  query: async (spec) => ({
-    entities: entities.filter(
-      (e) =>
-        e.attributes.doc === spec.doc &&
-        (!spec.kind || e.attributes.kind === spec.kind) &&
-        (spec.seqGte === undefined || e.attributes.seq >= spec.seqGte) &&
-        (!spec.creators || spec.creators.some((c) => c.toLowerCase() === e.creator)),
-    ),
-    block: BigInt(VEC.head),
-  }),
-  get: async (key) => entities.find((e) => e.key === key.toLowerCase()) ?? null,
-  watch: () => () => undefined,
-}
+const store = vectorStore(VEC)
 
 const text = (d: Y.Doc) =>
   d

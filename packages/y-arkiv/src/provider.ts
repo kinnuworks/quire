@@ -158,6 +158,8 @@ export class ArkivProvider extends Observable<string> {
   private readonly sigs = new Map<number, Hex>()
   /** For text attributed only through a snapshot: who wrote that snapshot. */
   private readonly claimedVia = new Map<number, Hex>()
+  /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
+  readonly appliedKeys = new Set<Hex>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
   private readonly refusedSnapshots = new Set<Hex>()
   /** Our signature over (document, salt): proof that this client id is ours, for later snapshots to carry. */
@@ -368,6 +370,7 @@ export class ArkivProvider extends Observable<string> {
     const acl = await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc)
     this.acl = acl
     this.aclKey = entity.key
+    this.appliedKeys.add(entity.key)
     this.aclSeq = entity.attributes.seq
     this.aclExpiresAt = entity.expiresAt
     this.joinRequests = this.joinRequests.filter((j) => !isMember(acl, j.address))
@@ -669,6 +672,7 @@ export class ArkivProvider extends Observable<string> {
       this.markProven(ranges, entity.createdAt, entity.key)
     }
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
+    this.appliedKeys.add(entity.key)
     this.stats.updatesApplied++
     this.updatesSinceSnapshot++
     this.bytesSinceSnapshot += frame.data.length
@@ -779,6 +783,7 @@ export class ArkivProvider extends Observable<string> {
    */
   private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[], trimHistory: boolean): void {
     this.registerClaims(entity, claims)
+    this.appliedKeys.add(entity.key)
     this.stats.snapshotsApplied++
     if (!this.snapshot || base >= this.snapshot.base) {
       this.baseState = state
@@ -1144,6 +1149,34 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /**
+   * Any member: keeps the proof of what you wrote for `seconds` (up to three years). Your edits are
+   * entities only you can extend, and readers prove authorship from them, so this extends every one
+   * of yours still on chain, plus the member list they are checked against (anyone may extend that).
+   * Only extensions that move expiry later are sent: Arkiv reverts the others. Snapshots are not
+   * touched, so this keeps proof, not a readable copy beyond the document's own lease.
+   */
+  async keepMyProof(seconds: number): Promise<{ extended: number; until: bigint }> {
+    if (!this.identity || !this.acl || !this.aclKey) throw new Error("open the document with your key first")
+    const me = this.identity.address.toLowerCase()
+    const seconds_ = Math.min(seconds, 3 * 365 * 86400)
+    return this.serial(async () => {
+      const head = await this.store.head()
+      const until = head + blocks(seconds_)
+      this.stats.queries++
+      const mine = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: [me as Hex] })
+      const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me && e.expiresAt < until).map((e) => e.key)
+      if (this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
+      // extensions carry no payload; a hundred per transaction keeps each one small
+      for (let i = 0; i < keys.length; i += 100) {
+        await this.store.batch({ extensions: keys.slice(i, i + 100).map((key) => ({ key, lifetimeSeconds: seconds_ })) })
+        this.stats.writes++
+      }
+      if (keys.includes(this.aclKey!)) this.aclExpiresAt = until
+      return { extended: keys.length, until }
+    })
+  }
+
+  /**
    * Owner: ends the document now. Deletes the member list and every entity the
    * owner created, in one batch. Without the member list no reader can verify
    * any edit, so the document stops opening immediately; members' remaining
@@ -1300,11 +1333,16 @@ export class ArkivProvider extends Observable<string> {
    * query without the creator filter: what the normal reads never even fetch.
    */
   async scanOutsiders(): Promise<Hex[]> {
+    return (await this.outsiderEntities()).map((e) => e.creator.toLowerCase() as Hex)
+  }
+
+  /** The entities behind scanOutsiders(), for tools that need their keys. */
+  async outsiderEntities(): Promise<StoredEntity[]> {
     if (!this.acl || this.acl.rosterHidden) return []
     this.stats.queries++
     const all = await queryAll(this.store, { doc: this.link.doc })
     const members = new Set(memberAddresses(this.acl))
-    return all.entities.filter((e) => e.attributes.kind !== KIND.join && !members.has(e.creator.toLowerCase() as Hex)).map((e) => e.creator.toLowerCase() as Hex)
+    return all.entities.filter((e) => e.attributes.kind !== KIND.join && !members.has(e.creator.toLowerCase() as Hex) && !(e.attributes.kind === KIND.acl && e.creator.toLowerCase() === this.link.owner.toLowerCase()))
   }
 
   /**

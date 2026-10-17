@@ -291,3 +291,31 @@ describe("revocation with a dropped socket", () => {
     expect(cal.doc.getText("t").toString()).not.toContain("after Cal left")
   })
 })
+
+describe("keep my proof", () => {
+  it("a writer's edits outlive the 30-day lease, so blame still proves them after it", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "my own words")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await a.provider.compact()
+    await settle(chain, [a, bea])
+    const r = await bea.provider.keepMyProof(365 * 86400)
+    expect(r.extended).toBe(2) // Bea's one edit and the member list
+    // asking again at once has nothing to move later, so it sends nothing (Arkiv would revert it)
+    expect((await bea.provider.keepMyProof(365 * 86400)).extended).toBe(0)
+    // 40 days pass with nobody opening the document: the snapshots lapse, Bea's edit and the list do not
+    chain.mine((40 * 86400) / 2)
+    const doc = new Y.Doc()
+    const p = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
+    await p.connect()
+    const runs = blame(doc, p).flat()
+    expect(runs.find((x) => x.text.includes("my own words"))).toMatchObject({ proven: true, address: bea.id!.address })
+    a.provider.destroy()
+    bea.provider.destroy()
+  })
+})

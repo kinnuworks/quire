@@ -573,6 +573,34 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
           </button>
         </section>
       )}
+      {writer && (
+        <section>
+          <h4>Keep proof of what I wrote</h4>
+          <p className="muted small">
+            Readers prove who wrote what from each person's edits, which expire with the document's 30-day lease. This extends every edit your key wrote here, and the member list they are checked against, so <code>y-arkiv blame</code> can still prove your text later. It keeps proof, not a readable copy: snapshots still lapse on their own.
+          </p>
+          <div className="row">
+            {[
+              { label: "1 year", s: 365 * 86400 },
+              { label: "3 years", s: 3 * 365 * 86400 },
+            ].map((k) => (
+              <button
+                key={k.s}
+                className="btn btn-outline"
+                disabled={!!busy}
+                onClick={() =>
+                  run("extending your edits", async () => {
+                    const r = await p.keepMyProof(k.s)
+                    return r.extended ? `Extended ${r.extended} entities until block ${r.until}, about ${k.label} from now.` : `Everything of yours already lives at least ${k.label}.`
+                  })
+                }
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       {p.identity && (
         <section>
           <h4>Shred my edit history</h4>

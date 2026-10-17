@@ -17,7 +17,7 @@ A document is a set of Arkiv entities that share a random 32-byte document id. T
 | join request | `j` | anyone with the link | asks the owner to add a public key | 1 hour | none |
 | version | `v` | any member | frozen copy with its own key | 1 year | readonly, permissionless extension |
 
-Versions and their chunks are readonly with permissionless extension. The ACL has permissionless extension, so it can be kept alive by anyone, in practice any member's session while the owner is away. It holds no text, so extending it keeps nothing readable alive. Every other entity (updates, snapshots and their chunks, join requests) carries no flags and can be extended only by its own creator, so nobody outside the member list can keep a document's content alive.
+Versions and their chunks are readonly with permissionless extension. The ACL has permissionless extension, so it can be kept alive by anyone, in practice any member's session while the owner is away. It holds member names and public keys but no text, so extending it keeps nothing readable alive, and the owner can still delete it. Every other entity (updates, snapshots and their chunks, join requests) carries no flags and can be extended only by its own creator, so nobody outside the member list can keep a document's content alive.
 
 The link a person shares carries three values in the URL fragment: the document id, a 32-byte link secret, and the owner's address. The fragment is never sent to any server.
 

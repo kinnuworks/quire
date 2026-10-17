@@ -1,3 +1,4 @@
+export { blame, type BlameRun } from "./blame.js"
 export { ArkivProvider, extendVersion, loadAt, overridesVerified, prepareDoc } from "./provider.js"
 export type {
   Authorship,

@@ -83,6 +83,9 @@ export type ProviderStats = {
   rejectedWrites: number
 }
 
+/** A snapshot that decoded and passed its own checks, waiting on the verified-clock check before it counts. */
+type PendingSnapshot = { state: Uint8Array; commit: () => void }
+
 export type ProviderOptions = {
   store: ArkivStore
   link: DocLink
@@ -91,6 +94,11 @@ export type ProviderOptions = {
   flushIntervalMs?: number
   /** Compact automatically once enough updates pile up, and after typing stops. Default true. */
   autoCompact?: boolean
+  /**
+   * Read every live update when opening, not only those after the newest snapshot. Costs the same
+   * one query plus more pages; every edit still on chain then counts as proven. For audits.
+   */
+  fullHistory?: boolean
   /** Re-read recent updates this often, to cover a dropped socket. 0 disables. Default 15 minutes. */
   resyncIntervalMs?: number
   /** Compact this long after the last flush if anything is uncovered. Default 2 minutes. */
@@ -171,6 +179,7 @@ export class ArkivProvider extends Observable<string> {
   private deferred = new Map<Hex, StoredEntity>()
   private readonly now: () => number
   private readonly autoCompact: boolean
+  private readonly fullHistory: boolean
   private readonly onDocUpdate: (update: Uint8Array, origin: unknown) => void
 
   constructor(doc: Y.Doc, options: ProviderOptions) {
@@ -181,6 +190,7 @@ export class ArkivProvider extends Observable<string> {
     this.identity = options.identity
     this.now = options.now ?? Date.now
     this.autoCompact = options.autoCompact ?? true
+    this.fullHistory = options.fullHistory ?? false
     // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
     this.resyncInterval = options.resyncIntervalMs ?? 15 * 60_000
     this.idleCompactMs = options.idleCompactMs ?? 120_000
@@ -366,7 +376,7 @@ export class ArkivProvider extends Observable<string> {
     // Apply the newest readable snapshot of EACH member, not just the newest overall: one member's
     // (possibly empty or stale) snapshot must not hide what another member's snapshot holds.
     // Updates are read from the oldest of those bases, so nothing between them is skipped.
-    const states: Uint8Array[] = []
+    const states: PendingSnapshot[] = []
     const covered = new Set<string>()
     let oldestBase: bigint | null = null
     for (const s of ordered) {
@@ -377,7 +387,7 @@ export class ArkivProvider extends Observable<string> {
       covered.add(creator)
       if (oldestBase === null || applied < oldestBase) oldestBase = applied
     }
-    const from = oldestBase !== null && oldestBase > CATCH_UP_MARGIN_BLOCKS ? oldestBase - CATCH_UP_MARGIN_BLOCKS : 0n
+    const from = !this.fullHistory && oldestBase !== null && oldestBase > CATCH_UP_MARGIN_BLOCKS ? oldestBase - CATCH_UP_MARGIN_BLOCKS : 0n
     this.stats.queries++
     const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: writers, seqGte: from })
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
@@ -392,12 +402,13 @@ export class ArkivProvider extends Observable<string> {
       // refuse it if any verified clock would end up with different content.
       const trial = new Y.Doc()
       Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
-      Y.applyUpdate(trial, st)
+      Y.applyUpdate(trial, st.state)
       if (overridesVerified(trial, verified)) {
         this.reject()
         continue
       }
-      this.applyRemote(st)
+      this.applyRemote(st.state)
+      st.commit()
     }
     this.updatesSinceSnapshot = updates.entities.length
   }
@@ -410,6 +421,18 @@ export class ArkivProvider extends Observable<string> {
     this.stats.queries++
     const page = await this.store.query({ doc: this.link.doc, kind: KIND.join, limit: 200 })
     for (const e of page.entities) await this.applyJoinEntity(e)
+  }
+
+  /**
+   * Owner: looks up one address's join request directly, with a `$creator` filter. Junk requests
+   * can push a real one out of the first page, but they cannot hide it from this query.
+   */
+  async findJoinRequest(address: Hex): Promise<JoinRequest | null> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null
+    this.stats.queries++
+    const page = await this.store.query({ doc: this.link.doc, kind: KIND.join, creators: [address], limit: 20 })
+    for (const e of page.entities) await this.applyJoinEntity(e)
+    return this.joinRequests.find((j) => j.address === address.toLowerCase()) ?? null
   }
 
   private enqueue(fn: () => Promise<void>): void {
@@ -472,30 +495,29 @@ export class ArkivProvider extends Observable<string> {
       return
     }
     if (entity.attributes.kind === KIND.update) await this.applyUpdateEntity(entity, true)
-    else if (entity.attributes.kind === KIND.snapshot) {
-      // a live snapshot gets the same check as on load: it must not change text any verified edit wrote
-      const states: Uint8Array[] = []
-      await this.applySnapshotEntity(entity, states)
-      for (const st of states) {
-        const trial = new Y.Doc()
-        Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
-        Y.applyUpdate(trial, st)
-        if (overridesVerified(trial, this.history.map((h) => h.update))) this.reject()
-        else this.applyRemote(st)
-      }
-    }
+    else if (entity.attributes.kind === KIND.snapshot) await this.applyLiveSnapshot(entity)
   }
 
   /** Clock ranges per client id that arrived in verified live updates: the only text we call proven. */
   private readonly proven = new Map<number, [number, number][]>()
+  private readonly provenAt = new Map<number, { from: number; to: number; block: bigint; entity: Hex }[]>()
 
-  private markProven(meta: { from: Map<number, number>; to: Map<number, number> }): void {
+  private markProven(meta: { from: Map<number, number>; to: Map<number, number> }, block: bigint, entity: Hex): void {
     for (const [client, from] of meta.from) {
       const to = meta.to.get(client) ?? from
       const list = this.proven.get(client) ?? []
       list.push([from, to])
       this.proven.set(client, list)
+      const where = this.provenAt.get(client) ?? []
+      where.push({ from, to, block, entity })
+      this.provenAt.set(client, where)
     }
+  }
+
+  /** The update entity, and its block, that proved this clock; undefined if a snapshot alone carried it. */
+  provenanceOf(client: number, clock: number): { block: bigint; entity: Hex } | undefined {
+    const hit = (this.provenAt.get(client) ?? []).find((r) => r.from <= clock && clock < r.to)
+    return hit && { block: hit.block, entity: hit.entity }
   }
 
   /**
@@ -550,7 +572,7 @@ export class ArkivProvider extends Observable<string> {
   private async retryDeferred(): Promise<void> {
     for (const e of [...this.deferred.values()]) {
       if (e.attributes.kind === KIND.update) await this.applyUpdateEntity(e, false)
-      else if (e.attributes.kind === KIND.snapshot) await this.applySnapshotEntity(e)
+      else if (e.attributes.kind === KIND.snapshot) await this.applyLiveSnapshot(e)
     }
   }
 
@@ -615,7 +637,7 @@ export class ArkivProvider extends Observable<string> {
       // proven: only clocks this update actually integrated, not ones a snapshot had already filled
       const fresh = { from: new Map<number, number>(), to: meta.to }
       for (const [c, from] of meta.from) fresh.from.set(c, Math.max(from, svBefore.get(c) ?? 0))
-      this.markProven(fresh)
+      this.markProven(fresh, entity.createdAt, entity.key)
     }
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.stats.updatesApplied++
@@ -635,7 +657,7 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /** Applies a snapshot and returns its base block, or null if it could not be read. Never throws. */
-  private async applySnapshotEntity(entity: StoredEntity, collect?: Uint8Array[]): Promise<bigint | null> {
+  private async applySnapshotEntity(entity: StoredEntity, collect: PendingSnapshot[]): Promise<bigint | null> {
     try {
       return await this.applySnapshotEntityInner(entity, collect)
     } catch {
@@ -646,7 +668,7 @@ export class ArkivProvider extends Observable<string> {
     }
   }
 
-  private async applySnapshotEntityInner(entity: StoredEntity, collect?: Uint8Array[]): Promise<bigint | null> {
+  private async applySnapshotEntityInner(entity: StoredEntity, collect: PendingSnapshot[]): Promise<bigint | null> {
     if (this.seen.has(entity.key)) return this.snapshot?.key === entity.key ? this.snapshot.base : null
     if (!this.acl || !isMember(this.acl, entity.creator)) {
       this.seen.add(entity.key)
@@ -692,6 +714,7 @@ export class ArkivProvider extends Observable<string> {
       this.reject()
       return null
     }
+    const claims: { client: number; address: Hex; salt: string; sig: Hex }[] = []
     const claimed = frame.header.authors
     if (claimed && typeof claimed === "object") {
       for (const [client, entry] of Object.entries(claimed as Record<string, { address?: string; salt?: string; sig?: string }>)) {
@@ -704,17 +727,24 @@ export class ArkivProvider extends Observable<string> {
           clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client) &&
           (await signedBy(this.link.doc, entry.salt, entry.sig, entry.address as Hex))
         ) {
-          this.claimedAuthors.set(Number(client), entry.address.toLowerCase() as Hex)
-          this.claimedVia.set(Number(client), entity.creator.toLowerCase() as Hex)
-          this.salts.set(Number(client), entry.salt)
-          this.sigs.set(Number(client), entry.sig as Hex)
+          claims.push({ client: Number(client), address: entry.address.toLowerCase() as Hex, salt: entry.salt, sig: entry.sig as Hex })
         }
       }
     }
-    // when opening a document, verified updates go in before snapshots: Yjs keeps the first struct it sees
-    // for an id, so a snapshot can never override a genuine edit at the same clock
-    if (collect) collect.push(state)
-    else this.applyRemote(state)
+    // nothing about this snapshot is kept yet: the caller first checks it against the verified edits
+    // (see overridesVerified) and commits it only if it passes, so a refused snapshot never becomes
+    // the lease, the history base or a source of claimed authors
+    collect.push({ state, commit: () => this.commitSnapshot(entity, base, chunks, state, claims) })
+    return base
+  }
+
+  private commitSnapshot(entity: StoredEntity, base: bigint, chunks: Hex[], state: Uint8Array, claims: { client: number; address: Hex; salt: string; sig: Hex }[]): void {
+    for (const c of claims) {
+      this.claimedAuthors.set(c.client, c.address)
+      this.claimedVia.set(c.client, entity.creator.toLowerCase() as Hex)
+      this.salts.set(c.client, c.salt)
+      this.sigs.set(c.client, c.sig)
+    }
     this.stats.snapshotsApplied++
     if (!this.snapshot || base >= this.snapshot.base) {
       this.baseState = state
@@ -724,7 +754,23 @@ export class ArkivProvider extends Observable<string> {
       this.bytesSinceSnapshot = 0
       this.emit("lease", [this.snapshot])
     }
-    return base
+  }
+
+  /** A snapshot that arrives after load gets the same check as on load before it counts for anything. */
+  private async applyLiveSnapshot(entity: StoredEntity): Promise<void> {
+    const pending: PendingSnapshot[] = []
+    await this.applySnapshotEntity(entity, pending)
+    for (const st of pending) {
+      const trial = new Y.Doc()
+      Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
+      Y.applyUpdate(trial, st.state)
+      if (overridesVerified(trial, this.history.map((h) => h.update))) {
+        this.reject()
+        continue
+      }
+      this.applyRemote(st.state)
+      st.commit()
+    }
   }
 
   private async applyJoinEntity(entity: StoredEntity): Promise<void> {
@@ -972,9 +1018,9 @@ export class ArkivProvider extends Observable<string> {
   /**
    * The lease. Once less than half of the newest snapshot's life is left, an
    * active member renews it: by extending it if they created it, or by writing
-   * a fresh snapshot of their own if someone else did. Only an entity's own
-   * creator can extend it, so nobody outside the member list can keep a
-   * document alive. The owner's sessions also renew the member list.
+   * a fresh snapshot of their own if someone else did. Only a snapshot's own
+   * creator can extend it, so nobody outside the member list can keep the text
+   * alive. The member list allows anyone to extend it, so members renew it too.
    * A document nobody opens for a month expires.
    */
   async renewLeaseIfDue(): Promise<boolean> {
@@ -1162,10 +1208,11 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /**
-   * Deletes every entity this session created for the document, in one batch:
-   * your edit history, your join request and any snapshot you wrote. It does
-   * not remove your words from the shared text, and copies of them inside
-   * snapshots written by other members last until those expire.
+   * Deletes your edit history and your join request for the document, in one
+   * batch. It compacts first, so the shared text (yours included) lives on in a
+   * snapshot you created; snapshots stay, since they carry everyone's text.
+   * Your words remain in the shared text until someone removes them. Afterwards
+   * they read as claimed, not proven, and old ciphertext stays in block history.
    */
   async shredMine(): Promise<number> {
     if (!this.identity) return 0
@@ -1271,6 +1318,8 @@ export class ArkivProvider extends Observable<string> {
   static async openVersion(store: ArkivStore, link: VersionLink): Promise<{ doc: Y.Doc; creator: Hex; block: bigint }> {
     const entity = await store.get(link.key)
     if (!entity || entity.attributes.kind !== KIND.version) throw new Error("version not found")
+    // a version is a promise that nobody can change it: one written without the readonly flag could be patched later
+    if (!entity.readonly) throw new Error("this version is not readonly on chain, so its creator could still change it")
     const docId = entity.attributes.doc
     const read = async (e: StoredEntity, kind: Kind): Promise<Frame> => {
       const { envelope } = decodeOuter(e.payload)
@@ -1284,6 +1333,7 @@ export class ArkivProvider extends Observable<string> {
     for (const [i, key] of chunks.entries()) {
       const c = await store.get(key)
       if (!c || c.creator.toLowerCase() !== entity.creator.toLowerCase()) throw new Error("version chunk missing")
+      if (!c.readonly) throw new Error("a chunk of this version is not readonly on chain, so its creator could still change it")
       const cf = await read(c, KIND.chunk)
       if (cf.header.i !== i + 1 || cf.header.of !== first.header.id) throw new Error("version chunk does not belong to this version")
       parts.push(cf.data)
@@ -1351,8 +1401,9 @@ function blocks(seconds: number): bigint {
 async function aclSpec(doc: Hex, metaKey: Uint8Array, acl: Acl, epochKey: Uint8Array | undefined, head: bigint): Promise<CreateSpec> {
   const header = (await toHeader(acl, epochKey, doc)) as unknown as Record<string, unknown>
   const payload = encodeOuter(0, await seal(metaKey, encodeFrame({ kind: KIND.acl, doc: hexToBytes(doc), epoch: 0, header, data: new Uint8Array() }, randomBytes)))
-  // the member list is tiny and reveals nothing; any member's session may renew it, so a document
-  // stays open while its writers use it even if the owner is away. Its snapshots still expire on their own.
+  // anyone can extend the member list, so writers keep a document open while the owner is away.
+  // It holds names and public keys but no text, so a stranger extending it keeps nothing readable
+  // alive: the snapshots still expire on their own, and the owner can delete the list at any time.
   return { payload, attributes: { doc, kind: KIND.acl, seq: head }, lifetimeSeconds: LIFETIME.acl, permissionlessExtension: true }
 }
 
@@ -1420,16 +1471,19 @@ async function writeSnapshotEntities(
 }
 
 /**
- * True if `doc` holds, at any clock a verified update wrote, content other than that update's.
+ * True if `doc` holds, at any clock a verified update wrote, an item other than that update's.
  * Deleted text does not count: deleting is any member's right. JS Yjs already lets a pending
  * update win such a clash, but the Rust engine (yrs) lets the snapshot win, so the protocol
  * requires the check and every implementation runs it.
+ *
+ * "The same item" means the same identity, clock by clock: content kind and value (a format's
+ * key and value, a type's kind and node name), origin, right origin, parent and map key. Those
+ * are fixed when an item is created, so they match whether the item arrives alone, split or merged.
  */
 export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
   for (const u of updates) {
     for (const struct of Y.decodeUpdate(u).structs) {
       if (!(struct instanceof Y.Item)) continue
-      const want = struct.content.getContent()
       // clock by clock: later edits split items, so one struct may now span several items
       for (let i = 0; i < struct.length; i++) {
         let found: Y.Item | Y.GC
@@ -1439,26 +1493,51 @@ export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
           break // still pending: nothing has replaced it
         }
         if (!(found instanceof Y.Item) || found.deleted) continue
-        if (found.content.constructor !== struct.content.constructor) return true
-        const have = found.content.getContent()[struct.id.clock + i - found.id.clock]
-        if (!sameContent(have, want[i])) return true
+        if (unitKey(doc, found, struct.id.clock + i - found.id.clock) !== unitKey(doc, struct, i)) return true
       }
     }
   }
   return false
 }
 
-/**
- * One clock's content. A shared type is compared by kind and node name only: its children and
- * attributes are items of their own, checked at their own clocks, and a decoded type has none.
- */
-function sameContent(have: unknown, want: unknown): boolean {
-  if (want instanceof Y.AbstractType) {
-    if (!(have instanceof Y.AbstractType) || have.constructor !== want.constructor) return false
-    const name = (t: unknown) => (t instanceof Y.XmlElement ? t.nodeName : t instanceof Y.XmlHook ? t.hookName : "")
-    return name(have) === name(want)
+/** A canonical description of the item at clock `item.id.clock + k`; see overridesVerified. */
+function unitKey(doc: Y.Doc, item: Y.Item, k: number): string {
+  const id = (x: Y.ID | null) => (x ? `${x.client}:${x.clock}` : "-")
+  const origin = k === 0 ? id(item.origin) : `${item.id.client}:${item.id.clock + k - 1}`
+  // a decoded struct names its parent only when it has no origins; an integrated item always
+  // has one, so the parent is compared only where both sides carry it
+  const parent = k === 0 && !item.origin && !item.rightOrigin ? parentName(doc, item.parent) : ""
+  return JSON.stringify([item.content.getRef(), origin, id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? "") : "", unit(item.content, k)])
+}
+
+function parentName(doc: Y.Doc, parent: Y.Item["parent"]): string {
+  if (typeof parent === "string") return `root:${parent}`
+  if (parent instanceof Y.ID) return `item:${parent.client}:${parent.clock}`
+  if (parent instanceof Y.AbstractType) {
+    if (parent._item) return `item:${parent._item.id.client}:${parent._item.id.clock}`
+    for (const [name, type] of doc.share) if (type === parent) return `root:${name}`
   }
-  return JSON.stringify(have) === JSON.stringify(want)
+  return "?"
+}
+
+/** One clock's content value. A type's children and attributes are items of their own, checked at their own clocks. */
+function unit(content: Y.Item["content"], k: number): unknown {
+  if (content instanceof Y.ContentFormat) return [content.key, content.value]
+  if (content instanceof Y.ContentType) {
+    const t = content.type
+    // subclasses before their bases: XmlText extends Text, XmlHook extends Map, XmlElement extends XmlFragment
+    if (t instanceof Y.XmlText) return ["xmltext"]
+    if (t instanceof Y.Text) return ["text"]
+    if (t instanceof Y.XmlHook) return ["xmlhook", t.hookName]
+    if (t instanceof Y.XmlElement) return ["xmlelement", t.nodeName]
+    if (t instanceof Y.XmlFragment) return ["xmlfragment"]
+    if (t instanceof Y.Map) return ["map"]
+    if (t instanceof Y.Array) return ["array"]
+    return ["type"]
+  }
+  if (content instanceof Y.ContentBinary) return [...content.content]
+  if (content instanceof Y.ContentDoc) return content.doc?.guid ?? null
+  return content.getContent()[k] ?? null
 }
 
 /** What a writer signs to prove a client id salt is theirs: "quire1:salt:" || document id (32) || salt (16). */

@@ -190,7 +190,11 @@ export function DocPage({ link }: { link: DocLink }) {
           )}
         </div>
       )}
-      {role === "pending" && <div className="ws-banner">Request sent. The owner sees it live and can add you.</div>}
+      {role === "pending" && (
+        <div className="ws-banner">
+          Request sent. The owner sees it live and can add you. If they can't find it, send them your address: <code className="mono">{identity?.address}</code>
+        </div>
+      )}
 
       <main className="ws-main">
         <article className={`sheet ${blame ? "blame" : ""}`}>

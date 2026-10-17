@@ -34,7 +34,7 @@ export function blocksToDuration(blocks: bigint): string {
 export function plainText(doc: Y.Doc): string {
   const lines: string[] = []
   const walk = (n: Y.XmlElement | Y.XmlText | Y.XmlHook): string => {
-    if (n instanceof Y.XmlText) return n.toString().replace(/<[^>]+>/g, "")
+    if (n instanceof Y.XmlText) return (n.toDelta() as { insert: unknown }[]).map((d) => (typeof d.insert === "string" ? d.insert : "")).join("")
     if (n instanceof Y.XmlElement) return n.toArray().map(walk).join("")
     return ""
   }

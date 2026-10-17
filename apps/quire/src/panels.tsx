@@ -1,6 +1,6 @@
 import { render } from "@arkiv-network/sdk/query"
 import { useEffect, useState } from "react"
-import { type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, type Identity, KIND, loadAt, type StoredEntity, toExpression } from "y-arkiv"
+import { type ArkivProvider, type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, type Identity, KIND, loadAt, type StoredEntity, toExpression } from "y-arkiv"
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
 import { balanceOf, formatGlm } from "./gas"
@@ -103,6 +103,7 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
           <p className="muted small">Each request is sealed to your key and signed by the key it asks you to trust.</p>
         </section>
       )}
+      {owner && <FindRequest p={p} busy={!!busy} run={run} />}
 
       <section>
         <h4>Members · epoch {p.acl.epoch}</h4>
@@ -425,6 +426,32 @@ const KEEP = [
   { label: "3 years", s: 3 * 365 * 86400 },
 ]
 
+/** The document id is public, so junk requests can crowd the list. A $creator query finds one person's request regardless. */
+function FindRequest({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (what: string, fn: () => Promise<string | void>) => Promise<void> }) {
+  const [address, setAddress] = useState("")
+  return (
+    <section>
+      <h4>Expecting someone?</h4>
+      <p className="muted small">Ask them for the address on their "Request sent" banner. One query finds their request, however many others there are.</p>
+      <div className="row">
+        <input className="input mono" placeholder="0x…" value={address} onChange={(e) => setAddress(e.target.value.trim())} spellCheck={false} />
+        <button
+          className="btn btn-outline"
+          disabled={busy || !/^0x[0-9a-fA-F]{40}$/.test(address)}
+          onClick={() =>
+            run("looking", async () => {
+              const found = await p.findJoinRequest(address as `0x${string}`)
+              return found ? `Found ${found.name || "their"} request. It is in the list above.` : "No request from that address in the last hour."
+            })
+          }
+        >
+          Find
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export function LifetimePanel({ session }: { session: DocumentSession }) {
   const p = session.provider
   const [head, setHead] = useState<bigint | null>(null)
@@ -468,7 +495,13 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
             className="btn btn-outline danger"
             disabled={!!busy}
             onClick={() =>
-              confirm("Delete this document? The member list goes, so nobody can open it again. Members' remaining encrypted pieces expire on their own within 30 days.") &&
+              confirm(
+                `Delete this document? The member list goes, so nobody can open it again. Your own entities are deleted now; other members' encrypted pieces expire on their own ${
+                  p.acl?.keepUntil && head !== null && BigInt(p.acl.keepUntil) > head
+                    ? `by block ${p.acl.keepUntil}, about ${Math.ceil(Number(BigInt(p.acl.keepUntil) - head) / 43200)} days from now, because you chose to keep it`
+                    : "within 30 days"
+                }. Old ciphertext stays in block history.`,
+              ) &&
               run("deleting", async () => `Deleted ${await p.deleteDocument()} entities. The document no longer opens.`)
             }
           >
@@ -500,7 +533,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
         <section>
           <h4>Shred my edit history</h4>
           <p className="muted small">
-            Deletes every edit and join request your key wrote here, in one transaction. Your words stay in the shared text, and in snapshots other members wrote, until someone removes them or those expire.
+            Deletes every edit and join request your key wrote here, in one transaction, after folding the text into a snapshot. Your words stay in the shared text until someone removes them. They then read as claimed rather than proven, because the edits that proved them are gone.
           </p>
           <button className="btn btn-outline danger" disabled={!!busy} onClick={() => confirm("Delete your edit history for this document?") && run("shredding", async () => `Deleted ${await p.shredMine()} entities.`)}>
             Shred my edit history

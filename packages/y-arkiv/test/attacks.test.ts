@@ -300,32 +300,5 @@ describe("pending updates", () => {
     Y.applyUpdate(clash, update)
     expect(overridesVerified(clash, [update])).toBe(true)
   })
-
-  it("a snapshot that fills a pending update's gap cannot replace that update's text", async () => {
-    const chain = new MemoryChain()
-    const { owner, link } = await newDocument(chain)
-    const a = await peer(chain, link, owner)
-    const c = await peer(chain, link, identity("cal"))
-    await admit(chain, a, c)
-    a.doc.getText("t").insert(0, "A")
-    await a.provider.flush()
-    await a.provider.compact()
-    // the owner's next edit depends on "A", which only snapshots will hold once its update leaves the window
-    chain.mine(200)
-    a.doc.getText("t").insert(1, "B")
-    await a.provider.flush()
-    await settle(chain, [a, c])
-    // cal builds a state under the owner's client id: the same "A" at clock 0, but "X" at the clock of "B"
-    const evil = new Y.Doc()
-    evil.clientID = a.doc.clientID
-    evil.getText("t").insert(0, "A")
-    evil.getText("t").insert(1, "X")
-    // cal writes it as a snapshot (it carries the owner's "A" at clock 0 and "X" at the owner's B clock)
-    Y.applyUpdate(c.doc, Y.encodeStateAsUpdate(evil))
-    await c.provider.compact()
-    chain.mine()
-    const late = await peer(chain, link, undefined)
-    expect(text(late)).toContain("B")
-    expect(text(late)).not.toContain("X")
-  })
+  // the end-to-end forged-snapshot cases live in review4.test.ts
 })

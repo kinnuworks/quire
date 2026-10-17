@@ -6,18 +6,20 @@
  *   quire read   '<link>'          print the document text
  *   quire watch  '<link>'          print each edit as it lands
  *   quire verify '<link>'          show members, lease, and writes that were ignored
+ *   quire blame  '<link>'          who wrote each piece of text, with the entity and block that prove it
  *   quire extend '<version link>'  keep a published version alive (needs QUIRE_KEY, a funded key)
  *
  *   --rpc <url> --ws <url>         use your own Arkiv node instead of the public endpoint
  */
 import * as Y from "yjs"
+import { blame } from "./blame.js"
 import { ArkivProvider, extendVersion } from "./provider.js"
 import { parseDocLink, parseVersionLink } from "./link.js"
 import { SdkStore } from "./sdk.js"
 
 function text(doc: Y.Doc): string {
   const walk = (n: unknown): string => {
-    if (n instanceof Y.XmlText) return n.toString().replace(/<[^>]+>/g, "")
+    if (n instanceof Y.XmlText) return (n.toDelta() as { insert: unknown }[]).map((d) => (typeof d.insert === "string" ? d.insert : "")).join("")
     if (n instanceof Y.XmlElement) return n.toArray().map(walk).join("")
     return ""
   }
@@ -43,7 +45,7 @@ async function main() {
   const httpUrl = flag("--rpc")
   const wsUrl = flag("--ws")
   const [cmd, raw] = args
-  if (!cmd || !raw) fail("usage: quire <read|watch|verify|extend> '<link>' [--rpc url --ws url]")
+  if (!cmd || !raw) fail("usage: quire <read|watch|verify|blame|extend> '<link>' [--rpc url --ws url]")
   const fragment = raw.includes("#") ? raw.slice(raw.indexOf("#")) : raw
   if (cmd === "extend") {
     const version = parseVersionLink(fragment)
@@ -58,7 +60,8 @@ async function main() {
   if (!link) fail("that is not a Quire document link")
   const store = new SdkStore({ httpUrl, wsUrl })
   const doc = new Y.Doc()
-  const provider = new ArkivProvider(doc, { store, link, flushIntervalMs: 0, autoCompact: false })
+  // blame reads every update still on chain, not only those after the newest snapshot
+  const provider = new ArkivProvider(doc, { store, link, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" })
   await provider.connect()
 
   if (cmd === "read") {
@@ -89,6 +92,26 @@ async function main() {
       const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
       console.log(`outside    ${n(outsiders.length, "entity", "entities")} by ${n(by.length, "non-member", "non-members")}, never fetched or applied${by.length ? `: ${by.join(", ")}` : ""} (1 more query)`)
     }
+    process.exit(0)
+  }
+  if (cmd === "blame") {
+    if (provider.acl?.rosterHidden) fail("the roster is sealed under a newer key; this link cannot attribute anything")
+    const short = (a: string | null | undefined) => (a ? `${a.slice(0, 8)}…${a.slice(-4)}` : "unknown")
+    const total = new Map<string, { proven: number; claimed: number }>()
+    blame(doc, provider).forEach((runs, i) => {
+      console.log(`paragraph ${i + 1}`)
+      for (const r of runs) {
+        const t = total.get(r.address ?? "unknown") ?? { proven: 0, claimed: 0 }
+        if (r.proven) t.proven += r.text.length
+        else t.claimed += r.text.length
+        total.set(r.address ?? "unknown", t)
+        const where = r.proven ? `proven   block ${r.block} entity ${short(r.entity)}` : `claimed  carried in a snapshot by ${short(r.via)}`
+        console.log(`  ${short(r.address)}  ${where}  ${JSON.stringify(r.text)}`)
+      }
+    })
+    console.log("")
+    for (const [a, t] of total) console.log(`${a}  ${t.proven} characters proven, ${t.claimed} claimed`)
+    console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)
   }
   if (cmd === "watch") {

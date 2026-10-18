@@ -15,9 +15,12 @@ import { tiramisu } from "@arkiv-network/sdk/chains"
 import { createPublicClient, createWalletClient, custom, formatEther, http, parseEther } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { type Hex, TIRAMISU_HTTP } from "y-arkiv"
+import { customNode } from "./session"
 
 const MIN_BALANCE = parseEther("0.002")
-const reader = createPublicClient({ chain: tiramisu, transport: http(TIRAMISU_HTTP) })
+// the node the visitor chose (Explorer tab), so balance checks and transfers go where documents do
+const RPC = customNode()?.httpUrl ?? TIRAMISU_HTTP
+const reader = createPublicClient({ chain: tiramisu, transport: http(RPC) })
 
 export async function balanceOf(address: Hex): Promise<bigint> {
   return reader.getBalance({ address })
@@ -123,7 +126,7 @@ export async function waitForGas(address: Hex, cancelled: () => boolean): Promis
  * this document anyway, so the transfer links nothing that the document's own entities do not.
  */
 export async function sendGas(privateKey: Hex, to: Hex, amount = "0.02"): Promise<void> {
-  const wallet = createWalletClient({ chain: tiramisu, transport: http(TIRAMISU_HTTP), account: privateKeyToAccount(privateKey) })
+  const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), account: privateKeyToAccount(privateKey) })
   const hash = await wallet.sendTransaction({ to, value: parseEther(amount) })
   await reader.waitForTransactionReceipt({ hash })
 }

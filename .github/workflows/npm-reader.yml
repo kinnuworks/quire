@@ -1,0 +1,133 @@
+# Can someone outside this repository use y-arkiv from npm?
+#
+# This job installs the published package into an empty folder, away from the
+# workspace copy, and reads the open demo document straight from Arkiv's
+# Tiramisu testnet with it. It uses no secrets and no access key, the same as a
+# stranger with the link.
+#
+# The public endpoint gives each IP a small free query budget, and CI runners
+# share IPs. When the budget is spent, the network step prints a warning and
+# passes. Every other failure, a timeout included, fails the job.
+
+name: npm reader
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  outsider:
+    name: Install y-arkiv from npm and read the open demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PACKAGE: y-arkiv@0.1.0
+      # the open demo's title line, as `y-arkiv read` prints it
+      EXPECTED_TEXT: "Ward 14 water log (synthetic demo)"
+      # what the package prints when the public endpoint refuses more free queries
+      BUDGET_PATTERN: "free query budget for this address ran out|Status: 429|Too Many Requests"
+    steps:
+      - name: Check out the repository, only to read the demo link
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # an empty folder outside the checkout, so npm cannot pick up the workspace copy
+      - name: Choose a folder outside the checkout
+        run: echo "OUTSIDER=$RUNNER_TEMP/outsider" >> "$GITHUB_ENV"
+
+      - name: Install the published package in an empty folder
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTSIDER"
+          cd "$OUTSIDER"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$PACKAGE"
+
+          # it must be the copy from the registry, not a link into the checkout
+          if [ -L node_modules/y-arkiv ]; then
+            echo "::error::node_modules/y-arkiv is a symlink, not the published package"
+            exit 1
+          fi
+          version=$(node -p "require('./node_modules/y-arkiv/package.json').version")
+          echo "installed y-arkiv $version"
+          [ "$version" = "${PACKAGE#y-arkiv@}" ]
+
+          # the library imports and has exports
+          node -e "import('y-arkiv').then(m => { const n = Object.keys(m).length; console.log(n + ' exports'); if (!n || !m.ArkivProvider) process.exit(1) })"
+
+          # the CLI runs; with no arguments it prints its usage and exits 1
+          set +e
+          npx --no-install y-arkiv > usage.out 2>&1
+          status=$?
+          set -e
+          cat usage.out
+          if [ "$status" -ne 1 ] || ! grep -q "usage: y-arkiv read" usage.out; then
+            echo "::error::the y-arkiv command did not print its usage"
+            exit 1
+          fi
+
+      - name: Read and verify the open demo from Arkiv
+        run: |
+          set -uo pipefail
+          link=$(jq -r '.open.link' "$GITHUB_WORKSPACE/arkiv/demo.json")
+          if [ -z "$link" ] || [ "$link" = "null" ]; then
+            echo "::error::arkiv/demo.json has no .open.link"
+            exit 1
+          fi
+          cd "$OUTSIDER"
+
+          # Runs one CLI command with a time limit. Returns 0 on success, 2 when
+          # the public read budget ran out, and fails the job otherwise.
+          run() {
+            local cmd=$1 out="$1.out" status
+            timeout 240 npx --no-install y-arkiv "$cmd" "$link" > "$out" 2>&1
+            status=$?
+            echo "--- y-arkiv $cmd (exit $status)"
+            cat "$out"
+            if [ "$status" -eq 0 ]; then
+              return 0
+            fi
+            if grep -qE "$BUDGET_PATTERN" "$out"; then
+              return 2
+            fi
+            if [ "$status" -eq 124 ]; then
+              echo "::error::y-arkiv $cmd timed out after 240 seconds"
+            else
+              echo "::error::y-arkiv $cmd failed with exit code $status"
+            fi
+            exit 1
+          }
+
+          skip() {
+            echo "::warning::Skipped y-arkiv $1: the public Arkiv endpoint's free read budget for this runner's IP ran out, so the network read could not finish. The package still installed and imported."
+            exit 0
+          }
+
+          run read || { [ $? -eq 2 ] && skip read; }
+          if ! grep -qF "$EXPECTED_TEXT" read.out; then
+            echo "::error::the demo text did not contain: $EXPECTED_TEXT"
+            exit 1
+          fi
+
+          # verify must name the owner and every member listed in demo.json
+          run verify || { [ $? -eq 2 ] && skip verify; }
+          owner=$(jq -r '.open.owner' "$GITHUB_WORKSPACE/arkiv/demo.json")
+          if ! grep -qE "^owner +$owner" verify.out; then
+            echo "::error::verify did not name the owner $owner"
+            exit 1
+          fi
+          for member in $(jq -r '.open.members[]' "$GITHUB_WORKSPACE/arkiv/demo.json"); do
+            if ! grep -qE "^member +$member" verify.out; then
+              echo "::error::verify did not list the member $member"
+              exit 1
+            fi
+          done
+          echo "The published package read and verified the open demo."

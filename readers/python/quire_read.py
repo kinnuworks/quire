@@ -20,6 +20,7 @@ import re
 import struct
 import sys
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -37,7 +38,15 @@ from quire_audit import Entity
 
 SALT = b"quire/v1"
 SNAPSHOT_WINDOW = 60  # blocks, section 5 steps 3 and 4
-OWNER_ONLY_ACL_FROM_BLOCK = 722_300  # Tiramisu block from which an ACL with permissionless extension is ignored
+# PROTOCOL section 10, a per-network deployment parameter: the block before which an ACL with
+# permissionless extension is still accepted. Tiramisu's is 722,300; on any other network it is 0
+# (--legacy-acl-before 0).
+OWNER_ONLY_ACL_FROM_BLOCK = 722_300
+
+
+def _set_legacy_acl_before(block: int) -> None:
+    global OWNER_ONLY_ACL_FROM_BLOCK
+    OWNER_ONLY_ACL_FROM_BLOCK = block
 LEASE_BLOCKS = 30 * 24 * 3600 // 2  # a 30-day lease at 2-second blocks
 EXPIRY_SLACK_BLOCKS = 300  # ten minutes, for the gap between a writer's head and a reader's
 FRAME_FIXED = 48  # 'QF' | ver | kind | doc(32) | epoch | hlen | dlen
@@ -893,13 +902,15 @@ class _Placed:
         return None
 
 
-def relocate_text(update: bytes, placed: _Placed) -> tuple[bytes, set[str]]:
+def relocate_text(update: bytes, placed: _Placed) -> tuple[bytes, set[str], int, list[tuple[int, int, int]]]:
     """A copy of a Yjs v1 update in which every string item whose written parent
     is a type (an XmlText inside the Tiptap fragment) has that parent rewritten
     as a root-level Text named after the XmlText's id. pycrdt can then report,
     for each visible character, the client and clock of the item behind it
     (Text.sticky_index), which XmlText does not offer. Returns the copy and the
-    names of the text nodes this update wrote to or deleted from."""
+    names of the text nodes this update wrote to or deleted from, where the
+    delete set starts in the copy, and the delete set's (client, start, length)
+    ranges."""
     c = _Cursor(update)
     out = bytearray()
     touched: set[str] = set()
@@ -946,32 +957,19 @@ def relocate_text(update: bytes, placed: _Placed) -> tuple[bytes, set[str]]:
                 placed.add(client, clock, clock + length, name)
                 touched.add(name)
             clock += length
+    ds_at = len(out) + (c.pos - mark)
+    ranges: list[tuple[int, int, int]] = []
     for _ in range(c.uint()):  # delete set
         client = c.uint()
         for _ in range(c.uint()):
             start, length = c.uint(), c.uint()
+            ranges.append((client, start, length))
             for clk in range(start, start + length):
                 name = placed.at(client, clk)
                 if name is not None:
                     touched.add(name)
     flush(len(update))
-    return bytes(out), touched
-
-
-def _collapse(text: str) -> tuple[str, list[int]]:
-    """Whitespace runs collapsed to one space and trimmed, with where each kept character came from."""
-    kept: list[str] = []
-    index: list[int] = []
-    for i, ch in enumerate(text):
-        space = ch.isspace()
-        if space and (not kept or kept[-1] == " "):
-            continue
-        kept.append(" " if space else ch)
-        index.append(i)
-    if kept and kept[-1] == " ":
-        kept.pop()
-        index.pop()
-    return "".join(kept), index
+    return bytes(out), touched, ds_at, ranges
 
 
 @dataclass
@@ -991,16 +989,27 @@ class EarlierWriter:
 
 
 def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[EarlierWriter]:
-    """Passages whose words a different member held first, as the TypeScript
+    """Passages whose words a different member typed first, as the TypeScript
     reader's earlierWriters finds them. A member can delete someone else's
-    paragraph and paste the same words back as their own edit; the copy is then
-    proven, correctly, as theirs. This replays the accepted updates in block
-    order and, after each block, notes which member's own contiguous text held
-    each passage, comparing with whitespace collapsed. A passage is flagged only
-    if someone else held it before its own author ever did, so a member who
-    pastes a copy and deletes it at once cannot make the real author look like
-    the copier. Passages under 24 characters are not checked."""
+    paragraph and paste or re-type the same words as their own edits; the copy
+    is then proven, correctly, as theirs. This replays every accepted update
+    once with its deletions left out, so each member's text can be read in
+    document order as they typed it, deleted characters and all, with every
+    word dated by the block its characters arrived in.
+
+    Each passage someone holds now (their whole run of text in a paragraph,
+    each single edit inside it, and each sentence) is compared word by word
+    with every member's typed text, with invisible format characters dropped.
+    A passage of n words matches a stretch of someone's text if at most n // 6
+    words differ, and a match is dated by its newest word. The passage is
+    flagged only if another member's match is older than every match of its
+    own writer, counting the writer's passage as it stands now less its n // 6
+    newest words, so someone who copied text while it was being written cannot
+    make the real writer look like the copier. Passages under 24 characters or
+    over 80 words are not checked on their own."""
     ordered = sorted(updates, key=lambda u: (u[0].created_at, u[0].key))
+    if not ordered:
+        return []
     author_of: dict[int, str] = {}
     where: dict[int, list[tuple[int, int, int, str]]] = defaultdict(list)
     for e, _data, structs in ordered:
@@ -1009,98 +1018,308 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
                 continue
             author_of[st.client] = e.creator
             where[st.client].append((st.clock, st.end, e.created_at, e.key))
+    for lst in where.values():
+        lst.sort(key=lambda r: r[0])
 
     def proof(client: int, clock: int) -> tuple[int, str] | None:
-        for start, end, block, key in where.get(client, ()):
-            if start <= clock < end:
+        lst = where.get(client)
+        if not lst:
+            return None
+        lo, hi = 0, len(lst) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            start, end, block, key = lst[mid]
+            if clock < start:
+                hi = mid - 1
+            elif clock >= end:
+                lo = mid + 1
+            else:
                 return block, key
         return None
 
     placed = _Placed()
     replay = Doc()
-    by_block: dict[int, list[bytes]] = defaultdict(list)
-    touched_at: dict[int, set[str]] = defaultdict(set)
+    deleted: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    self_deleted: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    names: set[str] = set()
+    moved_all: list[bytes] = []
     for e, data, _structs in ordered:
-        moved, touched = relocate_text(data, placed)
-        by_block[e.created_at].append(moved)
-        # plain `t` text and the relocated text nodes; the fragment's own tree holds no characters now
-        touched_at[e.created_at] |= {n for n in touched if n == "t" or n.startswith("\x00text:")}
+        moved, touched, ds_at, ranges = relocate_text(data, placed)
+        # the structs alone: every character ever typed stays in place, in document order
+        moved_all.append(moved[:ds_at] + _uint(0))
+        names |= {n for n in touched if n == "t" or n.startswith("\x00text:")}
+        for client, start, length in ranges:
+            deleted[client].append((start, start + length))
+            # characters their own writer deleted: a writer's typo fixes are not part of what they typed
+            if author_of.get(client) == e.creator:
+                self_deleted[client].append((start, start + length))
+    for moved in moved_all:
+        try:
+            replay.apply_update(moved)
+        except Exception:
+            continue
 
-    def segments(name: str) -> list[tuple[str, list[tuple[str, int, int]]]]:
-        """One text node's visible characters cut into runs of one member's, in order."""
+    def within(table: dict[int, list[tuple[int, int]]], client: int, clock: int) -> bool:
+        return any(a <= clock < b for a, b in table.get(client, ()))
+
+    nodes: list[list[_Typed]] = []
+    for name in sorted(names):
         text = replay.get(name, type=Text)
-        visible = str(text)
-        out: list[tuple[str, list[tuple[str, int, int]]]] = []
-        for i, ch in enumerate(visible):
-            item = text.sticky_index(i, Assoc.AFTER).to_json().get("item") or {}
-            client, clock = item.get("client"), item.get("clock")
+        chars: list[_Typed] = []
+        # pycrdt indexes text by UTF-8 bytes, and a sticky index reports the item's first clock plus that
+        # byte offset, while clocks count UTF-16 units as in Yjs: within one item, step by UTF-16 units
+        offset = 0
+        last: tuple[Any, Any, Any, str] | None = None  # client, raw clock, true clock, character
+        for ch in str(text):
+            item = text.sticky_index(offset, Assoc.AFTER).to_json().get("item") or {}
+            offset += len(ch.encode("utf-8"))
+            client, raw = item.get("client"), item.get("clock")
+            clock = raw
+            if last is not None and client is not None and client == last[0] and raw == last[1] + len(last[3].encode("utf-8")):
+                clock = last[2] + len(last[3].encode("utf-16-le")) // 2
+            last = (client, raw, clock, ch)
             author = author_of.get(client) if client is not None else None
-            if author is None:
-                out.append(("", []))
-                continue
-            if not out or out[-1][0] != author:
-                out.append((author, []))
-            out[-1][1].append((ch, client, clock))
-        return [(a, chars) for a, chars in out if a]
+            p = proof(client, clock) if client is not None else None
+            chars.append(_Typed(ch, author, p[0] if p else _INF, p[1] if p else None,
+                                client is not None and within(deleted, client, clock),
+                                author is not None and within(self_deleted, client, clock)))
+        nodes.append(chars)
 
-    # first pass: replay to the end to find the passages to check, as the document reads now
-    current: dict[str, list[tuple[str, list[tuple[str, int, int]]]]] = {}
-    history: list[tuple[int, dict[str, list[tuple[str, list[tuple[str, int, int]]]]]]] = []
-    for block in sorted(by_block):
-        for moved in by_block[block]:
-            try:
-                replay.apply_update(moved)
-            except Exception:
-                continue
-        changed = {name: segments(name) for name in touched_at[block]}
-        current.update(changed)
-        history.append((block, changed))
+    # each member's typed text, all of it and without their own deletions
+    streams: dict[str, tuple[list[_Word], list[_Word]]] = {}
+    for chars in nodes:
+        for a in sorted({c.author for c in chars if c.author}):
+            every, kept = streams.setdefault(a, ([], []))
+            if every:
+                every.append(_BARRIER)
+            if kept:
+                kept.append(_BARRIER)
+            every.extend(_words([c for c in chars if c.author == a]))
+            kept.extend(_words([c for c in chars if c.author == a and not c.self_deleted]))
 
-    targets: list[tuple[str, str, int, str]] = []  # (run text, author, block, key)
-    for name in sorted(current):
-        for author, chars in current[name]:
-            run: list[tuple[str, int, int]] = []
-            run_proof: tuple[int, str] | None = None
-            for ch, client, clock in chars + [("", -1, -1)]:
-                p = proof(client, clock) if client >= 0 else None
-                if run and (client < 0 or p != run_proof):
-                    text = "".join(x[0] for x in run)
-                    if run_proof is not None and len(_collapse(text)[0]) >= 24:
-                        targets.append((text, author, run_proof[0], text))
-                    run = []
-                if client >= 0:
-                    if not run:
-                        run_proof = p
-                    run.append((ch, client, clock))
-    if not targets:
-        return []
-    keys = [_collapse(t[0])[0] for t in targets]
-    held: list[dict[str, tuple[int, int]]] = [{} for _ in targets]
-    for block, changed in history:
-        for segs in changed.values():
-            for author, chars in segs:
-                text, index = _collapse("".join(ch for ch, _c, _k in chars))
-                for i, key in enumerate(keys):
-                    if author in held[i]:
-                        continue
-                    at = text.find(key)
-                    if at < 0:
-                        continue
-                    first = block
-                    for k in range(at, at + len(key)):
-                        _ch, client, clock = chars[index[k]]
-                        p = proof(client, clock)
-                        if p is not None and p[0] < first:
-                            first = p[0]
-                    held[i][author] = (block, first)
+    def earliest(p: list[str], s: tuple[list[_Word], list[_Word]] | None, k: int) -> tuple[float, float] | None:
+        if s is None:
+            return None
+        x, y = _match(p, s[0], k), _match(p, s[1], k)
+        if x is None:
+            return y
+        if y is None:
+            return x
+        return y if (y[0] < x[0] or (y[0] == x[0] and y[1] < x[1])) else x
+
     out: list[EarlierWriter] = []
-    for (text, author, block, _key), h in zip(targets, held):
-        own = h.get(author, (block, block))[0]
-        earlier = sorted((at, who, fr) for who, (at, fr) in h.items() if who != author and at < own)
-        if earlier:
-            at, who, fr = earlier[0]
-            out.append(EarlierWriter(text, author, block, who, fr, at))
+    for chars in nodes:
+        runs: list[tuple[str, list[_Typed]]] = []
+        current: tuple[str, list[_Typed]] | None = None
+        for c in chars:
+            if c.deleted or unicodedata.category(c.ch) == "Cf":
+                continue
+            if not c.author:
+                current = None
+            elif current is not None and current[0] == c.author:
+                current[1].append(c)
+            else:
+                current = (c.author, [c])
+                runs.append(current)
+        for author, run in runs:
+            ws = _words(run)
+            flagged: list[tuple[int, int, str, float, float]] = []
+            for i, j in _passages(ws):
+                p = [w.w for w in ws[i:j]]
+                k = len(p) // 6
+                best: tuple[str, float, float] | None = None
+                for who in sorted(streams):
+                    if who == author:
+                        continue
+                    m = earliest(p, streams[who], k)
+                    if m is not None and (best is None or m[0] < best[1]):
+                        best = (who, m[0], m[1])
+                if best is None:
+                    continue
+                own = sorted((w.t for w in ws[i:j]), reverse=True)[k]
+                mine = earliest(p, streams.get(author), k)
+                if mine is not None and mine[0] < own:
+                    own = mine[0]
+                if best[1] < own:
+                    flagged.append((i, j, best[0], best[1], best[2]))
+            kept_spans: list[tuple[int, int, str, float, float]] = []
+            for f in sorted(flagged, key=lambda f: (-(f[1] - f[0]), f[0])):
+                if not any(g[0] <= f[0] and f[1] <= g[1] for g in kept_spans):
+                    kept_spans.append(f)
+            for i, j, first, t, fr in sorted(kept_spans):
+                span = run[ws[i].a:ws[j - 1].b]
+                out.append(EarlierWriter("".join(c.ch for c in span), author, int(max(c.block for c in span)),
+                                         first, int(fr), int(t)))
     return out
+
+
+_INF = float("inf")
+
+
+@dataclass
+class _Typed:
+    ch: str
+    author: str | None
+    block: float
+    entity: str | None
+    deleted: bool
+    self_deleted: bool
+
+
+@dataclass
+class _Word:
+    """A word, the newest (t) and oldest (f) block among its characters, where it sits, and whether a sentence ends after it."""
+
+    w: str
+    t: float
+    f: float
+    a: int
+    b: int
+    end: bool
+    entity: Any
+
+
+_MIXED = object()
+_BARRIER = _Word("\x00", _INF, _INF, 0, 0, True, _MIXED)
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*$")
+
+
+def _words(chars: list[_Typed]) -> list[_Word]:
+    """Characters cut into words at whitespace, with invisible characters dropped."""
+    out: list[_Word] = []
+    w: _Word | None = None
+    for n, c in enumerate(chars):
+        if unicodedata.category(c.ch) == "Cf":
+            continue
+        if c.ch.isspace():
+            if w is not None and c.ch == "\n":
+                w.end = True
+            w = None
+            continue
+        if w is None:
+            w = _Word("", -_INF, _INF, n, n, False, c.entity)
+            out.append(w)
+        w.w += c.ch
+        w.t = max(w.t, c.block)
+        w.f = min(w.f, c.block)
+        w.b = n + 1
+        if w.entity is not c.entity and w.entity != c.entity:
+            w.entity = _MIXED
+    for x in out:
+        if _SENTENCE_END.search(x.w):
+            x.end = True
+    return out
+
+
+def _passages(ws: list[_Word]) -> list[tuple[int, int]]:
+    """The passages of a run to check: the whole run, each single edit's words, and each sentence."""
+    out: set[tuple[int, int]] = set()
+
+    def add(i: int, j: int) -> None:
+        if j <= i or j - i > 80:
+            return
+        if j - i - 1 + sum(len(ws[n].w) for n in range(i, j)) >= 24:
+            out.add((i, j))
+
+    add(0, len(ws))
+    i = 0
+    for n in range(len(ws)):
+        if ws[n].end or n == len(ws) - 1:
+            add(i, n + 1)
+            i = n + 1
+
+    def single(e: Any) -> bool:
+        return e is not None and e is not _MIXED
+
+    i = 0
+    for n in range(1, len(ws) + 1):
+        if n == len(ws) or not single(ws[n].entity) or ws[n].entity != ws[i].entity:
+            if single(ws[i].entity):
+                add(i, n)
+            i = n
+    return sorted(out)
+
+
+def _match(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
+    """The oldest stretch of s within k word edits of p, as (newest block, oldest block)."""
+    n = len(p)
+    if len(s) < n - k:
+        return None
+    want = Counter(p)
+    width = min(n + k, len(s))
+    have: Counter[str] = Counter()
+    common = 0
+
+    def step(w: str, d: int) -> None:
+        nonlocal common
+        c = want.get(w)
+        if c is None:
+            return
+        h = have[w]
+        if d > 0 and h < c:
+            common += 1
+        if d < 0 and h <= c:
+            common -= 1
+        have[w] = h + d
+
+    slices: list[list[int]] = []
+    for a in range(width):
+        step(s[a].w, 1)
+    for a in range(len(s) - width + 1):
+        if a > 0:
+            step(s[a - 1].w, -1)
+            step(s[a + width - 1].w, 1)
+        if common < n - k:
+            continue
+        if slices and a <= slices[-1][1]:
+            slices[-1][1] = a + width
+        else:
+            slices.append([a, a + width])
+    best: tuple[float, float] | None = None
+    for lo, hi in slices:
+        m = _align(p, s[lo:hi], k)
+        if m is not None and (best is None or m[0] < best[0] or (m[0] == best[0] and m[1] < best[1])):
+            best = m
+    return best
+
+
+def _align(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
+    """Semi-global word alignment: the stretch of s within k edits of all of p whose newest word is oldest."""
+    n, size = len(p), len(s)
+    prev_v = [[-_INF] * (size + 1) for _ in range(k + 1)]
+    prev_s = [list(range(size + 1)) for _ in range(k + 1)]
+    for i in range(1, n + 1):
+        cur_v = [[_INF] * (size + 1) for _ in range(k + 1)]
+        cur_s = [[-1] * (size + 1) for _ in range(k + 1)]
+        for d in range(k + 1):
+            for j in range(size + 1):
+                v, st = _INF, -1
+                options: list[tuple[float, int]] = []
+                t = s[j - 1].t if j > 0 else 0
+                if j > 0 and s[j - 1].w == p[i - 1]:
+                    options.append((max(prev_v[d][j - 1], t), prev_s[d][j - 1]))
+                if d > 0:
+                    options.append((cur_v[d - 1][j], cur_s[d - 1][j]))
+                    options.append((prev_v[d - 1][j], prev_s[d - 1][j]))
+                    if j > 0:
+                        options.append((max(prev_v[d - 1][j - 1], t), prev_s[d - 1][j - 1]))
+                        options.append((max(cur_v[d - 1][j - 1], t), cur_s[d - 1][j - 1]))
+                for cv, cs in options:
+                    if cv < v or (cv == v and cs > st):
+                        v, st = cv, cs
+                cur_v[d][j] = v
+                cur_s[d][j] = st
+        prev_v, prev_s = cur_v, cur_s
+    best: tuple[float, float] | None = None
+    for j in range(size + 1):
+        t = prev_v[k][j]
+        if t in (_INF, -_INF):
+            continue
+        a = prev_s[k][j]
+        f = min((s[x].f for x in range(a, j)), default=_INF)
+        if best is None or t < best[0] or (t == best[0] and f < best[1]):
+            best = (t, f)
+    return best
 
 
 # ---------------------------------------------------------------- sources
@@ -2609,10 +2828,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--at", type=int, help="read the document as it stood at this block (still works after the owner deletes it); --rpc only")
     ap.add_argument("--audit", action="store_true", help="read every update and check each author against the member list as it"
                     " stood at that edit's block (arkiv_getEntity with a block), which the owner cannot rewrite; --rpc only")
+    ap.add_argument("--legacy-acl-before", type=int, default=OWNER_ONLY_ACL_FROM_BLOCK,
+                    help="PROTOCOL section 10: the block before which this network accepts an ACL with permissionless"
+                    " extension (Tiramisu 722300, the default; 0 on any other network)")
     ap.add_argument("--json", action="store_true", help="print the verdict as JSON (text, applied, ignored), for comparing readers")
     ap.add_argument("--no-schema", action="store_true", help="skip JSON Schema checks")
     ap.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     args = ap.parse_args(list(argv) if argv is not None else None)
+    _set_legacy_acl_before(args.legacy_acl_before)
 
     if not args.vectors and not (args.link or args.version_link):
         ap.error("give --vectors, --link or --version-link")
@@ -2674,8 +2897,8 @@ def copied_lines(reader: Reader) -> list[str]:
     out = []
     for w in earlier_writers(reader.accepted_updates):
         quoted = json.dumps(w.text if len(w.text) <= 60 else w.text[:57] + "...", ensure_ascii=False)
-        out.append(f"copied       {quoted} is {short(w.address)}'s edit at block {w.block};"
-                   f" {short(w.first)} typed the same words first, blocks {w.from_block} to {w.to_block}")
+        out.append(f"copied       {quoted} is {short(w.address)}'s writing, finished at block {w.block};"
+                   f" {short(w.first)} typed the same words (or all but a few) first, blocks {w.from_block} to {w.to_block}")
     return out
 
 

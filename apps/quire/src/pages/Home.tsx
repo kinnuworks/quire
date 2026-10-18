@@ -3,7 +3,8 @@ import { ArkivProvider, formatDocLink, type Identity, newDocLink, SdkStore } fro
 import { short } from "../format"
 import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
 import { ArrowIcon, BookIcon, GithubIcon, HistoryIcon, HourglassIcon, KeyIcon, LockIcon, PlugIcon, ShieldIcon, SnowIcon, TerminalIcon } from "../icons"
-import { knownDocuments, newIdentity, preferredName, saveIdentity, saveLink, setPreferredName } from "../session"
+import { NodeSetting } from "../panels"
+import { knownDocuments, newIdentity, nodeOptions, preferredName, saveIdentity, saveLink, setPreferredName } from "../session"
 import { CONTESTED, HeroStage, ProofStrip, Scrubber } from "../landing"
 import { TryIt } from "../TryIt"
 
@@ -53,7 +54,7 @@ function CreateForm({ id }: { id: string }) {
       const gas = viaWallet ? await fundFromWallet(identity.address) : await ensureGas(identity.address)
       if (!gas.ok) throw new Error(gas.reason)
       setBusy("Writing to Arkiv…")
-      await ArkivProvider.createDocument({ store: new SdkStore({ privateKey: identity.privateKey }), link, identity, keepForSeconds: record ? 365 * 86400 : undefined })
+      await ArkivProvider.createDocument({ store: new SdkStore({ privateKey: identity.privateKey, ...nodeOptions() }), link, identity, keepForSeconds: record ? 365 * 86400 : undefined })
       saveIdentity(link.doc, identity)
       saveLink(link)
       location.hash = formatDocLink(link)
@@ -449,8 +450,14 @@ export function Home() {
             <details>
               <summary>What can someone watching the chain learn?</summary>
               <p>
-                From the chain: that a document id exists, which addresses write to it and roughly when. Not the text, the title, the members' names or who the addresses belong to, and your address is new in every document. Two more parties see a little more. On testnet the drip funds every key from one wallet, so an observer can tell keys were funded by Quire. And whoever runs the RPC endpoint sees your IP address next to the document ids you read. Use a VPN or Tor if that matters.
+                From the chain: that a document id exists, which addresses write to it and roughly when. Not the text, the title, the members' names or who the addresses belong to, and your address is new in every document. Two more parties see a little more. On testnet the drip funds every key from one wallet, so an observer can tell keys were funded by Quire. And whoever runs the RPC endpoint sees your IP address next to the document ids you read. Use a VPN or Tor if that matters, or choose the node below.
               </p>
+            </details>
+            <details>
+              <summary>Can I use my own Arkiv node?</summary>
+              <div className="faq-body">
+                <NodeSetting />
+              </div>
             </details>
             <details>
               <summary>Does it prove who I am?</summary>

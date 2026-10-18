@@ -116,6 +116,11 @@ export type ProviderOptions = {
    */
   readPatienceMs?: number
   /**
+   * PROTOCOL section 10: the block before which this network still accepts a member list with
+   * permissionless extension. Default Tiramisu's (OWNER_ONLY_ACL_FROM_BLOCK); 0 on a new network.
+   */
+  legacyAclBefore?: bigint
+  /**
    * Never write: no lease renewal, no compaction. For audits that read as a member (an identity
    * unwraps the current key) without touching the document.
    */
@@ -253,6 +258,7 @@ export class ArkivProvider extends Observable<string> {
     return undefined
   }
   private readonly readPatienceMs: number
+  private readonly legacyAclBefore: bigint
 
   private async openPastAcl(past: StoredEntity | null): Promise<Acl | null> {
     try {
@@ -275,8 +281,10 @@ export class ArkivProvider extends Observable<string> {
     // whatever the walk found before it stopped, for a reader that cannot do better
     const stop = () => {
       this.listedSoFar = [...out]
+      this.listWalkIncomplete = true
       return null
     }
+    this.listWalkIncomplete = false
     let version = await this.pastAclEntity()
     if (version === undefined) return stop()
     if (version && this.walked?.at === version.updatedAt) return this.walked.result
@@ -313,6 +321,13 @@ export class ArkivProvider extends Observable<string> {
   private listedSoFar: Hex[] = []
   /** True if a walk hit its read limit: the member list has more versions than a reader will read. */
   listWalkCut = false
+  /**
+   * True if the last walk stopped before the list's first version for any reason: the read limit above,
+   * a read the RPC kept refusing (its per-minute budget), or a version sealed under a key this session
+   * lacks. erasedMembers() then names only whoever the walk had found, so a reader must say the check
+   * is incomplete rather than show nothing.
+   */
+  listWalkIncomplete = false
 
   /**
    * Addresses an earlier version of the member list named that today's list leaves out entirely,
@@ -387,6 +402,7 @@ export class ArkivProvider extends Observable<string> {
     this.autoCompact = options.autoCompact ?? true
     this.fullHistory = options.fullHistory ?? false
     this.readPatienceMs = options.readPatienceMs ?? 0
+    this.legacyAclBefore = options.legacyAclBefore ?? OWNER_ONLY_ACL_FROM_BLOCK
     this.readOnly = options.readOnly ?? false
     this.membershipAtBlock = options.membershipAtBlock ?? true
     // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
@@ -574,7 +590,7 @@ export class ArkivProvider extends Observable<string> {
   private async applyAclEntity(entity: StoredEntity): Promise<void> {
     if (entity.creator.toLowerCase() !== this.link.owner.toLowerCase()) return
     // owner-only lists from the cutoff on: a newer list anyone can extend breaks the rule, so it does not count
-    if (entity.permissionlessExtension && entity.createdAt >= OWNER_ONLY_ACL_FROM_BLOCK) return
+    if (entity.permissionlessExtension && entity.createdAt >= this.legacyAclBefore) return
     const frame = await this.openEntity(entity, KIND.acl)
     if (!frame) return
     // unwrap the current epoch key first if this session is a member: it opens the sealed roster

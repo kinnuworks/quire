@@ -10,7 +10,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 
 | # | Surface | Issue | Severity for us |
 |---|---|---|---|
-| 1 | RPC + viem | Keyless query budget runs out and the SDK waits out the Retry-After in silence | High: our demo script froze |
+| 1 | RPC + viem | Keyless query budget runs out, and the client waits out the Retry-After in silence before it throws | High: our demo script froze |
 | 2 | SDK errors | Oversized batches and low balances both surface as "Execution error without revert data" | High: cost us an hour |
 | 3 | RPC / docs | The real per-transaction payload limit is about 128 KB total, not 128 KiB per entity | Medium |
 | 4 | `watchEntityEvents` | No server-side filter: every client receives every entity event on the network | Medium |
@@ -26,7 +26,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 14 | Lifetime docs | A duration counts from the landing block; we used durations where `ExpirationTime.atBlock` was the right tool, and the docs could say so | Low, and our mistake: fixed by switching to `atBlock` |
 | 15 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
-## 1. Keyless query budget: the SDK hangs on 429 without saying so
+## 1. Keyless query budget: a 429 turns into a long silent wait
 
 **What happened.** Partway through creating our public demo documents, the script stopped printing anything. Ten minutes later it was still silent. A direct request explained it:
 
@@ -43,13 +43,15 @@ retry-after: 1086
 {"error":"ANON_COST_LIMITED","message":"unauthenticated query budget exhausted; get an API key at https://hub.arkiv.network for a monthly quota"}
 ```
 
-Each `arkiv_query` costs 100 units (`arkiv-cost: 100` header), so the keyless budget is 100 queries per window. viem's HTTP transport honours `Retry-After`, so our script simply stopped: no error, no event, no log. We saw `retry-after: 1086` (18 minutes) the first time; a later saved capture shows 243 seconds, since the value is the time left in the window.
+Each `arkiv_query` costs 100 units (`arkiv-cost: 100` header), so the keyless budget is 100 queries per window. The wait is not the Arkiv SDK's doing: the SDK uses viem's `http()` transport, whose default retry (three retries, `buildRequest.js` in viem) honours `Retry-After` on a 429. So our script simply stopped: no error, no event, no log, until the retries ran out and viem finally threw. We saw `retry-after: 1086` (18 minutes) the first time; a later saved capture shows 243 seconds, since the value is the time left in the window.
 
-**Expected.** A thrown error (or at least a callback) naming the budget and the reset time, so an app can tell the user.
+**Workaround.** Pass `retryCount: 0` (or a small number) to `http()` and handle the 429 yourself. `y-arkiv` does that: its fetch wrapper turns `ANON_COST_LIMITED` into a typed `QueryBudgetError` carrying the reset time, which the app shows as a countdown.
+
+**Expected.** A thrown error (or at least a callback) naming the budget and the reset time, so an app can tell the user, without each app having to know that viem's retry is what holds it.
 
 **Steps to reproduce.** Run about 100 `client.query(...)` calls from one IP without an access key, then call `client.query` again and time it. The raw 429 is saved by probe `budget429` in [probes/2026-10-17-18-28.json](probes/2026-10-17-18-28.json).
 
-**Suggested fix.** In the SDK's default transport, turn a 429 with `ANON_COST_LIMITED` into a typed error carrying `retryAfter`, and expose the `RateLimit` and `Arkiv-Quota-Used-Percent` headers. This extends [Arkiv-Network/reported-issues#17](https://github.com/Arkiv-Network/reported-issues/issues/17) with the exact budget (10,000 units, 100 queries) and the 18-minute wait we measured.
+**Suggested fix.** Document that the default transport waits out `Retry-After`, and in the SDK's default transport turn a 429 with `ANON_COST_LIMITED` into a typed error carrying `retryAfter`, and expose the `RateLimit` and `Arkiv-Quota-Used-Percent` headers. This extends [Arkiv-Network/reported-issues#17](https://github.com/Arkiv-Network/reported-issues/issues/17) with the exact budget (10,000 units, 100 queries) and the 18-minute wait we measured.
 
 **What we did.** `SdkStore` passes its own `fetchFn` to viem's `http()` transport. It adds an access key when one is configured and throws `QueryBudgetError` on 429 ([sdk.ts](../packages/y-arkiv/src/sdk.ts)). The editor shows that message instead of freezing. Opening a document costs three queries, and live edits cost none (see 5), so one browser rarely gets near the budget.
 

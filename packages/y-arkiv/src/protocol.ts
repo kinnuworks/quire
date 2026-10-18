@@ -54,11 +54,14 @@ export const LIFETIME = {
 } as const
 
 /**
- * Tiramisu block from which member lists are owner-only (no permissionless extension): the rule
- * landed on 18 October 2026 at 03:07 UTC and this block is just after it was deployed. Readers ignore
- * an ACL created at or after it that still lets anyone extend it.
+ * PROTOCOL section 10, a per-network deployment parameter: the block before which a member list with
+ * permissionless extension is still accepted (lists from before the owner-only rule). Tiramisu's is
+ * 722,300, just after the rule landed on 18 October 2026 at 03:07 UTC. On any other network it is 0:
+ * no such list is accepted. Pass `legacyAclBefore` to the provider for a network not listed here.
  */
-export const OWNER_ONLY_ACL_FROM_BLOCK = 722_300n
+export const LEGACY_ACL_BEFORE = { tiramisu: 722_300n, other: 0n } as const
+/** Tiramisu's value, the default: the provider reads Tiramisu unless told otherwise. */
+export const OWNER_ONLY_ACL_FROM_BLOCK = LEGACY_ACL_BEFORE.tiramisu
 
 /** How far before the snapshot's base we start reading updates, in blocks. Covers in-flight writes. */
 export const CATCH_UP_MARGIN_BLOCKS = 60n

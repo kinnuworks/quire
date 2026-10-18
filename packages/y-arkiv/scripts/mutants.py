@@ -1,7 +1,8 @@
 """Mutation check: removes each security rule in turn and confirms at least
 one test fails. Restores every file afterwards.
 
-    python3 packages/y-arkiv/scripts/mutants.py   (from anywhere)
+    python3 packages/y-arkiv/scripts/mutants.py            (from anywhere)
+    python3 packages/y-arkiv/scripts/mutants.py "copy note"   (only mutants whose name contains it)
 """
 import os
 import subprocess
@@ -49,12 +50,16 @@ MUTANTS = [
     (P, "head refreshed before bounded queries", "      this.sawHead(await this.store.head())\n    } catch {", "      void 0\n    } catch {"),
     (P, "recreated list detected by qs", "        const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)\n        if (older.length) return older", "        const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)\n        if (older.length) return []"),
     (A, "removal landing margin", "const REMOVAL_LANDING_MARGIN = 60n", "const REMOVAL_LANDING_MARGIN = 0n"),
-    (P, "owner-only lists from the cutoff", "    if (entity.permissionlessExtension && entity.createdAt >= OWNER_ONLY_ACL_FROM_BLOCK) return", "    if (false) return"),
+    (P, "owner-only lists from the cutoff", "    if (entity.permissionlessExtension && entity.createdAt >= this.legacyAclBefore) return", "    if (false) return"),
     (P, "authorship record from the first transaction", "    if (keepUntil !== undefined) acl.keepUntil = keepUntil.toString()", "    void keepUntil"),
     (P, "snapshots checked against the list at their block", " || thenSnap === false) {", ") {"),
-    (B, "earlier writer of a pasted passage named", "        const at = n.text.indexOf(key)\n        if (at < 0) return", "        const at = -1\n        if (at < 0) return"),
-    (B, "paste's own author held it first", "const own = held[i]!.get(run.address!)?.at ?? run.block!", "const own = run.block!"),
-    (B, "whitespace collapsed for the copy note", "const space = /\\s/.test(s[i]!)", "const space = false"),
+    (B, "copy note: a stretch must share enough words", "    if (common < n - k) continue\n    const last", "    if (true) continue\n    const last"),
+    (B, "copy note: writer's own older match", "        if (mine && mine.t < own) own = mine.t", "        void mine"),
+    (B, "copy note: writer dated less its k newest words", ".map((w) => w.t).sort((x, y) => y - x)[k]!", ".map((w) => w.t).sort((x, y) => y - x)[0]!"),
+    (B, "copy note: invisible characters dropped", "const INVISIBLE = /\\p{Cf}/u", "const INVISIBLE = /(?!)/u"),
+    (B, "copy note: own deletions left out of kept text", "c.author === a && !c.self)", "c.author === a)"),
+    (B, "copy note: one word in six may differ", "const k = Math.floor(p.length / 6)", "const k = 0"),
+    (P, "cut-short walk marked incomplete", "      this.listWalkIncomplete = true\n      return null", "      return null"),
     (P, "cut-short walk falls back", "        this.listWalkCut = true\n        return stop()", "        this.listWalkCut = true\n        return [...out]"),
     (P, "cut-short walk keeps what it found", "    const extra = this.listedSoFar.filter(", "    const extra = [].filter("),
     (P, "own unflushed text not proven", "    if (inRange) return { address, proven: true }", "    if (inRange || client === this.doc.clientID) return { address, proven: true }"),
@@ -94,6 +99,10 @@ MUTANTS = [
     (A, "ACL owner matches link", "if (h.owner.toLowerCase() !== owner.toLowerCase()) throw", "if (false) throw"),
     (A, "ACL lists its owner", "if (!rosterHidden && !members.some((m) => m.address.toLowerCase() === owner.toLowerCase() && m.role === \"owner\")) {", "if (false) {"),
 ]
+
+# optional arguments: run only the mutants whose name contains one of them
+if sys.argv[1:]:
+    MUTANTS = [m for m in MUTANTS if any(a in m[1] for a in sys.argv[1:])]
 
 originals = {path: open(path).read() for path in {P, A, R, B}}
 survivors = []

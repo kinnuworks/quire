@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import * as Y from "yjs"
 import { ArkivProvider, type DocLink, type FlushInfo, type Identity, type JoinRequest, prepareDoc, type RemoteEdit, SdkStore } from "y-arkiv"
+import { type ArkivNode, customNode } from "./session"
 
 export type Activity = {
   id: number
@@ -52,6 +53,8 @@ export type DocumentSession = {
   relay: boolean
   /** The visitor chose the relay on the budget notice: reconnect with it, for this tab only. */
   useRelay: () => void
+  /** The Arkiv node the visitor chose instead of the public endpoint, or null. */
+  node: ArkivNode | null
 }
 
 const RELAY_FLAG = "quire.relay"
@@ -72,8 +75,11 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   const [attempt, setAttempt] = useState(0)
   // opt in: a long-edited document can have many edits still on chain, and each page costs a query
   const [fullHistory, setFullHistory] = useState(false)
-  // off unless the visitor opts in after their free budget runs out; remembered for this tab only
-  const [relay, setRelay] = useState(relayChosen)
+  // read once: saving a different node reloads the page
+  const [node] = useState(customNode)
+  // off unless the visitor opts in after their free budget runs out; remembered for this tab only.
+  // Never with a node the visitor chose: the relay forwards to Arkiv's public endpoint, not to theirs
+  const [relay, setRelay] = useState(() => !node && relayChosen())
   useEffect(() => setFullHistory(false), [link?.doc])
   // the client id is derived from our address before the editor binds to the doc
   const { doc, salt } = useMemo(() => {
@@ -89,7 +95,7 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
 
   useEffect(() => {
     if (!link) return
-    const s = new SdkStore({ ...(identity ? { privateKey: identity.privateKey } : {}), ...(relay ? { relayUrl: "/api/rpc" } : {}) })
+    const s = new SdkStore({ ...(identity ? { privateKey: identity.privateKey } : {}), ...(node ?? {}), ...(relay ? { relayUrl: "/api/rpc" } : {}) })
     // "who wrote what" checks each edit's author against the member list as it stood at that edit's
     // block (one free read by key per block), so an owner who rewrites the list cannot forge authorship
     const p = new ArkivProvider(doc, { store: s, link, identity, salt, fullHistory, membershipAtBlock: true })
@@ -179,7 +185,13 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   return { doc, provider, store, activity: activity.current, error, tick, latencies: latencies.current, fullHistory,
     loadFullHistory: () => setFullHistory(true),
     relay,
+    node,
     useRelay: () => {
+      if (node) {
+        activity.current = [{ id: nextId++, at: Date.now(), kind: "error" as const, text: "Quire's relay stays off: it forwards to Arkiv's public endpoint, and you chose your own node (Explorer tab)" }, ...activity.current].slice(0, 200)
+        bump()
+        return
+      }
       try {
         sessionStorage.setItem(RELAY_FLAG, "1")
       } catch {

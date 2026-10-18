@@ -98,111 +98,324 @@ export function compositionTimeline(provider: ArkivProvider): TimelineEntry[] {
 }
 
 export type EarlierWriter = {
-  /** the passage as it reads now, and who proves it, from which block */
+  /** the passage as it reads now, its writer, and the block that writer finished it */
   text: string
   address: Hex
   block: bigint
-  /** someone else who typed exactly these words earlier, and over which blocks */
+  /** someone else who typed the same words (within the threshold) earlier, and over which blocks */
   first: Hex
   from: bigint
   to: bigint
 }
 
 /**
- * Passages whose words a different member held first. A member can delete someone else's paragraph
- * and paste the same words back as their own edit; blame then proves the copy, correctly, as theirs.
- * This replays every applied edit (open the provider with `fullHistory`) in block order and, after
- * each block, notes which member's own contiguous text held each passage, comparing with whitespace
- * collapsed. The paste is flagged only if someone else held the words before its own author ever did,
- * so a writer who fixed a typo, wrote the sentences out of order or added a space is still found, and a
- * member who pastes a copy of someone's words and deletes it at once cannot make the real author look
- * like the copier. Only passages of 24 characters or more are checked, so short phrases do not match.
+ * Passages whose words a different member typed first. A member can delete someone else's paragraph
+ * and paste or re-type the same words as their own edits; blame then proves the copy, correctly, as
+ * theirs. This replays every applied edit (open the provider with `fullHistory`) once, keeping deleted
+ * characters, so each member's text can be read in document order as they typed it, deletions and
+ * all, with every word dated by the block its characters arrived in.
+ *
+ * Each passage someone holds now (their whole run of text in a paragraph, each single edit inside it,
+ * and each sentence) is compared word by word with every member's typed text. Invisible format
+ * characters (zero-width spaces and the like) are dropped and whitespace only separates words. A
+ * passage of n words matches a stretch of someone's text if at most n/6 words differ (inserted,
+ * dropped or changed), so a copy with a word changed still matches. A match is dated by the newest
+ * word in it. The passage is flagged only if another member's match is older than every match of its
+ * own writer, counting the writer's passage as it stands now less its n/6 newest words. Someone who
+ * copied text while it was being written therefore copied words its writer already had, and cannot
+ * make the real writer look like the copier. Passages under 24 characters or over 80 words are not
+ * checked on their own (a long passage is checked sentence by sentence).
  */
 export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWriter[] {
-  const targets = blame(doc, provider)
-    .flat()
-    .filter((r) => r.proven && r.address && r.block !== undefined && norm(r.text).text.length >= 24)
-  if (!targets.length) return []
-  const blocks = new Map<bigint, Uint8Array[]>()
+  void doc
+  const history = [...provider.history].sort((x, y) => (x.block === y.block ? 0 : x.block < y.block ? -1 : 1))
+  if (!history.length) return []
   const authorOf = new Map<number, Hex>()
-  for (const h of [...provider.history].sort((x, y) => (x.block === y.block ? 0 : x.block < y.block ? -1 : 1))) {
-    blocks.set(h.block, [...(blocks.get(h.block) ?? []), h.update])
+  const proof = new Map<number, [number, number, number, Hex][]>()
+  const decoded = history.map((h) => Y.decodeUpdate(h.update))
+  history.forEach((h, n) => {
     // an edit carries only its writer's own client ids (the provider refuses anything else)
-    for (const st of Y.decodeUpdate(h.update).structs) authorOf.set(st.id.client, h.author)
-  }
-  // for each passage: the first block each member held it, and the earliest block among those characters
-  const held = targets.map(() => new Map<Hex, { at: bigint; from: bigint }>())
-  const keys = targets.map((r) => norm(r.text).text)
-  const replay = new Y.Doc()
-  for (const [block, updates] of blocks) {
-    Y.transact(replay, () => updates.forEach((u) => Y.applyUpdate(replay, u)))
-    for (const segment of segments(replay, authorOf)) {
-      const n = norm(segment.chars.map((c) => c.ch).join(""))
-      keys.forEach((key, i) => {
-        if (held[i]!.has(segment.author)) return
-        const at = n.text.indexOf(key)
-        if (at < 0) return
-        let from = block
-        for (let k = at; k < at + key.length; k++) {
-          const c = segment.chars[n.index[k]!]!
-          const b = provider.provenanceOf(c.client, c.clock)?.block
-          if (b !== undefined && b < from) from = b
-        }
-        held[i]!.set(segment.author, { at: block, from })
-      })
+    for (const st of decoded[n]!.structs) {
+      if (st instanceof Y.Skip || st instanceof Y.GC) continue
+      authorOf.set(st.id.client, h.author)
+      const list = proof.get(st.id.client) ?? []
+      list.push([st.id.clock, st.id.clock + st.length, Number(h.block), h.entity])
+      proof.set(st.id.client, list)
     }
-  }
-  const out: EarlierWriter[] = []
-  targets.forEach((run, i) => {
-    const own = held[i]!.get(run.address!)?.at ?? run.block!
-    let first: [Hex, { at: bigint; from: bigint }] | undefined
-    for (const [who, h] of held[i]!) if (who !== run.address && h.at < own && (!first || h.at < first[1].at)) first = [who, h]
-    if (first) out.push({ text: run.text, address: run.address!, block: run.block!, first: first[0], from: first[1].from, to: first[1].at })
   })
-  return out
-}
+  // characters their own writer deleted: a writer's typo fixes are not part of what they typed
+  const selfDeleted = new Map<number, [number, number][]>()
+  history.forEach((h, n) => {
+    for (const [client, ranges] of decoded[n]!.ds.clients) {
+      if (authorOf.get(client) !== h.author) continue
+      const list = selfDeleted.get(client) ?? []
+      for (const r of ranges) list.push([r.clock, r.clock + r.len])
+      selfDeleted.set(client, list)
+    }
+  })
+  for (const list of proof.values()) list.sort((x, y) => x[0] - y[0])
+  const proofOf = (client: number, clock: number) => {
+    const list = proof.get(client)
+    if (!list) return undefined
+    let lo = 0
+    let hi = list.length - 1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      const r = list[mid]!
+      if (clock < r[0]) hi = mid - 1
+      else if (clock >= r[1]) lo = mid + 1
+      else return r
+    }
+    return undefined
+  }
+  const replay = new Y.Doc({ gc: false })
+  for (const h of history) Y.applyUpdate(replay, h.update)
 
-/** Text with whitespace runs collapsed to one space and trimmed, and where each kept character came from. */
-function norm(s: string): { text: string; index: number[] } {
-  let text = ""
-  const index: number[] = []
-  for (let i = 0; i < s.length; i++) {
-    const space = /\s/.test(s[i]!)
-    if (space && (text === "" || text.endsWith(" "))) continue
-    text += space ? " " : s[i]
-    index.push(i)
-  }
-  if (text.endsWith(" ")) {
-    text = text.slice(0, -1)
-    index.pop()
-  }
-  return { text, index }
-}
-
-type Char = { ch: string; client: number; clock: number }
-/** Each paragraph's visible text cut into runs of one member's characters, in document order. */
-function segments(doc: Y.Doc, authorOf: Map<number, Hex>): { author: Hex; chars: Char[] }[] {
-  const paragraphs: Item[][] = []
-  for (const block of doc.getXmlFragment("default").toArray()) {
-    const items: Item[] = []
-    collect(block, items)
-    paragraphs.push(items)
-  }
-  const plain: Item[] = []
-  walk((doc.getText("t") as unknown as { _start: Item | null })._start, plain)
-  paragraphs.push(plain)
-  const out: { author: Hex; chars: Char[] }[] = []
-  for (const items of paragraphs) {
-    let current: { author: Hex; chars: Char[] } | undefined
-    for (const it of items) {
-      const author = authorOf.get(it.id.client)
-      if (!author) {
-        current = undefined
-        continue
+  // every text node's characters in document order, deleted ones included
+  const nodes: TypedChar[][] = []
+  const visit = (start: Item | null) => {
+    const chars: TypedChar[] = []
+    for (let item = start; item; item = item.right) {
+      const content = item.content as { str?: string; type?: unknown }
+      if (typeof content.str === "string") {
+        for (let i = 0; i < content.str.length; i++) {
+          const clock = item.id.clock + i
+          const p = proofOf(item.id.client, clock)
+          const author = authorOf.get(item.id.client)
+          chars.push({
+            ch: content.str[i]!,
+            author,
+            block: p?.[2] ?? Infinity,
+            entity: p?.[3],
+            deleted: item.deleted,
+            self: !!author && (selfDeleted.get(item.id.client) ?? []).some(([a, b]) => a <= clock && clock < b),
+          })
+        }
+      } else if (content.type) {
+        const type = content.type as { _start: Item | null }
+        if (content.type instanceof Y.XmlText) nodes.push(visit(type._start))
+        else visit(type._start)
       }
-      if (!current || current.author !== author) out.push((current = { author, chars: [] }))
-      for (let i = 0; i < it.content.str!.length; i++) current.chars.push({ ch: it.content.str![i]!, client: it.id.client, clock: it.id.clock + i })
+    }
+    return chars
+  }
+  visit((replay.getXmlFragment("default") as unknown as { _start: Item | null })._start)
+  nodes.push(visit((replay.getText("t") as unknown as { _start: Item | null })._start))
+
+  // each member's typed text, all of it and without their own deletions, one stream per member
+  const streams = new Map<Hex, { all: Word[]; kept: Word[] }>()
+  for (const chars of nodes) {
+    const authors = new Set(chars.map((c) => c.author).filter((a): a is Hex => !!a))
+    for (const a of authors) {
+      const s = streams.get(a) ?? { all: [], kept: [] }
+      if (s.all.length) s.all.push(BARRIER)
+      if (s.kept.length) s.kept.push(BARRIER)
+      s.all.push(...words(chars.filter((c) => c.author === a)))
+      s.kept.push(...words(chars.filter((c) => c.author === a && !c.self)))
+      streams.set(a, s)
+    }
+  }
+  const earliest = (p: string[], s: { all: Word[]; kept: Word[] } | undefined, k: number) => {
+    if (!s) return undefined
+    const x = match(p, s.all, k)
+    const y = match(p, s.kept, k)
+    return !x ? y : !y ? x : y.t < x.t || (y.t === x.t && y.f < x.f) ? y : x
+  }
+
+  const out: EarlierWriter[] = []
+  for (const chars of nodes) {
+    // the passages each member holds now: runs of one member's visible characters
+    const runs: { author: Hex; chars: TypedChar[] }[] = []
+    let current: { author: Hex; chars: TypedChar[] } | undefined
+    for (const c of chars) {
+      if (c.deleted || INVISIBLE.test(c.ch)) continue
+      if (!c.author) current = undefined
+      else if (current?.author === c.author) current.chars.push(c)
+      else runs.push((current = { author: c.author, chars: [c] }))
+    }
+    for (const run of runs) {
+      const ws = words(run.chars)
+      const flagged: { i: number; j: number; first: Hex; t: number; f: number }[] = []
+      for (const [i, j] of passages(ws)) {
+        const p = ws.slice(i, j).map((w) => w.w)
+        const k = Math.floor(p.length / 6)
+        let best: { who: Hex; t: number; f: number } | undefined
+        for (const [who, s] of [...streams].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
+          if (who === run.author) continue
+          const m = earliest(p, s, k)
+          if (m && (!best || m.t < best.t)) best = { who, ...m }
+        }
+        if (!best) continue
+        // the writer's own passage dates from its words less the k newest; or an older match of theirs
+        let own = ws.slice(i, j).map((w) => w.t).sort((x, y) => y - x)[k]!
+        const mine = earliest(p, streams.get(run.author), k)
+        if (mine && mine.t < own) own = mine.t
+        if (best.t < own) flagged.push({ i, j, first: best.who, t: best.t, f: best.f })
+      }
+      // report the longest flagged passages, not the sentences inside them
+      const kept: typeof flagged = []
+      for (const f of [...flagged].sort((x, y) => y.j - y.i - (x.j - x.i) || x.i - y.i)) {
+        if (!kept.some((g) => g.i <= f.i && f.j <= g.j)) kept.push(f)
+      }
+      for (const f of kept.sort((x, y) => x.i - y.i)) {
+        const span = run.chars.slice(ws[f.i]!.a, ws[f.j - 1]!.b)
+        out.push({
+          text: span.map((c) => c.ch).join(""),
+          address: run.author,
+          block: BigInt(Math.max(...span.map((c) => c.block))),
+          first: f.first,
+          from: BigInt(f.f),
+          to: BigInt(f.t),
+        })
+      }
     }
   }
   return out
+}
+
+type TypedChar = { ch: string; author: Hex | undefined; block: number; entity: Hex | undefined; deleted: boolean; self: boolean }
+/** A word: its text, the newest and oldest block among its characters, where it sits, and whether a sentence ends after it. */
+type Word = { w: string; t: number; f: number; a: number; b: number; end: boolean; entity: Hex | undefined | null }
+
+/** Zero-width spaces, joiners, direction marks and other format characters: invisible, so they are not text. */
+const INVISIBLE = /\p{Cf}/u
+const SPACE = /[\s\x1c-\x1f\x85]/u
+/** Stands between two text nodes in a stream; never matches and is never older than anything. */
+const BARRIER: Word = { w: "\u0000", t: Infinity, f: Infinity, a: 0, b: 0, end: true, entity: null }
+
+/** Characters cut into words at whitespace, with invisible characters dropped. */
+function words(chars: TypedChar[]): Word[] {
+  const out: Word[] = []
+  let w: Word | undefined
+  chars.forEach((c, n) => {
+    if (INVISIBLE.test(c.ch)) return
+    if (SPACE.test(c.ch)) {
+      if (w && c.ch === "\n") w.end = true
+      w = undefined
+      return
+    }
+    if (!w) out.push((w = { w: "", t: -Infinity, f: Infinity, a: n, b: n, end: false, entity: c.entity }))
+    w.w += c.ch
+    w.t = Math.max(w.t, c.block)
+    w.f = Math.min(w.f, c.block)
+    w.b = n + 1
+    if (w.entity !== c.entity) w.entity = null
+  })
+  for (const x of out) if (/[.!?]["')\]]*$/.test(x.w)) x.end = true
+  return out
+}
+
+/** The passages of a run to check, as word ranges: the whole run, each single edit's words, and each sentence. */
+function passages(ws: Word[]): [number, number][] {
+  const out = new Map<string, [number, number]>()
+  const add = (i: number, j: number) => {
+    if (j <= i || j - i > 80) return
+    let chars = j - i - 1
+    for (let n = i; n < j; n++) chars += ws[n]!.w.length
+    if (chars >= 24) out.set(`${i}:${j}`, [i, j])
+  }
+  add(0, ws.length)
+  for (let i = 0, n = 0; n < ws.length; n++) {
+    if (ws[n]!.end || n === ws.length - 1) {
+      add(i, n + 1)
+      i = n + 1
+    }
+  }
+  for (let i = 0, n = 1; n <= ws.length; n++) {
+    if (n === ws.length || !ws[n]!.entity || ws[n]!.entity !== ws[i]!.entity) {
+      if (ws[i]!.entity) add(i, n)
+      i = n
+    }
+  }
+  return [...out.values()].sort((x, y) => x[0] - y[0] || x[1] - y[1])
+}
+
+/**
+ * The oldest stretch of `s` within k word edits of `p` (insert, drop or change a word), dated by its
+ * newest word (t) and its oldest (f). Stretches that share too few words with `p` are skipped before
+ * the edit distance is worked out.
+ */
+function match(p: string[], s: Word[], k: number): { t: number; f: number } | undefined {
+  const n = p.length
+  if (s.length < n - k) return undefined
+  const want = new Map<string, number>()
+  for (const w of p) want.set(w, (want.get(w) ?? 0) + 1)
+  const width = Math.min(n + k, s.length)
+  const have = new Map<string, number>()
+  let common = 0
+  const add = (w: string, d: number) => {
+    const c = want.get(w)
+    if (c === undefined) return
+    const h = have.get(w) ?? 0
+    if (d > 0 && h < c) common++
+    if (d < 0 && h <= c) common--
+    have.set(w, h + d)
+  }
+  const slices: [number, number][] = []
+  for (let a = 0; a < width; a++) add(s[a]!.w, 1)
+  for (let a = 0; a + width <= s.length; a++) {
+    if (a > 0) {
+      add(s[a - 1]!.w, -1)
+      add(s[a + width - 1]!.w, 1)
+    }
+    if (common < n - k) continue
+    const last = slices[slices.length - 1]
+    if (last && a <= last[1]) last[1] = a + width
+    else slices.push([a, a + width])
+  }
+  let best: { t: number; f: number } | undefined
+  for (const [lo, hi] of slices) {
+    const m = align(p, s.slice(lo, hi), k)
+    if (m && (!best || m.t < best.t || (m.t === best.t && m.f < best.f))) best = m
+  }
+  return best
+}
+
+/** Semi-global word alignment: the stretch of `s` within k edits of all of `p` whose newest word is oldest. */
+function align(p: string[], s: Word[], k: number): { t: number; f: number } | undefined {
+  const n = p.length
+  const L = s.length
+  // value: the newest block among the words of s used so far; start: where in s the stretch began
+  let prevV = Array.from({ length: k + 1 }, () => new Float64Array(L + 1).fill(-Infinity))
+  let prevS = Array.from({ length: k + 1 }, () => Int32Array.from({ length: L + 1 }, (_, j) => j))
+  for (let i = 1; i <= n; i++) {
+    const curV = Array.from({ length: k + 1 }, () => new Float64Array(L + 1).fill(Infinity))
+    const curS = Array.from({ length: k + 1 }, () => new Int32Array(L + 1).fill(-1))
+    for (let d = 0; d <= k; d++) {
+      for (let j = 0; j <= L; j++) {
+        let v = Infinity
+        let st = -1
+        const take = (cv: number, cs: number) => {
+          if (cv < v || (cv === v && cs > st)) {
+            v = cv
+            st = cs
+          }
+        }
+        const t = j > 0 ? s[j - 1]!.t : 0
+        if (j > 0 && s[j - 1]!.w === p[i - 1]) take(Math.max(prevV[d]![j - 1]!, t), prevS[d]![j - 1]!)
+        if (d > 0) {
+          take(curV[d - 1]![j]!, curS[d - 1]![j]!)
+          take(prevV[d - 1]![j]!, prevS[d - 1]![j]!)
+          if (j > 0) {
+            take(Math.max(prevV[d - 1]![j - 1]!, t), prevS[d - 1]![j - 1]!)
+            take(Math.max(curV[d - 1]![j - 1]!, t), curS[d - 1]![j - 1]!)
+          }
+        }
+        curV[d]![j] = v
+        curS[d]![j] = st
+      }
+    }
+    prevV = curV
+    prevS = curS
+  }
+  let best: { t: number; f: number } | undefined
+  for (let j = 0; j <= L; j++) {
+    const t = prevV[k]![j]!
+    if (t === Infinity || t === -Infinity) continue
+    const a = prevS[k]![j]!
+    let f = Infinity
+    for (let x = a; x < j; x++) f = Math.min(f, s[x]!.f)
+    if (!best || t < best.t || (t === best.t && f < best.f)) best = { t, f }
+  }
+  return best
 }

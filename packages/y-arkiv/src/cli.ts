@@ -182,7 +182,7 @@ async function main() {
     for (const [a, t] of total) console.log(`${a}  ${t.proven} characters proven, ${t.claimed} claimed`)
     // a passage someone pasted back is theirs as written, but the same words may have been typed first by someone else
     for (const w of earlierWriters(doc, provider)) {
-      console.log(`copied     ${JSON.stringify(w.text.length > 60 ? `${w.text.slice(0, 57)}...` : w.text)} is ${short(w.address)}'s edit at block ${w.block}; ${short(w.first)} typed the same words first, blocks ${w.from} to ${w.to}`)
+      console.log(`copied     ${JSON.stringify(w.text.length > 60 ? `${w.text.slice(0, 57)}...` : w.text)} is ${short(w.address)}'s writing, finished at block ${w.block}; ${short(w.first)} typed the same words (or all but a few) first, blocks ${w.from} to ${w.to}`)
     }
     console.log(audited(provider))
     const note = recreated(provider, await provider.predatingEntities())

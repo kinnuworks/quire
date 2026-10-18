@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react"
 import { ArkivProvider, extendVersion, type Hex, SdkStore, type VersionLink } from "y-arkiv"
 import { ensureGas } from "../gas"
-import { newIdentity } from "../session"
+import { newIdentity, nodeOptions } from "../session"
 import { addressUrl, entityUrl, plainText, short } from "../format"
 
 export function VersionPage({ link }: { link: VersionLink }) {
   const [state, setState] = useState<{ text: string; creator: Hex; block: bigint } | { error: string } | null>(null)
   useEffect(() => {
-    ArkivProvider.openVersion(new SdkStore(), link).then(
+    ArkivProvider.openVersion(new SdkStore(nodeOptions()), link).then(
       (v) => setState({ text: plainText(v.doc), creator: v.creator, block: v.block }),
       (e: Error) => setState({ error: e.message }),
     )
@@ -57,7 +57,7 @@ function KeepAlive({ link }: { link: VersionLink }) {
       const gas = await ensureGas(id.address)
       if (!gas.ok) throw new Error(gas.reason)
       setState("Extending on Arkiv…")
-      const until = await extendVersion(new SdkStore({ privateKey: id.privateKey }), link, 3 * 365 * 86400)
+      const until = await extendVersion(new SdkStore({ ...nodeOptions(), privateKey: id.privateKey }), link, 3 * 365 * 86400)
       setState(`Kept alive until block ${until}, about three years. Anyone holding this link can do the same.`)
     } catch (e) {
       setState((e as Error).message.split("\n")[0]!)

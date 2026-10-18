@@ -243,3 +243,10 @@ pre.code { padding: 12px; border-radius: var(--r-md); background: #1B1B1F; color
 .scrub__doc { display: flex; flex-direction: column; }
 .scrub__doc .scrub__paper { flex: 1; }
 @media (max-width: 640px) { .hide-sm { display: none; } }
+
+/* Arkiv node setting: Explorer tab and the FAQ */
+.node-setting{display:grid;gap:8px;max-width:520px}
+.node-setting p.small{margin:0}
+.node-setting .input{width:100%}
+.node-actions{display:flex;flex-wrap:wrap;gap:8px}
+.faq-body{padding-bottom:22px}

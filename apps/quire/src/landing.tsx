@@ -205,7 +205,7 @@ export function HeroStage() {
             <span className="window__title"><span className="hide-sm">Water access study · </span>Who wrote what</span>
           </div>
           <div className="hero-doc__note">
-            <b>Typed first by someone else.</b> This paragraph is one paste by Asha. Bea typed the same words earlier, at blocks 734926 to 734961.
+            <b>Typed first by someone else.</b> This paragraph is one paste by Asha. Bea typed the same words, or all but a few, earlier, at blocks 734926 to 734955.
           </div>
           <div className="hero-doc__body">
             <h4>Water access study, section 3</h4>
@@ -266,7 +266,7 @@ export function ProofStrip() {
   const items = [
     { n: "3", t: "live documents on Tiramisu, readable right now" },
     { n: "31/31", t: "runs where two independent readers agree" },
-    { n: "177", t: "tests, and 82 of 82 broken security rules caught" },
+    { n: "189", t: "tests, and 86 of 86 broken security rules caught" },
     { n: "MIT", t: "spec, JSON Schema, vectors, two readers" },
   ]
   return (

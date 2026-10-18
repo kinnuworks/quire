@@ -2,8 +2,8 @@ import Collaboration from "@tiptap/extension-collaboration"
 import Placeholder from "@tiptap/extension-placeholder"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
-import { useEffect, useRef, useState } from "react"
-import { type DocLink, earlierWriters, type Identity } from "y-arkiv"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { type DocLink, earlierWriters, type Identity, type StoredEntity } from "y-arkiv"
 import { AuthorshipBars, blockAuthors, setMembers } from "../authorship"
 import { rotatedNow, rotationDue } from "../autorotate"
 import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING, waitForGas } from "../gas"
@@ -13,7 +13,7 @@ import { useDocument } from "../useDocument"
 
 type Tab = "people" | "activity" | "chain" | "history" | "lifetime"
 /** Shown when Arkiv's free read budget for this network is used up. Nothing is lost; the page retries by itself. */
-function BudgetCard({ retryAt, relay, useRelay }: { retryAt: number; relay: boolean; useRelay: () => void }) {
+function BudgetCard({ retryAt, relay, ownNode, useRelay }: { retryAt: number; relay: boolean; ownNode: boolean; useRelay: () => void }) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -27,7 +27,9 @@ function BudgetCard({ retryAt, relay, useRelay }: { retryAt: number; relay: bool
         <p className="small">
           The public RPC gives every IP address a small query budget, and it refills on its own. Your document and its link are safe. This page reconnects in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}, or try from another network.
         </p>
-        {relay ? (
+        {ownNode ? (
+          <p className="small">You chose your own Arkiv node (Explorer tab), so Quire's relay stays off: it forwards to the public endpoint.</p>
+        ) : relay ? (
           <p className="small">Quire's relay is busy too. It will be tried again when the page reconnects.</p>
         ) : (
           <>
@@ -101,21 +103,43 @@ export function DocPage({ link }: { link: DocLink }) {
     if (blame && !session.fullHistory) session.loadFullHistory()
   }, [blame, session.fullHistory])
   // an owner who erases someone from the member list hides their edits from the everyday read, so on
-  // open the app walks the list's history; if anyone was erased it checks every edit, toggle or not
+  // open the app walks the list's history; if anyone was erased, or the walk was cut short (the RPC's
+  // read budget, a list renewed thousands of times), it checks every edit, toggle or not, and tries the
+  // walk once more a minute later, when the budget has refilled
   const [erased, setErased] = useState<string[]>([])
+  const [walkIncomplete, setWalkIncomplete] = useState(false)
+  // entities older than the member list in use: the owner deleted the list and made a new one
+  const [older, setOlder] = useState<{ entities: StoredEntity[]; truncated: boolean; listAt: bigint } | null>(null)
   const erasureChecked = useRef("")
+  const retry = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(retry.current), [])
   useEffect(() => {
     if (!provider || provider.status !== "synced" || erasureChecked.current === link.doc) return
     erasureChecked.current = link.doc
-    provider.erasedMembers().then(
-      (found) => {
-        setErased(found)
-        if (found.length && !session.fullHistory) session.loadFullHistory()
-      },
-      () => {},
+    const loadFull = session.loadFullHistory
+    const check = (again: boolean) => {
+      // the provider in use by then: loading every edit opens a new one
+      const p = providerRef.current ?? provider
+      p.erasedMembers().then(
+        (found) => {
+          setErased(found)
+          setWalkIncomplete(p.listWalkIncomplete)
+          if (found.length || p.listWalkIncomplete) loadFull()
+          if (p.listWalkIncomplete && again) retry.current = setTimeout(() => check(false), 65_000)
+        },
+        () => setWalkIncomplete(true),
+      )
+    }
+    check(true)
+    provider.predatingEntities().then(
+      (entities) => setOlder({ entities, truncated: provider.predatingTruncated, listAt: provider.aclCreatedAt }),
+      () => undefined,
     )
-  }, [provider, provider?.status, link.doc, session.fullHistory])
-  const copies = (blame || erased.length > 0) && session.fullHistory && provider?.status === "synced" ? earlierWriters(doc, provider) : []
+  }, [provider, provider?.status, link.doc])
+  // the copy note replays every edit, so it runs again only when the set of edits changes, not on every render
+  const historyLength = provider?.history.length ?? 0
+  const copyCheck = (blame || erased.length > 0) && session.fullHistory && provider?.status === "synced"
+  const copies = useMemo(() => (copyCheck && provider ? earlierWriters(doc, provider) : []), [copyCheck, provider, doc, historyLength])
 
   // scheduled rotation: the owner turned it on and a full period has passed since the last one
   const rotating = useRef(false)
@@ -231,7 +255,7 @@ export function DocPage({ link }: { link: DocLink }) {
         </button>
       </header>
 
-      {session.error?.kind === "budget" && <BudgetCard retryAt={session.error.retryAt} relay={session.relay} useRelay={session.useRelay} />}
+      {session.error?.kind === "budget" && <BudgetCard retryAt={session.error.retryAt} relay={session.relay} ownNode={!!session.node} useRelay={session.useRelay} />}
       {session.error?.kind === "other" && <div className="ws-banner error">{session.error.message}</div>}
       {role === "reader" && synced && (
         <div className="ws-banner accent">
@@ -295,26 +319,42 @@ export function DocPage({ link }: { link: DocLink }) {
       {erased.length > 0 && (
         <div className="ws-banner accent">
           <span>
-            <b>The owner erased {erased.length === 1 ? "a member" : `${erased.length} members`} from the member list:</b> {erased.map((a) => `${a.slice(0, 8)}…${a.slice(-4)}`).join(", ")}. Earlier versions of the list, read from the chain, still name them, so Quire checked every edit still on chain and what they wrote while members still counts as theirs.
+            <b>The owner erased {erased.length === 1 ? "a member" : `${erased.length} members`} from the member list:</b> {erased.map((a) => `${a.slice(0, 8)}…${a.slice(-4)}`).join(", ")}. Earlier versions of the list, read from the chain, still name them, so Quire checked every edit still on chain: what they wrote while members is applied and proven as theirs wherever it still stands. Text of theirs that was deleted is not in today's version, and if someone pasted or re-typed it, plain blame credits whoever did; a note below says who typed it first, and <code>y-arkiv blame --at &lt;block&gt;</code> shows it proven as theirs at that block.
           </span>
         </div>
       )}
 
-      {session.fullHistory && provider?.status === "synced" && (provider.auditNarrowed || provider.auditUnchecked > 0) && (
+      {older && older.entities.length > 0 && (
+        <div className="ws-banner accent">
+          <span>
+            <b>The owner deleted the member list and made a new one.</b> {older.entities.length} {older.entities.length === 1 ? "entity on chain predates" : "entities on chain predate"} the list in use (made at block {String(older.listAt)}), written by {[...new Set(older.entities.map((e) => e.creator.toLowerCase()))].map((a) => `${a.slice(0, 8)}…${a.slice(-4)}`).join(", ")}. This page reads only what came after the new list, so whatever they wrote before it is not shown here. Run <code>y-arkiv blame --at {String(older.listAt - 1n)}</code> to read the earlier document and see who wrote it.
+          </span>
+        </div>
+      )}
+      {older && !older.entities.length && older.truncated && (
+        <div className="ws-banner">
+          <span>
+            <b>Not checked to the end:</b> over 1,000 entities are stamped before this member list (made at block {String(older.listAt)}), so the app could not rule out an earlier list. Run <code>y-arkiv verify</code> to check.
+          </span>
+        </div>
+      )}
+
+      {(walkIncomplete || (session.fullHistory && provider?.status === "synced" && (provider.auditNarrowed || provider.auditUnchecked > 0))) && (
         <div className="ws-banner">
           <span>
             <b>This check is incomplete.</b>{" "}
-            {provider.auditNarrowed && (provider.listWalkCut ? "The member list has more versions than the app will read, and the document holds more entities than it reads unfiltered, so someone the owner erased may be missing. " : "The member list's history could not be read in full, and the document holds more entities than the app reads unfiltered, so someone the owner erased may be missing. ")}
-            {provider.auditUnchecked > 0 && `${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit was" : "edits were"} judged by today's member list because the list at ${provider.auditUnchecked === 1 ? "its" : "their"} block could not be read. `}
+            {(walkIncomplete || provider?.auditNarrowed) && (provider?.listWalkCut ? "The member list has more versions than the app will read, so someone the owner erased may not be named. Quire loaded every edit it can read instead. " : "The member list's history could not be read to its first version (the network's read limit, or a version this key cannot open), so someone the owner erased may not be named. Quire loaded every edit it can read instead and tries the list again in a minute. ")}
+            {provider?.auditNarrowed && "The document also holds more entities than the app reads unfiltered. "}
+            {provider && provider.auditUnchecked > 0 && `${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit was" : "edits were"} judged by today's member list because the list at ${provider.auditUnchecked === 1 ? "its" : "their"} block could not be read. `}
             Run <code>y-arkiv blame</code>, which waits out the network's read limit.
           </span>
         </div>
       )}
 
       {copies.map((c) => (
-        <div className="ws-banner accent" key={`${c.block}-${c.first}`}>
+        <div className="ws-banner accent" key={`${c.block}-${c.first}-${c.text.slice(0, 24)}`}>
           <span>
-            <b>Typed first by someone else.</b> “{c.text.length > 80 ? `${c.text.slice(0, 77)}…` : c.text}” is a single edit by {c.address.slice(0, 8)}…{c.address.slice(-4)} at block {String(c.block)}, but {c.first.slice(0, 8)}…{c.first.slice(-4)} typed the same words earlier, at blocks {String(c.from)} to {String(c.to)}. Run <code>y-arkiv blame --at {String(c.to + 5n)}</code> to see them proven as theirs.
+            <b>Typed first by someone else.</b> “{c.text.length > 80 ? `${c.text.slice(0, 77)}…` : c.text}” is proven as {c.address.slice(0, 8)}…{c.address.slice(-4)}'s writing, finished at block {String(c.block)}, but {c.first.slice(0, 8)}…{c.first.slice(-4)} typed the same words, or all but a few, earlier, at blocks {String(c.from)} to {String(c.to)}. Run <code>y-arkiv blame --at {String(c.to + 5n)}</code> to see them proven as theirs.
           </span>
         </div>
       ))}

@@ -6,7 +6,7 @@ import { autoRotateSetting, ROTATE_EVERY_DAYS, rotatedNow, setAutoRotate } from 
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
 import { balanceOf, formatGlm, sendGas } from "./gas"
-import { forgetDocument } from "./session"
+import { customNode, forgetDocument, resetNode, saveNode, wsFor } from "./session"
 import type { DocumentSession } from "./useDocument"
 
 function Addr({ a, label }: { a: string; label?: string }) {
@@ -300,7 +300,57 @@ export function ChainPanel({ session }: { session: DocumentSession }) {
           From this tab: {session.store?.calls.query ?? 0} queries, {session.store?.calls.getEntity ?? 0} entity reads (not billed), {session.store?.calls.write ?? 0} writes.
         </p>
       </section>
+      <section>
+        <h4>Arkiv node</h4>
+        <NodeSetting />
+      </section>
     </div>
+  )
+}
+
+/**
+ * Which Arkiv node this browser reads and writes through. The site's CSP allows any https: and wss: host
+ * in connect-src for this reason: the visitor picks the node, so it cannot be listed in advance.
+ */
+export function NodeSetting() {
+  const [current] = useState(customNode)
+  const [http, setHttp] = useState(current?.httpUrl ?? "")
+  const [ws, setWs] = useState(current && current.wsUrl !== wsFor(current.httpUrl) ? current.wsUrl : "")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setError(null)
+    const err = await saveNode(http, ws)
+    if (!err) return location.reload()
+    setError(err)
+    setBusy(false)
+  }
+
+  return (
+    <form className="node-setting" onSubmit={save}>
+      <p className="small">
+        Reading and writing through <span className="mono">{current ? new URL(current.httpUrl).host : "Arkiv's public Tiramisu RPC"}</span>
+        {current ? "" : " (the default)"}.
+      </p>
+      <p className="muted small">
+        The node you read through sees your IP address, which documents you open and their members' addresses, never the text, names or keys. Choose one you trust, such as your own.
+        {current && " Quire's relay stays off while you use it."}
+      </p>
+      <input className="input" type="url" aria-label="RPC URL" placeholder="https://your-node.example/rpc" value={http} onChange={(e) => setHttp(e.target.value)} spellCheck={false} />
+      <input className="input" type="url" aria-label="WebSocket URL" placeholder="wss:// URL, if not the same host" value={ws} onChange={(e) => setWs(e.target.value)} spellCheck={false} />
+      {error && <p className="error small">{error}</p>}
+      <div className="node-actions">
+        <button className="btn btn-sm btn-outline" disabled={busy || !http.trim()}>
+          {busy ? "Checking the node…" : "Save and reload"}
+        </button>
+        <button type="button" className="btn btn-sm btn-ghost" disabled={busy || !current} onClick={() => (resetNode(), location.reload())}>
+          Reset
+        </button>
+      </div>
+    </form>
   )
 }
 

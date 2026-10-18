@@ -1766,16 +1766,17 @@ class _Peers:
         self.updates.append((e, data, quire_read.update_structs(data)))
 
     def type_slowly(self, who: str, words: str, at: int | None = None) -> None:
-        pos = len(str(self.text(who))) if at is None else at
+        # pycrdt counts text positions in UTF-8 bytes
+        pos = len(str(self.text(who)).encode()) if at is None else len(str(self.text(who))[:at].encode())
         for k in range(0, len(words), 12):
             chunk = words[k:k + 12]
             self.edit(who, lambda d, p=pos, c=chunk: self.text(who).insert(p, c))
-            pos += len(chunk)
+            pos += len(chunk.encode())
 
     def replace_all(self, who: str, words: str) -> None:
         def go(d):
             t = self.text(who)
-            del t[0:len(str(t))]
+            del t[0:len(str(t).encode())]
             t.insert(0, words)
         self.edit(who, go)
 
@@ -1857,6 +1858,76 @@ class EarlierWritersTests(unittest.TestCase):
         p.replace_all("asha", "Short line.")
         p.type_slowly("asha", " And then Asha wrote a long paragraph of her own.")
         self.assertEqual(p.found(), [])
+
+    # round 18 cases, as in packages/y-arkiv/test/round18/copy-note.test.ts
+
+    def test_a_trimmed_copy_pasted_and_deleted_cannot_frame_the_real_author(self) -> None:
+        original = "The water tests failed at ward fourteen badly in March."
+        trimmed = original.replace("badly ", "")
+        p = _Peers()
+        p.replace_all("asha", original)
+        p.edit("bea", lambda d: p.text("bea").insert(len(original), "\n" + trimmed))
+        def trim(d):
+            t = p.text("bea")
+            del t[len(original):len(original) + len(trimmed) + 1]
+            at = str(t).index("badly ")
+            del t[at:at + len("badly ")]
+        p.edit("bea", trim)
+        self.assertEqual(str(p.text("asha")), trimmed)
+        self.assertEqual(p.found(), [])
+
+    def test_a_re_typed_copy_is_found(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING)
+        p.replace_all("asha", "")
+        p.type_slowly("asha", self.FINDING)
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_a_copy_with_one_word_changed_is_found(self) -> None:
+        for xml in (False, True):
+            p = _Peers(xml)
+            p.type_slowly("bea", self.FINDING)
+            p.replace_all("asha", self.FINDING.replace("eleven", "twelve"))
+            self.assertEqual(p.found(), [("asha", "bea")], f"xml={xml}")
+
+    def test_two_typos_fixed_while_typing_still_count(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING.replace("thirty", "thrity").replace("eleven", "elevne"))
+        for wrong, right in (("thrity", "thirty"), ("elevne", "eleven")):
+            d = next(n for n in range(len(wrong)) if wrong[n] != right[n])  # retype only the two swapped letters
+            i = str(p.text("bea")).index(wrong) + d
+            def fix(_doc, i=i, d=d, right=right):
+                t = p.text("bea")
+                del t[i:i + 2]
+                t.insert(i, right[d:d + 2])
+            p.edit("bea", fix)
+        self.assertEqual(str(p.text("bea")), self.FINDING)
+        p.replace_all("asha", self.FINDING)
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_zero_width_spaces_do_not_hide_a_copy(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING)
+        p.replace_all("asha", self.FINDING.replace(" ", " \u200b"))
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_one_invisible_character_from_someone_else_does_not_split_her_sentence(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING[:24])
+        p.edit("asha", lambda d: p.text("asha").insert(12, "\u200b"))
+        p.type_slowly("bea", self.FINDING[24:])
+        p.replace_all("asha", self.FINDING)
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_a_copy_of_half_typed_text_cannot_frame_the_writer(self) -> None:
+        # Bea copies Asha's sentence while Asha is still finishing it; Asha typed those words first
+        p = _Peers()
+        half = self.FINDING[:45]  # all but the last word: within one word of the finished sentence
+        p.type_slowly("asha", half)
+        p.edit("bea", lambda d: p.text("bea").insert(len(str(p.text("bea")).encode()), "\n" + half))
+        p.type_slowly("asha", self.FINDING[45:], at=45)
+        # Asha is not named; Bea's copy, still on the page, is
+        self.assertEqual(p.found(), [("bea", "asha")])
 
 
 class SchemaTests(unittest.TestCase):

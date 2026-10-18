@@ -1549,7 +1549,7 @@ export class ArkivProvider extends Observable<string> {
     const aclLife = blocks(LIFETIME.acl)
     const me = this.identity.address.toLowerCase()
     const snapshotDue = due(this.snapshot.expiresAt)
-    // only the owner renews the member list (documents made before 18 Oct 2026 let any member do it);
+    // only the owner renews the member list (documents made before owner-only lists, 18 Oct 2026 03:07 UTC, let any member do it);
     // re-read its expiry only when it looks due: someone may have extended it already
     const mayExtendAcl = this.role === "owner" || this.aclOpenToAll
     if (mayExtendAcl && due(this.aclExpiresAt, aclLife)) await this.refreshAclExpiry()

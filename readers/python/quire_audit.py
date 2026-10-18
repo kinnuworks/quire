@@ -330,7 +330,7 @@ def check_flags(e: Entity) -> list[str]:
 
     A version is readonly with permissionless extension. The ACL is not
     readonly, since the owner patches it, and only its owner can extend it, so
-    no stranger can keep member names alive; documents made before 18 Oct 2026
+    no stranger can keep member names alive; documents made before this rule (18 Oct 2026, 03:07 UTC)
     carry permissionless extension on the ACL, which is still accepted. Every other kind (update, snapshot, join) is readonly and
     nothing else, so its creator can never patch it later. A chunk takes its
     head's flags, and the head is not visible without decrypting, so a chunk

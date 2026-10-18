@@ -26,7 +26,12 @@ export function describeError(e: unknown): SessionError {
     if (m) return { kind: "budget", retryAt: Date.now() + Number(m[1]) * 60_000 }
     cause = c.cause
   }
-  const err = e as { shortMessage?: string; message?: string }
+  const err = e as { shortMessage?: string; message?: string; type?: string }
+  // a refused WebSocket arrives as a bare error event: the browser hides the gateway's reason
+  // (a per-IP cap on live connections), so say what it almost always is
+  if (!err.shortMessage && !err.message && err.type === "error") {
+    return { kind: "other", message: "Arkiv refused the live connection, most likely its limit on live connections per network. Checking by query instead." }
+  }
   return { kind: "other", message: (err.shortMessage ?? err.message ?? "Something went wrong").split("\n")[0]!.slice(0, 200) }
 }
 

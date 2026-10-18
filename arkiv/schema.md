@@ -17,7 +17,7 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 
 | Kind | `qk` | Creator | Payload (encrypted) | Expiration | Renewal | Flags |
 |---|---|---|---|---|---|---|
-| Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 90 days from the owner's last visit, or the owner's `keepUntil` | extended and changed only by the owner (`extendEntity`, `patchEntity`) | none: owner-only extension, so no stranger keeps names alive (documents made before 18 Oct 2026 carry `permissionlessExtension`, still accepted) |
+| Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 90 days from the owner's last visit, or the owner's `keepUntil` | extended and changed only by the owner (`extendEntity`, `patchEntity`) | none: owner-only extension, so no stranger keeps names alive (documents made before this rule (18 Oct 2026, 03:07 UTC), the two original demos among them, carry `permissionlessExtension`, still accepted) |
 | Update | `u` | a member | Yjs update merging one writer's edits from about one block | as long as a new snapshot (30 days or `keepUntil`) | folded into a snapshot before it can expire; its creator may extend it to `keepUntil` to keep proof (Keep my proof) | `readonly` |
 | Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or exactly `keepUntil` (`ExpirationTime.atBlock`) | its creator extends it, or another member writes a fresh one; Keep my proof writes one that lasts to `keepUntil` | `readonly` |
 | Snapshot chunk | `c` | the snapshot's creator | next part of the state | same as its head | extended together with its head | `readonly` |

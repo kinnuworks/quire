@@ -17,7 +17,7 @@ A document is a set of Arkiv entities that share a random 32-byte document id. T
 | join request | `j` | anyone with the link | asks the owner to add a public key | 1 hour | readonly |
 | version | `v` | any member | frozen copy with its own key | 1 year | readonly, permissionless extension |
 
-Updates, snapshots, their chunks and join requests MUST be created `readonly`, so their creator can never patch them: a patch keeps the original `createdAt`, so a patchable edit could be rewritten later and still look as old as it was (Arkiv does let a readonly entity be extended and deleted, which keep-proof, renewal and shred need). Readers MUST ignore an entity of those kinds that is not readonly. Readers MUST also ignore an update, snapshot or chunk whose `expiresAt` is later than the larger of the ACL's `keepUntil` and the entity's own `updatedAt` (the block of its creation or latest extension) plus a 30-day lease, with ten minutes of slack: the owner's lifetime is the ceiling for every readable copy, whatever client wrote it. The ceiling depends only on the entity and the ACL, never on the reader's head, so live and cold readers agree. Auditors SHOULD take `keepUntil` from the ACL as it stood at the entity's `updatedAt` (read by key with `atBlock`), so an owner who lowers `keepUntil` later cannot take back a member's kept proof. Readers fetch only `qs <= head + 60`: a valid entity's `qs` is at most its `createdAt`, so this keeps far-future junk out of every query. Versions and their chunks are readonly with permissionless extension. The ACL is not readonly (the owner patches it) and has no permissionless extension, so only the owner can extend it and no stranger can keep member names and public keys alive; readers MUST accept an ACL with or without permissionless extension, since documents made before 18 Oct 2026 carry it, and MUST ignore a readonly one. Every other entity (updates, snapshots and their chunks, join requests) is readonly with no permissionless extension, so only its own creator can extend it, and nobody outside the member list can keep a document's content alive.
+Updates, snapshots, their chunks and join requests MUST be created `readonly`, so their creator can never patch them: a patch keeps the original `createdAt`, so a patchable edit could be rewritten later and still look as old as it was (Arkiv does let a readonly entity be extended and deleted, which keep-proof, renewal and shred need). Readers MUST ignore an entity of those kinds that is not readonly. Readers MUST also ignore an update, snapshot or chunk whose `expiresAt` is later than the larger of the ACL's `keepUntil` and the entity's own `updatedAt` (the block of its creation or latest extension) plus a 30-day lease, with ten minutes of slack: the owner's lifetime is the ceiling for every readable copy, whatever client wrote it. The ceiling depends only on the entity and the ACL, never on the reader's head, so live and cold readers agree. Auditors SHOULD take `keepUntil` from the ACL as it stood at the entity's `updatedAt` (read by key with `atBlock`), so an owner who lowers `keepUntil` later cannot take back a member's kept proof. Readers fetch only `qs <= head + 60`: a valid entity's `qs` is at most its `createdAt`, so this keeps far-future junk out of every query. Versions and their chunks are readonly with permissionless extension. The ACL is not readonly (the owner patches it) and has no permissionless extension, so only the owner can extend it and no stranger can keep member names and public keys alive; readers MUST accept an ACL with or without permissionless extension, since documents made before this rule (18 Oct 2026, 03:07 UTC) carry it, and MUST ignore a readonly one. Every other entity (updates, snapshots and their chunks, join requests) is readonly with no permissionless extension, so only its own creator can extend it, and nobody outside the member list can keep a document's content alive.
 
 The link a person shares carries three values in the URL fragment: the document id, a 32-byte link secret, and the owner's address. The fragment is never sent to any server.
 
@@ -186,3 +186,24 @@ A new member generates a key pair for this document only and publishes a join re
 For each entity, anyone can see: the creator and owner addresses, creation and expiry blocks, the four attributes, the flags, and a payload whose length is one of six sizes. Everything else, including how many documents a person writes in, needs the link secret. Each member uses a fresh key per document, so their address in one document does not link to their address in another.
 
 What remains visible: which addresses write to a given document id, and when. Writers flush on block boundaries rather than per keystroke, which blurs typing rhythm, but activity timing is not hidden. Gas is also visible: if one sponsor funds every per-document key, an observer can group those keys as funded by the same sponsor.
+
+## 9. Versions and compatibility
+
+This document specifies protocol version 1. The version shows in four places, and they move together:
+
+- the `qp` attribute, `quire1`;
+- the outer header's version byte, `0x01`;
+- the frame's version byte, `0x01`;
+- the ACL header's `v`, `1`.
+
+Readers MUST treat an entity with any other value in one of these places as absent, exactly as they treat a malformed one. Headers are matched field for field against `spec/schema`, so even a new optional header field would make every version 1 reader ignore the entity.
+
+Every change to a header, a frame, an attribute or a rule in section 5 is therefore a new version: `qp = quire2` and version bytes `0x02`. A document is written in one version for its whole life. Version 2 readers MAY read version 1 documents; version 1 readers never see version 2 entities, because their queries name `quire1`.
+
+Changes that need no new version:
+
+- Clarifications that leave every vector's expected result unchanged.
+- New conformance cases in `spec/vectors/cases` that pin down behaviour this document already requires.
+- Client behaviour that writes valid version 1 entities. For example, when a writer compacts, how often it renews a lease, or that it sets an absolute expiry with `atBlock`.
+
+The JSON Schemas in `spec/schema` and the vectors in `spec/vectors` are versioned with this document. A reader claims version 1 conformance by producing every case's expected text and applied set; `scripts/compare-readers.ts` checks two readers against each other and against the vectors.

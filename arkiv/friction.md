@@ -228,9 +228,11 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **Measured** ([probe](probes/2026-10-18-02-18.json), from `npx tsx scripts/friction-probes.ts patchVsExtend`): on a plain entity created at block 0xafcc0, an extension moved `updatedAt` to 0xafcc3 and a later patch moved it again, to 0xafcc7; `createdAt` never changed. So `updatedAt != createdAt` cannot separate a content change from a renewed lease. A `readonly` entity refuses the patch ("created readonly, so its contents can never change. Its expiry can still be extended, and it can be transferred or deleted") and accepts extension and deletion.
 
+The SDK's own type documents `updatedAt` as "Block the entity was last patched at" (`Entity.updatedAt` in `@arkiv-network/sdk` 0.8.1), which the probe contradicts: an extension moves it too. A reader who trusted that comment would mistake a renewed lease for rewritten content.
+
 **Expected.** A separate content-change marker (a `patchedAt`, or a content hash in the metadata), or docs that point apps which care about provenance to `readonly`.
 
-**Suggested fix.** Expose when the payload last changed, separately from expiry changes, and mention `readonly` in the patch docs as the way to make content immutable.
+**Suggested fix.** Expose when the payload last changed, separately from expiry changes; correct the `updatedAt` doc comment to say it moves on extension too; and mention `readonly` in the patch docs as the way to make content immutable.
 
 **What we did.** Every update, snapshot, chunk and join request is created `readonly`, and both readers ignore those kinds unless they are readonly ([PROTOCOL.md](../PROTOCOL.md) section 1, edge case `update-not-readonly`).
 

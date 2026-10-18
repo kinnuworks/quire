@@ -986,7 +986,7 @@ class VectorSource(Source):
         return next((e for e in self.entities if e.key == key.lower()), None)
 
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
-        return [e for e in self.entities if str(e.attr("qd")).lower() == doc.lower() and isinstance(e.attr("qs"), int) and e.attr("qs") < block][:200]
+        return [e for e in self.entities if str(e.attr("qd")).lower() == doc.lower() and e.kind in ("u", "s") and isinstance(e.attr("qs"), int) and e.attr("qs") < block]
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         return [
@@ -1057,7 +1057,11 @@ class RpcSource(Source):
         return e if e is not None and well_formed(e) else None
 
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
-        return self._run(f"qp = str('quire1') AND qd = bytes32({doc.lower()}) AND qs <= u64({block - 1})", max_pages=1)
+        # edits and snapshots, up to five pages of each, so junk stamped early cannot push the evidence off one page
+        out: list[Entity] = []
+        for kind in ("u", "s"):
+            out.extend(self._run(self._base(doc, kind) + f" AND qs <= u64({block - 1})", max_pages=5))
+        return out
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         # one query with no kind or creator filter
@@ -1539,6 +1543,10 @@ class Reader:
                 continue
             if self.before_acl(e):
                 self._ignore(e, "created before the member list in use")
+                continue
+            # as for edits, a member in the list as it stood at the snapshot's block
+            if not self.member_then(e, members):
+                self._ignore(e, "not a member at the block it was written")
                 continue
             try:
                 decoded.append((e, self._decode_snapshot(e)))

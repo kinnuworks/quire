@@ -9,7 +9,7 @@ import sys
 
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-P, A, R = "src/provider.ts", "src/acl.ts", "../../api/rpc.ts"
+P, A, R, B = "src/provider.ts", "src/acl.ts", "../../api/rpc.ts", "src/blame.ts"
 MUTANTS = [
     (P, "client id derivation", "if (clients.some((c) => c !== expected)) return false", "if (false) return false"),
     (P, "salt signature", "if (!(await signedBy(this.link.doc, salt, sig, author))) return false", "if (false) return false"),
@@ -51,6 +51,8 @@ MUTANTS = [
     (A, "removal landing margin", "const REMOVAL_LANDING_MARGIN = 60n", "const REMOVAL_LANDING_MARGIN = 0n"),
     (P, "owner-only lists from the cutoff", "    if (entity.permissionlessExtension && entity.createdAt >= OWNER_ONLY_ACL_FROM_BLOCK) return", "    if (false) return"),
     (P, "authorship record from the first transaction", "    if (keepUntil !== undefined) acl.keepUntil = keepUntil.toString()", "    void keepUntil"),
+    (P, "snapshots checked against the list at their block", " || thenSnap === false) {", ") {"),
+    (B, "earlier writer of a pasted passage named", "      const at = typed.indexOf(run.text)\n      if (at < 0) continue", "      const at = -1\n      if (at < 0) continue"),
     (R, "relay page size checked", "(hex(o.limit, 2) && Number(o.limit) >= 1 && Number(o.limit) <= 200)", "true"),
     (P, "read-only sessions never write", "batch: (spec) => (readOnly ? Promise.reject(new Error(\"this session was opened read-only\")) : inner.batch(spec)),", "batch: (spec) => inner.batch(spec),"),
     (A, "ACL field set checked", "if (fields.some((f) => !keys.includes(f)) || keys.some((k) => !fields.includes(k))) throw", "if (false) throw"),
@@ -86,7 +88,7 @@ MUTANTS = [
     (A, "ACL lists its owner", "if (!rosterHidden && !members.some((m) => m.address.toLowerCase() === owner.toLowerCase() && m.role === \"owner\")) {", "if (false) {"),
 ]
 
-originals = {path: open(path).read() for path in {P, A, R}}
+originals = {path: open(path).read() for path in {P, A, R, B}}
 survivors = []
 try:
     for path, name, find, replace in MUTANTS:

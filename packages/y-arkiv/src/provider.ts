@@ -1092,7 +1092,9 @@ export class ArkivProvider extends Observable<string> {
     // seen before: an applied one still counts as this member's choice (with its base), so a reload
     // after an ACL patch does not fall back to an older one; anything else stays as it was
     if (this.seen.has(entity.key)) return this.snapshotBases.get(entity.key) ?? null
-    if (!this.acl || entity.createdAt < this.aclCreatedAt || !memberAt(this.acl, entity.creator, entity.createdAt)) {
+    // a current member, and (as for edits) a member in the list as it stood at the snapshot's block
+    const thenSnap = this.membershipAtBlock && this.acl && entity.createdAt >= this.aclCreatedAt ? await this.memberAtBlock(entity) : undefined
+    if (!this.acl || entity.createdAt < this.aclCreatedAt || !memberAt(this.acl, entity.creator, entity.createdAt) || thenSnap === false) {
       this.seen.add(entity.key)
       this.reject()
       return null
@@ -1909,9 +1911,27 @@ export class ArkivProvider extends Observable<string> {
    */
   async predatingEntities(): Promise<StoredEntity[]> {
     if (this.aclCreatedAt === 0n) return []
-    const page = await this.store.query({ doc: this.link.doc, seqLte: this.aclCreatedAt - 1n, limit: 200 })
-    return page.entities.filter((e) => e.createdAt < this.aclCreatedAt && (e.attributes.kind === KIND.update || e.attributes.kind === KIND.snapshot))
+    // edits and snapshots only, page after page until one older than the list turns up: junk stamped
+    // early cannot push the evidence off a single page. Five pages at most, and predatingTruncated says so.
+    this.predatingTruncated = false
+    for (const kind of [KIND.update, KIND.snapshot]) {
+      let cursor: string | undefined
+      let block: bigint | undefined
+      for (let pages = 0; pages < 5; pages++) {
+        const page = await this.store.query({ doc: this.link.doc, kind, seqLte: this.aclCreatedAt - 1n, limit: 200, cursor, atBlock: block })
+        block ??= page.block
+        const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)
+        if (older.length) return older
+        cursor = page.cursor
+        if (!cursor) break
+        if (pages === 4) this.predatingTruncated = true
+      }
+    }
+    return []
   }
+
+  /** predatingEntities read its five pages of one kind without finding an older entity, and there were more. */
+  predatingTruncated = false
 
   async outsiderEntities(): Promise<StoredEntity[]> {
     if (!this.acl || this.acl.rosterHidden) return []

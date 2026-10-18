@@ -111,7 +111,9 @@ That is fine today, but it grows linearly with the network. A client also has to
 
 **Expected.** A filter, for example `watchEntityEvents({ owners: [...], onEntityCreated })`, matched on the indexed `owner` topic server-side.
 
-**Suggested fix.** Accept `owner` (and ideally attribute equality) filters and pass the owner as a log topic filter in the subscription.
+A client can already build that filter itself: the SDK exports `ENTITY_EVENTS_ABI`, whose events index `owner`, and `watchEntityEvents` is a viem `watchEvent` on the system address `0x4400…0044` (not exported, so it has to be copied from the SDK's source). Passing `args: { owner: [...] }` to `watchEvent` filters on the node. We have not switched: the member list changes while a session is open, so the subscription would have to be replaced on every change, and the owner's session still needs strangers' join requests.
+
+**Suggested fix.** Accept `owner` (and ideally attribute equality) filters in `watchEntityEvents` and pass the owner as a log topic filter, and export the system address so clients that build their own `watchEvent` need not copy it.
 
 **What we did.** We drop events whose `owner` is not in the document's member list before fetching anything. The owner's session, which needs to see join requests from strangers, fetches non-member entities at a capped 240 per minute and also re-reads join requests on every resync ([provider.ts `allowStrangerFetch`](../packages/y-arkiv/src/provider.ts)).
 

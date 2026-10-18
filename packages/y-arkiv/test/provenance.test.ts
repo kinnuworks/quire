@@ -1454,3 +1454,58 @@ describe("a passage pasted back by someone else", () => {
     audit.destroy()
   })
 })
+
+describe("round 16 repros", () => {
+  it("junk stamped early cannot hide a recreated member list", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await a.provider.deleteDocument()
+    await settle(chain, [a, bea])
+    a.provider.destroy()
+    bea.provider.destroy()
+    await ArkivProvider.createDocument({ store: chain.store(owner.address), link, identity: owner })
+    chain.mine()
+    // one transaction of junk stamped qs = 1, newer than Bea's edit, from someone outside
+    await chain.store(identity("junk").address).batch({
+      creates: Array.from({ length: 200 }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.snapshot, seq: 1n }, lifetimeSeconds: 3600, readonly: true })),
+    })
+    chain.mine()
+    const reader = await peer(chain, link, undefined)
+    expect((await reader.provider.predatingEntities()).map((e) => e.creator)).toContain(bea.id!.address)
+  })
+
+  it("a snapshot written before its creator was a member does not count, even if the owner backdates the join", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "Bea's finding. ")
+    await a.provider.flush()
+    await settle(chain, [a])
+    // Mallory, not a member, writes a snapshot holding extra words
+    const mal = identity("mallory")
+    const early = new Y.Doc()
+    Y.applyUpdate(early, Y.encodeStateAsUpdate(a.doc))
+    early.getText("t").insert(early.getText("t").length, "MALLORY WAS HERE FIRST.")
+    const state = Y.encodeStateAsUpdate(early)
+    const header = { id: bytesToHex(randomBytes(16)), base: chain.block.toString(), t: 1, chunks: [], size: state.length, authors: {} }
+    const frame = encodeFrame({ kind: KIND.snapshot, doc: hexToBytes(link.doc), epoch: 0, header, data: state }, randomBytes)
+    await chain.store(mal.address).batch({ creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: 30 * 86400, readonly: true }] })
+    chain.mine(3)
+    // admitted later, with her join block backdated to 0
+    const m = await peer(chain, link, mal)
+    await admit(chain, a, m)
+    await (a.provider as unknown as { updateAcl: (f: (acl: { members: { address: string; addedAtBlock: string }[] }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => {
+      for (const x of acl.members) if (x.address === mal.address) x.addedAtBlock = "0"
+      return {}
+    })
+    await settle(chain, [a, m])
+    const cold = await peer(chain, link, undefined)
+    expect(text(cold)).not.toContain("MALLORY")
+  })
+})

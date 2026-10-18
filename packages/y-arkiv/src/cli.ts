@@ -225,6 +225,9 @@ async function main() {
  * chain, readable and provable at a block before the new list.
  */
 function recreated(provider: ArkivProvider, older: StoredEntity[]): string {
+  if (!older.length && provider.predatingTruncated) {
+    return `recreated  not checked to the end: over 1,000 entities are stamped before this member list (made at block ${provider.aclCreatedAt}), and none of the first 1,000 of a kind is older than it`
+  }
   if (!older.length) return ""
   const writers = [...new Set(older.map((e) => e.creator.toLowerCase()))]
   return `recreated  ${older.length} ${older.length === 1 ? "entity predates" : "entities predate"} this member list (made at block ${provider.aclCreatedAt}), written by ${writers.join(", ")}: the owner deleted the list and made a new one under the same link. Read the earlier document with --at ${provider.aclCreatedAt - 1n}`

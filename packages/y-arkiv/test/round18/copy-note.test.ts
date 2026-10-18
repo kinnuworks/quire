@@ -167,4 +167,27 @@ describe("the copy note after round 18", () => {
     expect(earlierWriters(doc, p).map((w) => [w.address, w.first])).toEqual([[owner.address, bea.id!.address]])
     p.destroy()
   })
+
+  it("a copier who also cuts words from the writer's sentence still cannot make her the copier", async () => {
+    const { chain, a, bea, owner } = await setup()
+    const sentence = "The pumps at ward fourteen failed on nine of the thirty days we logged."
+    const head = sentence.slice(0, sentence.indexOf("logged."))
+    await typeSlowly(chain, a, [bea], head)
+    // Bea pastes a copy of everything Asha has so far, then Asha writes her last word
+    const bt = bea.doc.getText("t")
+    bt.insert(bt.length, "\n" + head)
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await typeSlowly(chain, a, [bea], "logged.", head.length)
+    // Bea cuts the same three words from Asha's sentence and from her copy, so Asha's typed text no
+    // longer matches what she holds now within one word; only her words' own blocks clear her
+    bt.delete(bt.toString().lastIndexOf("at ward fourteen "), "at ward fourteen ".length)
+    bt.delete(bt.toString().indexOf("at ward fourteen "), "at ward fourteen ".length)
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    const { doc, p } = await audit(chain, a.provider["link"])
+    expect(doc.getText("t").toString()).toBe(sentence.replace("at ward fourteen ", "") + "\n" + head.replace("at ward fourteen ", ""))
+    expect(earlierWriters(doc, p).filter((w) => w.address === owner.address)).toEqual([])
+    p.destroy()
+  })
 })

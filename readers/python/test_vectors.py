@@ -1890,6 +1890,22 @@ class EarlierWritersTests(unittest.TestCase):
             p.replace_all("asha", self.FINDING.replace("eleven", "twelve"))
             self.assertEqual(p.found(), [("asha", "bea")], f"xml={xml}")
 
+    def test_a_copier_who_cuts_words_from_her_sentence_cannot_make_her_the_copier(self) -> None:
+        sentence = "The pumps at ward fourteen failed on nine of the thirty days we logged."
+        head = sentence[:sentence.index("logged.")]
+        cut = "at ward fourteen "
+        p = _Peers()
+        p.type_slowly("asha", head)
+        p.edit("bea", lambda d: p.text("bea").insert(len(str(p.text("bea")).encode()), "\n" + head))
+        p.type_slowly("asha", "logged.", at=len(head))
+        def cut_both(d):
+            t = p.text("bea")
+            for at in (str(t).rindex(cut), str(t).index(cut)):  # ASCII text: characters and bytes agree
+                del t[at:at + len(cut)]
+        p.edit("bea", cut_both)
+        self.assertEqual(str(p.text("asha")), sentence.replace(cut, "") + "\n" + head.replace(cut, ""))
+        self.assertEqual([f for f in p.found() if f[0] == "asha"], [])
+
     def test_two_typos_fixed_while_typing_still_count(self) -> None:
         p = _Peers()
         p.type_slowly("bea", self.FINDING.replace("thirty", "thrity").replace("eleven", "elevne"))

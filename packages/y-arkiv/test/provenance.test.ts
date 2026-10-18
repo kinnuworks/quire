@@ -1509,3 +1509,36 @@ describe("round 16 repros", () => {
     expect(text(cold)).not.toContain("MALLORY")
   })
 })
+
+describe("a removed member's snapshot", () => {
+  it("does not count, even from an RPC that ignores the creator filter", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    a.doc.getText("t").insert(0, "shared text. ")
+    await a.provider.flush()
+    await settle(chain, [a, bea])
+    // while still a member, Bea writes a snapshot of her own
+    const own = new Y.Doc()
+    Y.applyUpdate(own, Y.encodeStateAsUpdate(bea.doc))
+    own.getText("t").insert(own.getText("t").length, "ONLY IN BEA'S SNAPSHOT")
+    const state = Y.encodeStateAsUpdate(own)
+    const header = { id: bytesToHex(randomBytes(16)), base: chain.block.toString(), t: 1, chunks: [], size: state.length, authors: {} }
+    const frame = encodeFrame({ kind: KIND.snapshot, doc: hexToBytes(link.doc), epoch: 0, header, data: state }, randomBytes)
+    const r = await chain.store(bea.id!.address).batch({ creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: 30 * 86400, readonly: true }] })
+    const beaSnapshot = r.created[0]!
+    chain.mine()
+    await a.provider.revoke(bea.id!.address)
+    await settle(chain, [a, bea])
+    const base = chain.store(owner.address)
+    const lying: ArkivStore = { ...base, query: (spec) => base.query({ ...spec, creators: undefined, creatorBounds: undefined }) }
+    const doc = new Y.Doc()
+    const reader = new ArkivProvider(doc, { store: lying, link, identity: owner, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true })
+    await reader.connect()
+    // her words may live on in other members' snapshots, but her own snapshot is not applied
+    expect(reader.appliedKeys.has(beaSnapshot)).toBe(false)
+    reader.destroy()
+  })
+})

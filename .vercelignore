@@ -1,0 +1,12 @@
+# what the deploy never needs: the app builds from source on Vercel
+node_modules
+dist
+coverage
+__pycache__
+.env
+.env.*
+.claude
+PLAN.md
+SUBMISSION.md
+video
+packages/y-arkiv/scripts/_*

@@ -114,9 +114,11 @@ export type ProviderOptions = {
    */
   readOnly?: boolean
   /**
-   * Check each update's author against the member list as it stood at that update's block, read with
-   * atBlock, instead of against today's list. The owner can rewrite the current list's history; nobody
-   * can rewrite past state. Costs one free read by key per distinct block. For audits (blame, verify).
+   * Check each update's author against the member list as it stood at that update's block, and each
+   * entity's expiry against the keepUntil in force when it was last extended, both read by key with
+   * atBlock, instead of against today's list. The owner can rewrite the current list; nobody can
+   * rewrite past state. Costs one free read by key per distinct block. Default true; false applies
+   * today's list.
    */
   membershipAtBlock?: boolean
   /** Re-read recent updates this often, to cover a dropped socket. 0 disables. Default 15 minutes. */
@@ -204,7 +206,11 @@ export class ArkivProvider extends Observable<string> {
       return undefined
     }
     if (!acl) return false
-    if (acl.rosterHidden) return undefined
+    // a past roster sealed under a key this session never held: today's list decides, and it is counted
+    if (acl.rosterHidden) {
+      this.auditUnchecked++
+      return undefined
+    }
     // the whole section 5 rule against that list: a patch in the edit's own block may already show
     // the removal, and the removal interval still covers the edit
     return wroteAsMember(acl, entity.creator, entity.createdAt)
@@ -214,27 +220,61 @@ export class ArkivProvider extends Observable<string> {
   private async aclAtBlock(block: bigint): Promise<Acl | null | "unknown"> {
     if (!this.aclKey) return null
     if (!this.aclAt.has(block)) {
-      // a read that fails (a 429 from the free-read limit, a dropped connection) is retried, then
-      // reported as unknown; only an answer from the chain says whether the list existed then
-      let past: StoredEntity | null | undefined
-      for (let attempt = 0; past === undefined && attempt < 3; attempt++) {
-        try {
-          past = await this.store.get(this.aclKey, block)
-        } catch {
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
-        }
-      }
+      const past = await this.pastAclEntity(block)
       if (past === undefined) return "unknown"
-      let acl: Acl | null = null
-      try {
-        const frame = past && past.creator.toLowerCase() === this.link.owner.toLowerCase() ? await this.decryptEntity(past, KIND.acl) : null
-        acl = frame ? await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc) : null
-      } catch {
-        acl = null
-      }
-      this.aclAt.set(block, acl)
+      this.aclAt.set(block, await this.openPastAcl(past))
     }
     return this.aclAt.get(block) ?? null
+  }
+
+  /**
+   * The member list entity as it stood at `block`. A read that fails (a 429 from the free-read limit,
+   * a dropped connection) is retried, then reported as undefined; only an answer from the chain says
+   * whether the list existed then (null if it did not).
+   */
+  private async pastAclEntity(block?: bigint): Promise<StoredEntity | null | undefined> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await this.store.get(this.aclKey!, block)
+      } catch {
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
+      }
+    }
+    return undefined
+  }
+
+  private async openPastAcl(past: StoredEntity | null): Promise<Acl | null> {
+    try {
+      const frame = past && past.creator.toLowerCase() === this.link.owner.toLowerCase() ? await this.decryptEntity(past, KIND.acl) : null
+      return frame ? await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc) : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Every address any version of the member list named, as a member or a removal, found by walking the
+   * list's own history: the version before one last changed at block B is the list as it stood at B - 1,
+   * read by key with atBlock (free). An owner who erases someone from the current list cannot erase them
+   * from these past versions. Null if some version could not be read or opened.
+   */
+  private async everListed(): Promise<Hex[] | null> {
+    if (!this.aclKey || !this.acl) return null
+    const out = new Set<Hex>(updateAuthors(this.acl).map((a) => a.toLowerCase() as Hex))
+    let version = await this.pastAclEntity()
+    for (let steps = 0; version && steps < 1000; steps++) {
+      if (version.updatedAt <= version.createdAt) return [...out]
+      const before = await this.pastAclEntity(version.updatedAt - 1n)
+      if (before === undefined) return null
+      if (before === null) return [...out]
+      // a store without history answers with today's version again: the walk cannot go back
+      if (before.updatedAt >= version.updatedAt) return null
+      const acl = await this.openPastAcl(before)
+      if (!acl || acl.rosterHidden) return null
+      for (const a of updateAuthors(acl)) out.add(a.toLowerCase() as Hex)
+      version = before
+    }
+    return version === null ? [...out] : null
   }
 
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
@@ -299,7 +339,7 @@ export class ArkivProvider extends Observable<string> {
     this.autoCompact = options.autoCompact ?? true
     this.fullHistory = options.fullHistory ?? false
     this.readOnly = options.readOnly ?? false
-    this.membershipAtBlock = options.membershipAtBlock ?? false
+    this.membershipAtBlock = options.membershipAtBlock ?? true
     // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
     this.resyncInterval = options.resyncIntervalMs ?? 15 * 60_000
     this.idleCompactMs = options.idleCompactMs ?? 120_000
@@ -446,7 +486,8 @@ export class ArkivProvider extends Observable<string> {
   }
 
   private async loadAcl(): Promise<void> {
-    const page = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], limit: 20 })
+    // every page: the earliest valid list wins, and an owner who publishes more lists must not push it off the first page
+    const page = await queryAll(this.store, { doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner] })
     this.sawHead(page.block)
     // the earliest entity that is really the owner's ACL (by creation block, then key, so every reader picks
     // the same one whatever order the RPC returns); an RPC that ignores the creator filter cannot slip in another
@@ -573,15 +614,29 @@ export class ArkivProvider extends Observable<string> {
 
   /**
    * Updates from `from` on. Normally only from today's members and removed members (the `$creator`
-   * filter). An audit drops the filter, so an author the owner erased from the list's history still
-   * shows up and the list as it stood at each edit's block decides. Anyone can write junk `u`
-   * entities under the public document id, so the unfiltered read stops after AUDIT_PAGES pages and
-   * falls back to the filter, and `auditNarrowed` says so.
+   * filter). An audit reads the edits of every address any version of the list ever named (see
+   * everListed), so an author the owner erased from the current list still shows up and the list as
+   * it stood at each edit's block decides. If the list's history cannot be walked, it drops the filter
+   * instead; anyone can write junk `u` entities under the public document id, so that read stops after
+   * AUDIT_PAGES pages and falls back to the filter, and `auditNarrowed` says so.
    */
   private async queryUpdates(from: bigint): Promise<{ entities: StoredEntity[]; block: bigint }> {
     const filtered = { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl!), seqGte: from, seqLte: this.qsCeiling() }
-    // the unfiltered read is for full audits only; a normal session still checks each fetched edit at its block
+    // the wider read is for full audits only; a normal session still checks each fetched edit at its block
     if (!this.membershipAtBlock || !this.fullHistory) return queryAll(this.store, filtered)
+    // an audit reads the edits of everyone any version of the list ever named, 64 addresses a query:
+    // junk from strangers never enters, and nobody the owner erased is left out
+    const ever = await this.everListed()
+    if (ever) {
+      const entities: StoredEntity[] = []
+      let block = 0n
+      for (let i = 0; i < ever.length; i += 64) {
+        const page = await queryAll(this.store, { ...filtered, creators: ever.slice(i, i + 64) })
+        entities.push(...page.entities)
+        block = page.block
+      }
+      return { entities, block }
+    }
     const spec = { doc: this.link.doc, kind: KIND.update, seqGte: from, seqLte: this.qsCeiling() }
     const first = await this.store.query(spec)
     const out = [...first.entities]
@@ -643,7 +698,7 @@ export class ArkivProvider extends Observable<string> {
    * the entity last changed (its creation or its latest extension, Arkiv's updatedAt), plus ten minutes.
    * Anchored to the entity, not to this reader's head, so a live tab and a later cold reader agree.
    */
-  private expiryCeiling(entity: StoredEntity, keepUntil: string | null | undefined): bigint {
+  private expiryCeiling(entity: { updatedAt: bigint }, keepUntil: string | null | undefined): bigint {
     const lease = entity.updatedAt + blocks(LIFETIME.snapshot)
     const keep = keepUntil ? BigInt(keepUntil) : 0n
     return (keep > lease ? keep : lease) + EXPIRY_SLACK_BLOCKS
@@ -655,20 +710,22 @@ export class ArkivProvider extends Observable<string> {
   }
 
   /**
-   * The socket errored: catch up by polling until a live event arrives again. The first check comes
-   * after 20 seconds and each later one waits twice as long, up to five minutes, so a tab left open
-   * with a refused socket does not spend its whole query budget. Emits `live` (false, then true).
+   * The socket errored: catch up by polling until a live event arrives again. For the first two
+   * minutes it checks every 20 seconds, as someone waiting on a reply would want; after that each check
+   * waits twice as long, up to five minutes, so a tab left open with a refused socket does not spend
+   * its whole query budget. Emits `live` (false, then true).
    */
   private socketFailed(): void {
     if (this.pollTimer || this.resyncInterval === 0) return
     let delay = POLL_WHILE_SOCKET_DOWN_MS
+    let polls = 0
     const next = () => {
       this.pollTimer = setTimeout(() => {
         void this.resync({ joins: true })
           .catch((e) => this.emit("error", [e]))
           .finally(() => {
             if (this.pollTimer === null || this.status === "destroyed") return
-            delay = Math.min(delay * 2, POLL_MAX_MS)
+            if (++polls >= 6) delay = Math.min(delay * 2, POLL_MAX_MS)
             next()
           })
       }, delay)
@@ -719,8 +776,15 @@ export class ArkivProvider extends Observable<string> {
     if (e.type === "extended" && this.snapshot && e.key === this.snapshot.key) {
       this.snapshot.expiresAt = e.expiresAt
       this.emit("lease", [this.snapshot])
+    }
+    // an entity this session already applied, now extended past the owner's ceiling: every cold reader
+    // ignores it from here on, so this session no longer matches them, and says so
+    if (e.type === "extended" && this.appliedKeys.has(e.key) && e.key !== this.aclKey && this.acl) {
+      const ceiling = this.expiryCeiling({ updatedAt: e.block }, this.acl.keepUntil)
+      if (e.expiresAt > ceiling) this.emit("diverged", [e.key])
       return
     }
+    if (e.type === "extended" && this.snapshot && e.key === this.snapshot.key) return
     this.sawHead(e.block)
     if (e.type !== "created" || this.seen.has(e.key)) return
     // dedupe by entity key, not by creator: two tabs with the same key must still see each other

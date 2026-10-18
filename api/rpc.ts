@@ -25,6 +25,8 @@ export const QUIRE_QUERY = new RegExp(
     `( AND (\\$creator = ${ADDR}|\\(\\$creator = ${ADDR}( OR \\$creator = ${ADDR}){1,63}\\)))?$`,
 )
 const MAX_BODY = 8_192
+// the entity fields arkiv_query can return; the SDK sends each as true or false
+const SELECT_FIELDS = ["key", "owner", "creator", "createdAt", "updatedAt", "expiresAt", "creationFlags", "contentType", "payload", "attributeSchema", "attributes"]
 // per-instance memory, like the drip: a soft limit, not a guarantee across cold starts
 const PER_IP = 120 // queries per IP per 10 minutes: opening a document costs 3
 const GLOBAL = 2_000 // queries per instance per 10 minutes
@@ -54,11 +56,13 @@ export default async function handler(req: Req, res: Res) {
   // and only the options Quire sends: what to select, a page of at most 200, a cursor, a block
   const opts = Array.isArray(call.params) ? call.params[1] : undefined
   const allowed = ["select", "limit", "cursor", "atBlock"]
-  // exactly what the SDK sends: select "*", a page of 1 to 200 and a block as hex quantities, an opaque cursor
+  // exactly what the SDK sends: a select object of known fields set to true or false, a page of 1 to 200
+  // and a block as hex quantities, an opaque cursor
   const o = (opts && typeof opts === "object" ? opts : {}) as { select?: unknown; limit?: unknown; cursor?: unknown; atBlock?: unknown }
   const hex = (v: unknown, digits: number) => typeof v === "string" && new RegExp(`^0x[0-9a-fA-F]{1,${digits}}$`).test(v)
   const pageOk =
-    (o.select === undefined || o.select === "*") &&
+    (o.select === undefined ||
+      (typeof o.select === "object" && o.select !== null && !Array.isArray(o.select) && Object.entries(o.select).every(([k, v]) => SELECT_FIELDS.includes(k) && typeof v === "boolean"))) &&
     (o.limit === undefined || (hex(o.limit, 2) && Number(o.limit) >= 1 && Number(o.limit) <= 200)) &&
     (o.atBlock === undefined || hex(o.atBlock, 16)) &&
     (o.cursor === undefined || (typeof o.cursor === "string" && /^[\x21-\x7e]{1,1024}$/.test(o.cursor)))

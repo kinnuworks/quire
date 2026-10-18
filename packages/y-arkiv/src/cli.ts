@@ -207,7 +207,7 @@ function audited(provider: ArkivProvider): string {
     ? "members    checked at each edit's block, but over 1000 update entities exist (anyone can write junk under the document id), so only today's members and removed members were read"
     : "members    every update read, each author checked against the member list as it stood at that edit's block"
   const unchecked = provider.auditUnchecked
-    ? `\nunchecked  ${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit" : "edits"}: the member list at that block could not be read after three tries, so today's list decided; run it again later`
+    ? `\nunchecked  ${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit" : "edits"}: the member list at that block could not be read (three failed tries) or opened (sealed under a key this reader lacks), so today's list decided`
     : ""
   return read + unchecked
 }

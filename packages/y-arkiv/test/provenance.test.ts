@@ -837,7 +837,7 @@ describe("snapshot expiry under keepUntil", () => {
 })
 
 describe("audit flood", () => {
-  it("an audit stops reading junk update entities after a few pages and says it narrowed to the member list", async () => {
+  it("an audit reads only addresses some version of the member list named, so junk from strangers never enters it", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
@@ -859,9 +859,9 @@ describe("audit flood", () => {
     const audit = new ArkivProvider(doc, { store: counting, link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true, membershipAtBlock: true })
     await audit.connect()
     expect(doc.getText("t").toString()).toBe("Owner wrote this.")
-    expect(audit.auditNarrowed).toBe(true)
-    // ACL, snapshots, five unfiltered pages, then one filtered read: not one query per junk page
-    expect(queries).toBeLessThanOrEqual(9)
+    expect(audit.auditNarrowed).toBe(false)
+    // ACL, snapshots, one update query for every address the list ever named: no junk page at all
+    expect(queries).toBeLessThanOrEqual(3)
     audit.destroy()
   })
 })
@@ -1029,5 +1029,65 @@ describe("two member lists from the owner", () => {
     chain.mine()
     const reader = await peer(chain, link, undefined)
     expect(reader.provider.acl!.members.map((m) => m.address)).toContain(bea.id!.address)
+  })
+})
+
+describe("audit against junk and an erased member", () => {
+  const junk = async (chain: MemoryChain, link: DocLink, count: number) => {
+    const who = identity("junk")
+    for (let i = 0; i < count; i += 200) {
+      await chain.store(who.address).batch({
+        creates: Array.from({ length: Math.min(200, count - i) }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true })),
+      })
+      chain.mine()
+    }
+  }
+
+  it("a stranger's junk cannot switch the audit off: a member the owner erased is still proven", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // the owner erases Bea: removed from the members and from the removals
+    await (a.provider as unknown as { updateAcl: (f: (acl: { members: { address: string }[]; revoked: unknown[] }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => {
+      acl.members = acl.members.filter((m) => m.address !== bea.id!.address)
+      acl.revoked = []
+      return {}
+    })
+    await settle(chain, [a, bea])
+    await junk(chain, link, 1001)
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await audit.connect()
+    expect(blame(doc, audit).flat().filter((r) => r.proven && r.address === bea.id!.address).map((r) => r.text).join("")).toBe("bea's essay")
+    expect(audit.auditNarrowed).toBe(false)
+    audit.destroy()
+  })
+
+  it("if the list's history cannot be read, the wider read stops after five pages and says it narrowed", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "Owner wrote this.")
+    await a.provider.flush()
+    await settle(chain, [a])
+    // a patch, so the list has a past version to walk to
+    await a.provider.keepFor(365 * 86400)
+    await settle(chain, [a])
+    await junk(chain, link, 1200)
+    const base = chain.store(undefined)
+    let queries = 0
+    const failingHistory: ArkivStore = { ...base, query: (spec) => (queries++, base.query(spec)), get: (key, block) => (block === undefined ? base.get(key) : Promise.reject(new Error("429"))) }
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: failingHistory, link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await audit.connect()
+    expect(doc.getText("t").toString()).toBe("Owner wrote this.")
+    expect(audit.auditNarrowed).toBe(true)
+    expect(queries).toBeLessThanOrEqual(9)
+    audit.destroy()
   })
 })

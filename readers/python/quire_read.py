@@ -1260,8 +1260,13 @@ class Reader:
         own_salt: str | None = None,
         scan_outsiders: bool = True,
         audit: bool = False,
+        at_block: bool | None = None,
     ) -> None:
         self.link = link
+        # Section 5: membership and the owner's keepUntil are read as they stood at each entity's block
+        # (arkiv_getEntity with a block) wherever the source keeps history, so no later patch of the
+        # list changes a verdict; a vectors file holds only today's list, which then decides
+        self.at_block = source.has_history if at_block is None else at_block
         # Section 5, auditors: read every update still on chain, and check each author against the
         # member list as it stood at that update's block (arkiv_getEntity with a block), which no
         # later patch of the list can change
@@ -1614,7 +1619,7 @@ class Reader:
 
         if e.expires_at <= ceiling(self.keep_until):
             return True
-        if not (self.audit and self.source.has_history and self.acl_entity is not None):
+        if not ((self.at_block or self.audit) and self.source.has_history and self.acl_entity is not None):
             return False
         past = self.past_acl(changed)
         if past is False:
@@ -1635,10 +1640,10 @@ class Reader:
         return added is not None and e.created_at >= added
 
     def member_then(self, e: Entity, members: list[str]) -> bool:
-        """In an audit, whether the creator was in the member list as it stood at the
-        entity's block; otherwise (or where that past list cannot be opened, being
-        sealed under a key this reader lacks) today's list decides (wrote_as_member)."""
-        if not self.audit or not self.source.has_history or self.acl_entity is None:
+        """Whether the creator was in the member list as it stood at the entity's block.
+        Today's list decides (wrote_as_member) only where the source keeps no history,
+        or that past list cannot be read or opened; those edits are counted as unchecked."""
+        if not (self.at_block or self.audit) or not self.source.has_history or self.acl_entity is None:
             return self.wrote_as_member(e, members)
         block = e.created_at
         if block not in self._acl_at:
@@ -1657,8 +1662,44 @@ class Reader:
             self._acl_at[block] = then
         then = self._acl_at[block]
         if then is True:
+            # that past roster is sealed under a key this reader lacks: today's list decides, counted
+            self.audit_unchecked += 1
             return self.wrote_as_member(e, members)
         return isinstance(then, tuple) and wrote_as(e, then)
+
+    def ever_listed(self, today: list[str]) -> list[str] | None:
+        """Every address any version of the member list named, as a member or a
+        removal, found by walking the list's own history: the version before one
+        last changed at block B is the list as it stood at B - 1 (arkiv_getEntity
+        with a block, free). None if some version could not be read or opened."""
+        if self.acl_entity is None:
+            return None
+        out = set(today)
+        version = self.source.entity(self.acl_entity.key)
+        for _ in range(1000):
+            if version is None:
+                return sorted(out)
+            changed = version.updated_at if version.updated_at is not None else version.created_at
+            if changed <= version.created_at:
+                return sorted(out)
+            before = self.past_acl(changed - 1)
+            if before is False:
+                return None
+            if before is None:
+                return sorted(out)
+            prior = before.updated_at if before.updated_at is not None else before.created_at
+            if prior >= changed:
+                return None  # a source without history answers with today's version again
+            try:
+                roster = self.roster(self.parse_acl(before))
+            except Exception:
+                return None
+            if roster is None:
+                return None
+            members, _added, revoked = membership(roster)
+            out |= set(members) | set(revoked)
+            version = before
+        return None
 
     def past_acl(self, block: int) -> Entity | None | bool:
         """The ACL entity as it stood at `block`, None if there was none, or False if
@@ -1685,10 +1726,17 @@ class Reader:
         min_qs = max(0, window_base - SNAPSHOT_WINDOW) if window_base is not None else 0
         accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
         authors = sorted(set(members) | set(self.revoked_at))  # removed members too, for their intervals
-        if self.audit:
-            # every update, not only today's members': someone erased from the list's history still wrote
-            # what they wrote. Anyone can write junk under the document id, so the unfiltered read stops
-            # after AUDIT_PAGES pages and falls back to the filter, saying so.
+        ever = self.ever_listed(authors) if self.audit and self.source.has_history else None
+        if ever is not None:
+            # an audit reads the edits of everyone any version of the list ever named, 64 addresses a
+            # query: junk from strangers never enters, and nobody the owner erased is left out
+            candidates = []
+            for i in range(0, len(ever), 64):
+                candidates.extend(self.source.by_kind(self.link.doc, "u", ever[i:i + 64], 0, self.qs_ceiling))
+        elif self.audit:
+            # the list's history cannot be walked: every update, whoever wrote it. Anyone can write junk
+            # under the document id, so that read stops after AUDIT_PAGES pages and falls back to the
+            # filter, saying so.
             found, complete = self.source.all_updates(self.link.doc, AUDIT_PAGES)
             if not complete:
                 self.audit_narrowed = True

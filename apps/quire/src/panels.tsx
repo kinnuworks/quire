@@ -5,7 +5,7 @@ import { type ArkivProvider, type DocLink, formatDocLink, formatVersionLink, typ
 import { autoRotateSetting, ROTATE_EVERY_DAYS, rotatedNow, setAutoRotate } from "./autorotate"
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
-import { balanceOf, formatGlm } from "./gas"
+import { balanceOf, formatGlm, sendGas } from "./gas"
 import { forgetDocument } from "./session"
 import type { DocumentSession } from "./useDocument"
 
@@ -107,6 +107,7 @@ export function PeoplePanel({ session, identity, link }: { session: DocumentSess
         </section>
       )}
       {owner && <FindRequest p={p} busy={!!busy} run={run} />}
+      {owner && identity && <SendGas identity={identity} busy={!!busy} run={run} />}
       {owner && <RotateKey p={p} busy={!!busy} run={run} />}
 
       <section>
@@ -571,6 +572,36 @@ function FindRequest({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (
           }
         >
           Find
+        </button>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Gas for someone joining, from the document's own key. Quire's drip sees the IP address that asks it for
+ * gas; a joiner who passes their address to the owner instead never touches the drip.
+ */
+function SendGas({ identity, busy, run }: { identity: Identity; busy: boolean; run: (what: string, fn: () => Promise<string | void>) => Promise<void> }) {
+  const [address, setAddress] = useState("")
+  return (
+    <section>
+      <h4>Send gas to someone joining</h4>
+      <p className="muted small">Paste the address on their "Get gas from the owner" banner. This key sends them 0.02 test GLM, enough for about 150 edits and their join request. Their key writes to this document anyway, so the transfer links nothing new, and Quire's drip never sees them.</p>
+      <div className="row">
+        <input className="input mono" placeholder="0x…" value={address} onChange={(e) => setAddress(e.target.value.trim())} spellCheck={false} />
+        <button
+          className="btn btn-outline"
+          disabled={busy || !/^0x[0-9a-fA-F]{40}$/.test(address)}
+          onClick={() =>
+            run("sending", async () => {
+              await sendGas(identity.privateKey, address as Hex)
+              setAddress("")
+              return "Sent. Their request should arrive in a few seconds."
+            })
+          }
+        >
+          Send gas
         </button>
       </div>
     </section>

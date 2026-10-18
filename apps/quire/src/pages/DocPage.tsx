@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react"
 import { type DocLink, earlierWriters, type Identity } from "y-arkiv"
 import { AuthorshipBars, blockAuthors, setMembers } from "../authorship"
 import { rotatedNow, rotationDue } from "../autorotate"
-import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
+import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING, waitForGas } from "../gas"
 import { ActivityPanel, ChainPanel, HistoryPanel, LifetimePanel, PeoplePanel } from "../panels"
 import { identityFor, newIdentity, preferredName, saveIdentity, setPreferredName, shareUrl } from "../session"
 import { useDocument } from "../useDocument"
@@ -63,7 +63,7 @@ export function DocPage({ link }: { link: DocLink }) {
   blameRef.current = blame
   const providerRef = useRef(provider)
   providerRef.current = provider
-  const [joinState, setJoinState] = useState<"idle" | "gas" | "asking" | "error">("idle")
+  const [joinState, setJoinState] = useState<"idle" | "gas" | "owner-gas" | "asking" | "error">("idle")
   const [joinError, setJoinError] = useState<string | null>(null)
   const [wantJoin, setWantJoin] = useState(false)
 
@@ -142,14 +142,38 @@ export function DocPage({ link }: { link: DocLink }) {
     )
   }, [wantJoin, provider, session.tick])
 
-  async function join(viaWallet = false) {
-    setJoinError(null)
-    if (viaWallet && !confirm(WALLET_WARNING)) return
+  function joinerKey(): Identity | null {
     const name = (identity?.name ?? prompt("Your name in this document (a pseudonym is fine)", preferredName()) ?? "").trim()
-    if (!name) return
+    if (!name) return null
     setPreferredName(name)
     const id = identity ?? newIdentity(name)
     saveIdentity(link.doc, id)
+    return id
+  }
+
+  // gas from the owner instead of the drip: the joiner passes on their address, the owner sends gas from
+  // the document's key, and the join request goes out once it lands
+  function joinWithOwnerGas() {
+    setJoinError(null)
+    const id = joinerKey()
+    if (!id) return
+    setIdentity(id)
+    setJoinState("owner-gas")
+  }
+  useEffect(() => {
+    if (joinState !== "owner-gas" || !identity) return
+    let stopped = false
+    waitForGas(identity.address, () => stopped).then((ok) => ok && !stopped && setWantJoin(true))
+    return () => {
+      stopped = true
+    }
+  }, [joinState, identity?.address])
+
+  async function join(viaWallet = false) {
+    setJoinError(null)
+    if (viaWallet && !confirm(WALLET_WARNING)) return
+    const id = joinerKey()
+    if (!id) return
     setJoinState("gas")
     const gas = viaWallet ? await fundFromWallet(id.address) : await ensureGas(id.address)
     if (!gas.ok) {
@@ -217,9 +241,23 @@ export function DocPage({ link }: { link: DocLink }) {
               : `The owner has rotated this document's key since this link was made, so the link alone opens nothing new: you can see that the document exists and has ${provider?.acl?.wraps.length ?? 0} members. Ask to join, and once the owner adds you, you read everything.`}
           </span>
           {joinState === "idle" && (
-            <button className="btn btn-sm btn-ink" onClick={() => join(false)}>
-              Ask to join as a writer
-            </button>
+            <>
+              <button className="btn btn-sm btn-ink" onClick={() => join(false)}>
+                Ask to join as a writer
+              </button>
+              <button className="btn btn-sm btn-ghost" onClick={joinWithOwnerGas} title="Quire's gas drip sees the IP address that asks for gas. Getting gas from the owner keeps it out of the picture.">
+                Get gas from the owner
+              </button>
+            </>
+          )}
+          {joinState === "owner-gas" && identity && (
+            <span className="small">
+              Send this address to the owner over the same channel as the link: <code className="mono">{identity.address}</code>{" "}
+              <button className="link-button" onClick={() => navigator.clipboard?.writeText(identity.address)}>
+                Copy
+              </button>
+              . They send gas from the document's key (People, Send gas to someone joining), so Quire's drip never sees you. Waiting for it…
+            </span>
           )}
           {joinState === "gas" && <span className="muted">Funding your key…</span>}
           {joinState === "asking" && <span className="muted">Sending your request…</span>}

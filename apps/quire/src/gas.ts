@@ -5,12 +5,15 @@
  *   1. the drip at /api/drip, which sends a small amount of test GLM and
  *      never sees anything but the address;
  *   2. the visitor's own wallet, with one transfer. That transfer links the
- *      visitor's wallet to this document key on chain, and the UI says so.
+ *      visitor's wallet to this document key on chain, and the UI says so;
+ *   3. the owner, who sends gas from the document's own key to a joiner who
+ *      passed on their address. The drip and its IP log never see the joiner.
  * Reading a document never needs either.
  */
 import { sha256 } from "@noble/hashes/sha2.js"
 import { tiramisu } from "@arkiv-network/sdk/chains"
 import { createPublicClient, createWalletClient, custom, formatEther, http, parseEther } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 import { type Hex, TIRAMISU_HTTP } from "y-arkiv"
 
 const MIN_BALANCE = parseEther("0.002")
@@ -104,6 +107,25 @@ export async function fundFromWallet(address: Hex, amount = "0.02"): Promise<Gas
   const hash = await wallet.sendTransaction({ to: address, value: parseEther(amount) })
   await reader.waitForTransactionReceipt({ hash })
   return { ok: true, via: "wallet" }
+}
+
+/** Waits for gas someone else sends (the owner, from the document's key), checking every five seconds. */
+export async function waitForGas(address: Hex, cancelled: () => boolean): Promise<boolean> {
+  while (!cancelled()) {
+    if ((await balanceOf(address).catch(() => 0n)) >= MIN_BALANCE) return true
+    await new Promise((r) => setTimeout(r, 5000))
+  }
+  return false
+}
+
+/**
+ * One transfer from this document's key to a joiner's key. The joiner's key writes its join request to
+ * this document anyway, so the transfer links nothing that the document's own entities do not.
+ */
+export async function sendGas(privateKey: Hex, to: Hex, amount = "0.02"): Promise<void> {
+  const wallet = createWalletClient({ chain: tiramisu, transport: http(TIRAMISU_HTTP), account: privateKeyToAccount(privateKey) })
+  const hash = await wallet.sendTransaction({ to, value: parseEther(amount) })
+  await reader.waitForTransactionReceipt({ hash })
 }
 
 export const WALLET_WARNING =

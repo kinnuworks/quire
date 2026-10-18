@@ -25,7 +25,7 @@ async function signSalt(id: Identity, link: DocLink, salt: Uint8Array): Promise<
 async function writeUpdate(chain: MemoryChain, link: DocLink, id: Identity, salt: Uint8Array, update: Uint8Array, seq = chain.block) {
   const header = { t: 0, salt: bytesToHex(salt), sig: await signSalt(id, link, salt) }
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header, data: update }, randomBytes)))
-  await chain.store(id.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq }, lifetimeSeconds: LIFETIME.snapshot }] })
+  await chain.store(id.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
 }
 
 /** A Yjs update that appends `s` to text "t" under client id `client`, continuing after `doc`'s state. */
@@ -68,7 +68,7 @@ describe("derived client ids", () => {
     const header = { t: 0, salt: bytesToHex(salt), sig: await signSalt(owner, link, salt) }
     const update = appendAs(new Y.Doc(), clientIdFor(c.id!.address, salt), "bad sig")
     const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header, data: update }, randomBytes)))
-    await chain.store(c.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }] })
+    await chain.store(c.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true }] })
     await settle(chain, [a, c])
     expect(text(a)).toBe("")
   })

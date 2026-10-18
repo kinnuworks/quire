@@ -225,15 +225,19 @@ def rpc_call(url: str, method: str, params: list[Any]) -> Any:
     return reply.get("result")
 
 
-def query_all(url: str, query: str) -> list[dict[str, Any]]:
-    """Run arkiv_query, following cursors with atBlock pinned to page one."""
+def query_all(url: str, query: str, max_pages: int | None = None) -> list[dict[str, Any]]:
+    """Run arkiv_query, following cursors with atBlock pinned to page one.
+    `max_pages=1` reads one page of 200, for queries anyone can flood
+    (join requests, the outside-writes scan)."""
     options: dict[str, Any] = {"select": SELECT_ALL, "limit": "0xc8"}
     rows: list[dict[str, Any]] = []
+    pages = 0
     while True:
+        pages += 1
         result = rpc_call(url, "arkiv_query", [query, options]) or {}
         rows.extend(result.get("data") or [])
         cursor = result.get("cursor")
-        if not cursor or not result.get("data"):
+        if not cursor or not result.get("data") or (max_pages is not None and pages >= max_pages):
             return rows
         if "atBlock" not in options and result.get("blockNumber") is not None:
             options["atBlock"] = result["blockNumber"]
@@ -321,10 +325,11 @@ def check_flags(e: Entity) -> list[str]:
 
     A version is readonly with permissionless extension. The ACL has
     permissionless extension and nothing else, so any member's session can
-    keep it alive. Every other kind (update, snapshot, join) has no flags. A
-    chunk takes its head's flags, and the head is not visible without
-    decrypting, so a chunk may carry either set: none (a snapshot chunk) or
-    both (a version chunk).
+    keep it alive. Every other kind (update, snapshot, join) is readonly and
+    nothing else, so its creator can never patch it later. A chunk takes its
+    head's flags, and the head is not visible without decrypting, so a chunk
+    may carry either set: readonly (a snapshot chunk) or both (a version
+    chunk).
 
     `raw` is the chain's flag bitfield (section 5): bit 0 is readonly and
     bit 1 is permissionless extension. When present it must agree with the
@@ -339,7 +344,7 @@ def check_flags(e: Entity) -> list[str]:
         if not pe:
             problems.append("version does not allow permissionless extension")
     elif e.kind == "c":
-        if ro != pe:
+        if not ro:
             problems.append(f"chunk flags ({flags_text(e)}) match neither a snapshot nor a version head")
     elif e.kind == "a":
         if not pe:
@@ -349,8 +354,8 @@ def check_flags(e: Entity) -> list[str]:
     else:
         if pe:
             problems.append(f"{name} allows permissionless extension")
-        if ro:
-            problems.append(f"{name} is readonly, expected no flags")
+        if not ro:
+            problems.append(f"{name} is not readonly, so its creator could patch it later")
     problems.extend(check_raw_flags(e))
     return problems
 

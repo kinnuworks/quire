@@ -77,7 +77,7 @@ describe("a lying RPC", () => {
     evil.getText("t").insert(0, "INJECTED")
     const state = Y.encodeStateAsUpdate(evil)
     const payload = await framePayload(link, KIND.snapshot, { id: "ab".repeat(16), base: String(chain.block), t: 0, chunks: [], size: state.length, authors: {} }, state)
-    await chain.store(mallory.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot }] })
+    await chain.store(mallory.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
     chain.mine()
     const r = await readerOn(lying(chain.store(undefined)), link)
     expect(r.doc.getText("t").toString()).toBe("real")
@@ -93,10 +93,10 @@ describe("snapshot integrity", () => {
     const half = Math.floor(state.length / 2)
     const chunkBy = opts.chunkCreator ?? who
     const chunkPayload = await framePayload(link, KIND.chunk, { i: 1, of: opts.chunkOf ?? id }, state.subarray(half), deriveEpochZeroKey(link.secret), opts.chunkEpoch ?? 0)
-    const chunk = await chain.store(chunkBy.address).batch({ creates: [{ payload: chunkPayload, attributes: { doc: link.doc, kind: KIND.chunk, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot }] })
+    const chunk = await chain.store(chunkBy.address).batch({ creates: [{ payload: chunkPayload, attributes: { doc: link.doc, kind: KIND.chunk, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
     const base = opts.base ?? chain.block
     const head = await framePayload(link, KIND.snapshot, { id, base: String(base), t: 0, chunks: chunk.created, size: state.length, authors: {} }, state.subarray(0, half))
-    await chain.store(who.address).batch({ creates: [{ payload: head, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot }] })
+    await chain.store(who.address).batch({ creates: [{ payload: head, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
     chain.mine()
   }
 
@@ -144,7 +144,7 @@ describe("frame binding", () => {
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
     const open = (e: StoredEntity, kind: string, hint?: number) => (a.provider as unknown as { openEntity: (e: StoredEntity, k: string, h?: number) => Promise<unknown> }).openEntity(e, kind, hint)
-    const entity = (payload: Uint8Array, kind: string): StoredEntity => ({ key: `0x${"11".repeat(32)}`, creator: owner.address, owner: owner.address, createdAt: 1n, expiresAt: 999n, attributes: { doc: link.doc, kind: kind as never, seq: 1n }, payload, readonly: false, permissionlessExtension: false })
+    const entity = (payload: Uint8Array, kind: string): StoredEntity => ({ key: `0x${"11".repeat(32)}`, creator: owner.address, owner: owner.address, createdAt: 1n, expiresAt: 999n, attributes: { doc: link.doc, kind: kind as never, seq: 1n }, payload, readonly: true, permissionlessExtension: false })
     const good = await framePayload(link, KIND.update, { t: 0, salt: "00".repeat(16), sig: `0x${"11".repeat(65)}` }, new Uint8Array([1]))
     expect(await open(entity(good, KIND.update), KIND.update)).not.toBeNull()
     // kind: an update frame relabelled as a snapshot
@@ -176,6 +176,14 @@ describe("ACL parsing", () => {
   it("refuses an ACL that does not list its owner", async () => {
     await expect(fromHeader({ ...base, members: [{ ...member, role: "writer" }] }, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/owner/)
   })
+  it("refuses an ACL whose member entries break the schema", async () => {
+    const b = base as { members: Record<string, unknown>[] }
+    const long = { ...base, members: [{ ...b.members[0], name: "x".repeat(41) }] }
+    await expect(fromHeader(long, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/member entry/)
+    const extra = { ...base, members: [{ ...b.members[0], note: 1 }] }
+    await expect(fromHeader(extra, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/member entry/)
+  })
+
   it("refuses an ACL whose fields do not match its epoch", async () => {
     await expect(fromHeader({ ...base, note: "extra" }, owner.address.toLowerCase() as Hex, () => undefined, doc)).rejects.toThrow(/wrong fields/)
     const { members: _m, ...noMembers } = base as Record<string, unknown>
@@ -213,7 +221,7 @@ describe("join requests and live events", () => {
     const a = await peer(chain, link, owner)
     const spam = chain.store(identity("spam").address)
     for (let i = 0; i < 300; i++) {
-      await spam.batch({ creates: [{ payload: randomBytes(40), attributes: { doc: `0x${"99".repeat(32)}`, kind: KIND.update, seq: 1n }, lifetimeSeconds: 60 }] })
+      await spam.batch({ creates: [{ payload: randomBytes(40), attributes: { doc: `0x${"99".repeat(32)}`, kind: KIND.update, seq: 1n }, lifetimeSeconds: 60, readonly: true }] })
     }
     const gets = chain.stats.gets
     await settle(chain, [a])
@@ -226,7 +234,7 @@ describe("join requests and live events", () => {
     const a = await peer(chain, link, owner)
     const c = await peer(chain, link, identity("cal"))
     await admit(chain, a, c)
-    await chain.store(c.id!.address).batch({ creates: [{ payload: randomBytes(64), attributes: { doc: `0x${"77".repeat(32)}`, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 60 }] })
+    await chain.store(c.id!.address).batch({ creates: [{ payload: randomBytes(64), attributes: { doc: `0x${"77".repeat(32)}`, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 60, readonly: true }] })
     await settle(chain, [a, c])
     expect((a.provider as unknown as { deferred: Map<string, unknown> }).deferred.size).toBe(0)
     expect(a.provider.stats.rejectedWrites).toBe(0)
@@ -252,7 +260,7 @@ describe("snapshot author claims", () => {
     const state = Y.encodeStateAsUpdate(d)
     const write = async (authors: Record<string, unknown>) => {
       const payload = await framePayload(link, KIND.snapshot, { id: bytesToHex(randomBytes(16)), base: String(chain.block), t: 0, chunks: [], size: state.length, authors }, state)
-      await chain.store(c.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot }] })
+      await chain.store(c.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
       chain.mine()
       return readerOn(chain.store(undefined), link)
     }

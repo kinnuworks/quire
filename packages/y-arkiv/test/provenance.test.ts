@@ -53,7 +53,7 @@ describe("join requests", () => {
     const junk = chain.store(identity("junk").address)
     for (let b = 0; b < 4; b++) {
       await junk.batch({
-        creates: Array.from({ length: 60 }, () => ({ payload: new Uint8Array(64), attributes: { doc: link.doc, kind: KIND.join, seq: 1n }, lifetimeSeconds: 3600 })),
+        creates: Array.from({ length: 60 }, () => ({ payload: new Uint8Array(64), attributes: { doc: link.doc, kind: KIND.join, seq: 1n }, lifetimeSeconds: 3600, readonly: true })),
       })
       chain.mine()
     }
@@ -74,7 +74,7 @@ async function forgeSnapshot(chain: MemoryChain, by: Hex, link: DocLink, state: 
   const header = { id: bytesToHex(randomBytes(16)), base: head.toString(), t: Date.now(), chunks: [], size: state.length, authors: {} }
   const frame = encodeFrame({ kind: KIND.snapshot, doc: hexToBytes(link.doc), epoch: 0, header, data: state }, randomBytes)
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame))
-  const r = await store.batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: head }, lifetimeSeconds: LIFETIME.snapshot }] })
+  const r = await store.batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: head }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
   chain.mine()
   return r.created[0]!
 }
@@ -223,7 +223,7 @@ async function rawUpdate(chain: MemoryChain, who: { address: Hex; privateKey: He
   const sig = await privateKeyToAccount(who.privateKey).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(link.doc), ...salt]) } })
   const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header: { t: Date.now(), salt: bytesToHex(salt), sig }, data }, randomBytes)
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame))
-  const r = await store.batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: LIFETIME.snapshot }] })
+  const r = await store.batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
   chain.mine()
   return r.created[0]!
 }
@@ -642,6 +642,78 @@ describe("membership is tied to time", () => {
     await settle(chain, [a, mal])
     const cold = await peer(chain, link, undefined)
     expect(cold.doc.getText("t").toString()).toBe("after joining ")
+    a.provider.destroy()
+  })
+})
+
+describe("edits cannot be rewritten later", () => {
+  it("a writer cannot patch an edit (it is readonly), and an edit that is not readonly never counts", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "pay 100")
+    const info = await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // Bea tries to rewrite her edit in place, keeping its block: the chain refuses
+    const original = await chain.store(undefined).get(info!.entity)
+    expect(original!.readonly).toBe(true)
+    await expect(chain.store(bea.id!.address).batch({ patches: [{ key: info!.entity, payload: original!.payload, attributes: original!.attributes }] })).rejects.toThrow(/readonly/)
+    // and an update written without the flag is ignored by readers
+    const salt = randomBytes(16)
+    const d = new Y.Doc()
+    d.clientID = clientIdFor(bea.id!.address, salt)
+    Y.applyUpdate(d, Y.encodeStateAsUpdate(bea.doc))
+    const sv = Y.encodeStateVector(d)
+    d.getText("t").insert(d.getText("t").length, " PATCHABLE")
+    const store = chain.store(bea.id!.address)
+    const sig = await privateKeyToAccount(bea.id!.privateKey).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(link.doc), ...salt]) } })
+    const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header: { t: 1, salt: bytesToHex(salt), sig }, data: Y.encodeStateAsUpdate(d, sv) }, randomBytes)
+    await store.batch({ creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind: KIND.update, seq: await store.head() }, lifetimeSeconds: 3600 }] })
+    await settle(chain, [a, bea])
+    const cold = await peer(chain, link, undefined)
+    expect(cold.doc.getText("t").toString()).toBe("pay 100")
+    a.provider.destroy()
+  })
+})
+
+describe("membership intervals", () => {
+  it("a member removed, re-added and removed again: edits from the gap never count", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "first stint. ")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await a.provider.revoke(bea.id!.address)
+    await settle(chain, [a, bea])
+    // in the gap, Bea writes a valid edit under the old key she still holds
+    const salt = randomBytes(16)
+    const d = new Y.Doc()
+    Y.applyUpdate(d, Y.encodeStateAsUpdate(bea.doc))
+    d.clientID = clientIdFor(bea.id!.address, salt)
+    const sv = Y.encodeStateVector(d)
+    d.getText("t").insert(d.getText("t").length, "GAP ")
+    await rawUpdate(chain, bea.id!, link, salt, Y.encodeStateAsUpdate(d, sv))
+    await settle(chain, [a])
+    // re-added, she writes again, then is removed a second time
+    const bea2 = await peer(chain, link, bea.id)
+    await admit(chain, a, bea2)
+    bea2.doc.getText("t").insert(bea2.doc.getText("t").length, "second stint.")
+    await bea2.provider.flush()
+    await settle(chain, [a, bea2])
+    await a.provider.revoke(bea.id!.address)
+    await settle(chain, [a, bea2])
+    const cold = new Y.Doc()
+    const p = new ArkivProvider(cold, { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
+    await p.connect()
+    const proven = blame(cold, p).flat().filter((r) => r.proven).map((r) => r.text).join("")
+    expect(proven).toContain("first stint.")
+    expect(proven).toContain("second stint.")
+    expect(proven).not.toContain("GAP")
     a.provider.destroy()
   })
 })

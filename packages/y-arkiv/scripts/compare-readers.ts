@@ -66,7 +66,8 @@ const cases: { name: string; ts: () => Promise<Verdict>; py: () => Verdict }[] =
 const casesDir = `${root}spec/vectors/cases/`
 for (const f of readdirSync(casesDir).filter((x) => x.endsWith(".json")).sort()) {
   const c = JSON.parse(readFileSync(casesDir + f, "utf8"))
-  cases.push({ name: `case ${f.replace(/\.json$/, "")}`, ts: () => typescript(vectorStore(c), c.link), py: () => pythonReader(["--vectors", casesDir + f]) })
+  const member = c.memberKey ? ["--member-key", c.memberKey] : []
+  cases.push({ name: `case ${f.replace(/\.json$/, "")}`, ts: () => typescript(vectorStore(c), c.link, c.memberKey), py: () => pythonReader(["--vectors", casesDir + f, ...member]) })
 }
 if (!offline) {
   const live = () => new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY })

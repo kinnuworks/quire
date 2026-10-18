@@ -62,9 +62,11 @@ describe("edge cases (spec/vectors/cases)", () => {
     it(f, async () => {
       const c = JSON.parse(readFileSync(new URL(f, dir), "utf8"))
       const doc = new Y.Doc()
-      const p = new ArkivProvider(doc, { store: vectorStore(c), link: parseDocLink(c.link)!, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+      const identity = c.memberKey ? { address: privateKeyToAccount(c.memberKey).address.toLowerCase() as Hex, privateKey: c.memberKey, name: "reader" } : undefined
+      const p = new ArkivProvider(doc, { store: vectorStore(c), link: parseDocLink(c.link)!, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
       await p.connect()
       expect(text(doc), c.description).toBe(c.expected.text)
+      expect([...p.appliedKeys].sort(), c.description).toEqual(c.expected.applied)
       p.destroy()
     })
   }

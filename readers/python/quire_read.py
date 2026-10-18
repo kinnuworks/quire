@@ -512,6 +512,51 @@ class _Cursor:
     def string(self) -> str:
         return self.take(self.uint()).decode("utf-8")
 
+    def read_int(self) -> int:
+        """lib0 varint: sign in bit 6 of the first byte, 6 then 7 bits per byte."""
+        b = self.u8()
+        neg = b & 0x40
+        n = b & 0x3F
+        shift = 6
+        while b & 0x80:
+            b = self.u8()
+            n |= (b & 0x7F) << shift
+            shift += 7
+        return -n if neg else n
+
+    def read_any(self) -> Any:
+        """One lib0 `any` value, decoded (big-endian floats, as lib0 writes them)."""
+        t = self.u8()
+        if t == 127:
+            return _UNDEFINED
+        if t == 126:
+            return None
+        if t == 121:
+            return False
+        if t == 120:
+            return True
+        if t == 125:
+            return self.read_int()
+        if t == 124:
+            return struct.unpack(">f", self.take(4))[0]
+        if t == 123:
+            return struct.unpack(">d", self.take(8))[0]
+        if t == 122:
+            return struct.unpack(">q", self.take(8))[0]
+        if t == 119:
+            return self.string()
+        if t == 118:
+            out: dict[str, Any] = {}
+            for _ in range(self.uint()):
+                k = self.string()
+                out[k] = self.read_any()
+            return out
+        if t == 117:
+            return [self.read_any() for _ in range(self.uint())]
+        if t == 116:
+            return bytes(self.take(self.uint()))
+        raise Rejected(f"unknown lib0 any type {t}")
+
     def skip_any(self) -> None:
         t = self.u8()
         if t in (127, 126, 121, 120):  # undefined, null, false, true
@@ -583,33 +628,68 @@ class Struct:
         return (self.ref, (self.client, self.clock + k - 1), self.right_origin, None, None, self.units[k])
 
 
+_UNDEFINED = object()
+
+
+def js_json(v: Any) -> str:
+    """A value as JavaScript's JSON.stringify writes it, so both readers compare
+    content by value: 1 sent as an integer and 1 sent as a float are the same."""
+    if v is None or v is _UNDEFINED:
+        return "null"
+    if v is True:
+        return "true"
+    if v is False:
+        return "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")):
+            return "null"
+        if v.is_integer() and abs(v) < 1e21:
+            return str(int(v))
+        r = repr(v)
+        if "e" in r:  # JavaScript writes 1e-7 and 1e+21 where Python writes 1e-07 and 1e+21
+            mant, exp = r.split("e")
+            sign = "-" if exp.startswith("-") else "+"
+            r = f"{mant}e{sign}{exp.lstrip('+-').lstrip('0') or '0'}"
+        return r
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, bytes):  # a Uint8Array stringifies as an object of indices
+        return "{" + ",".join(f'"{i}":{b}' for i, b in enumerate(v)) + "}"
+    if isinstance(v, list):
+        return "[" + ",".join(js_json(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ",".join(f"{json.dumps(k, ensure_ascii=False)}:{js_json(x)}" for k, x in v.items() if x is not _UNDEFINED) + "}"
+    return json.dumps(str(v))
+
+
+def _json_text(text: str) -> Any:
+    return _UNDEFINED if text == "undefined" else json.loads(text)
+
+
 def _content(c: _Cursor, ref: int) -> tuple[int, list[bytes] | None, str | None]:
     """Read one item's content (Yjs v1): (length, units, text)."""
     start = c.pos
     if ref == 1:  # deleted
         return c.uint(), None, None
-    if ref == 2:  # JSON
+    if ref == 2:  # JSON: compared by value
         n = c.uint()
-        return n, [c.string().encode("utf-8") for _ in range(n)], None
+        return n, [js_json(_json_text(c.string())).encode("utf-8") for _ in range(n)], None
     if ref == 4:  # string; length counts UTF-16 code units
         text = c.string()
         raw = text.encode("utf-16-le", "surrogatepass")
         return len(raw) // 2, [raw[i : i + 2] for i in range(0, len(raw), 2)], text
-    if ref == 8:  # any
+    if ref == 8:  # any: compared by value, not by encoding
         n = c.uint()
-        units = []
-        for _ in range(n):
-            at = c.pos
-            c.skip_any()
-            units.append(c.data[at : c.pos])
-        return n, units, None
+        return n, [js_json(c.read_any()).encode("utf-8") for _ in range(n)], None
     if ref == 3:  # binary
         c.take(c.uint())
-    elif ref == 5:  # embed
-        c.string()
-    elif ref == 6:  # format
-        c.string()
-        c.string()
+    elif ref == 5:  # embed: compared by value
+        return 1, [js_json(_json_text(c.string())).encode("utf-8")], None
+    elif ref == 6:  # format: key and value, compared by value
+        key = c.string()
+        return 1, [js_json([key, _json_text(c.string())]).encode("utf-8")], None
     elif ref == 7:  # type
         if c.uint() in (3, 5):  # XmlElement name, XmlHook key
             c.string()
@@ -791,6 +871,27 @@ def well_formed(e: Entity) -> bool:
             and qk in KINDS and _is_int(qs) and 0 <= qs < 2**64)
 
 
+def check_roster_entries(members: Any, revoked: Any) -> None:
+    """Member and removal entries as spec/schema describes them, checked by
+    hand so the verdict never depends on a schema library."""
+    if not isinstance(members, list) or not members or not isinstance(revoked, list):
+        raise RuntimeError("ACL members or revoked is malformed")
+    for m in members:
+        if not isinstance(m, dict) or set(m) != {"address", "publicKey", "name", "role", "addedAtBlock"}:
+            raise RuntimeError("an ACL member entry has the wrong fields")
+        if not (isinstance(m["address"], str) and ADDRESS_LOWER.fullmatch(m["address"])
+                and isinstance(m["publicKey"], str) and re.fullmatch(r"0x04[0-9a-f]{128}", m["publicKey"])
+                and isinstance(m["name"], str) and len(m["name"]) <= 40
+                and m["role"] in ("owner", "writer")
+                and isinstance(m["addedAtBlock"], str) and re.fullmatch(r"[0-9]+", m["addedAtBlock"])):
+            raise RuntimeError("an ACL member entry has a malformed field")
+    for r in revoked:
+        if not (isinstance(r, dict) and isinstance(r.get("address"), str) and ADDRESS_LOWER.fullmatch(r["address"])
+                and isinstance(r.get("atBlock"), str) and re.fullmatch(r"[0-9]+", r["atBlock"])
+                and (r.get("addedAtBlock") is None or (isinstance(r["addedAtBlock"], str) and re.fullmatch(r"[0-9]+", r["addedAtBlock"])))):
+            raise RuntimeError("an ACL removal entry is malformed")
+
+
 class Source:
     """Where entities come from. Queries mirror section 5."""
 
@@ -862,8 +963,8 @@ class RpcSource(Source):
     def _base(doc: str, kind: str) -> str:
         return f"qp = str('quire1') AND qd = bytes32({doc.lower()}) AND qk = str('{kind}')"
 
-    def _run(self, query: str) -> list[Entity]:
-        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query)) if well_formed(e)]
+    def _run(self, query: str, max_pages: int | None = None) -> list[Entity]:
+        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query, max_pages)) if well_formed(e)]
 
     def acl(self, doc: str, owner: str) -> list[Entity]:
         return self._run(self._base(doc, "a") + f" AND $creator = addr({owner})")
@@ -878,7 +979,8 @@ class RpcSource(Source):
             if not creators:
                 return []
             query += " AND (" + " OR ".join(f"$creator = addr({c})" for c in creators) + ")"
-        return self._run(query)
+        # join requests from anyone: one page only, so junk requests cannot drain the budget
+        return self._run(query, max_pages=1 if kind == "j" and creators is None else None)
 
     def entity(self, key: str) -> Entity | None:
         raw = qa.get_entity(self.url, key)
@@ -887,7 +989,8 @@ class RpcSource(Source):
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         # one query with no kind or creator filter
-        everything = self._run(f"qp = str('quire1') AND qd = bytes32({doc.lower()})")
+        # one page of 200, as the TypeScript reader does: the document id is public, so anyone can flood it
+        everything = self._run(f"qp = str('quire1') AND qd = bytes32({doc.lower()})", max_pages=1)
         return [e for e in everything if e.kind != "j" and e.creator not in members]
 
 
@@ -1088,7 +1191,7 @@ class Reader:
         self.creators: dict[str, str] = {}
         self.authors: dict[int, Author] = {}
         self.dropped_authors: list[str] = []
-        self.revoked_at: dict[str, int] = {}  # removed member -> removal block, from the roster
+        self.revoked_at: dict[str, list[tuple[int, int]]] = {}  # removed member -> membership intervals that ended
         self.added_at: dict[str, int] = {}  # member -> block they were added, from the roster
         self.acl_entity: Entity | None = None
         # Section 5: a writing session's own client id. Snapshots carrying
@@ -1177,6 +1280,7 @@ class Reader:
         if not _is_int(epoch):
             raise RuntimeError(f"ACL epoch {epoch!r} is not an integer")
         if epoch == 0:
+            check_roster_entries(acl.get("members"), acl.get("revoked"))
             return {
                 "doc": self.link.doc, "epoch": 0,
                 "members": acl.get("members") or [], "revoked": acl.get("revoked") or [],
@@ -1195,8 +1299,19 @@ class Reader:
             self.schemas.check("roster", roster)
         except Rejected as exc:
             raise RuntimeError(str(exc)) from exc
-        if set(roster) != {"doc", "epoch", "members", "revoked"}:
+        if set(roster) - {"prior"} != {"doc", "epoch", "members", "revoked"}:
             raise RuntimeError("ACL roster has the wrong fields")
+        check_roster_entries(roster.get("members"), roster.get("revoked"))
+        # earlier epochs' keys, carried forward at each rotation, so a current member reads all history
+        prior = roster.get("prior")
+        if prior is not None:
+            if not (isinstance(prior, dict) and all(
+                isinstance(n, str) and re.fullmatch(r"[1-9][0-9]*", n) and int(n) < epoch
+                and isinstance(k, str) and re.fullmatch(r"0x[0-9a-f]{64}", k) for n, k in prior.items()
+            )):
+                raise RuntimeError("ACL roster prior keys are malformed")
+            for n, k in prior.items():
+                self.keys.setdefault(int(n), bytes.fromhex(k[2:]))
         # Section 3: the roster is bound to its document and epoch, so one
         # cannot be replayed into another document or an older epoch.
         if str(roster.get("doc", "")).lower() != self.link.doc.lower():
@@ -1211,6 +1326,10 @@ class Reader:
 
     def _decode_snapshot(self, e: Entity) -> Frame:
         """Decrypt a snapshot head and apply the header and block rules."""
+        # Section 5: content entities are readonly, or their creator could patch them later and keep
+        # the original block. Chunks carry their head's flags, so they are readonly too.
+        if not e.readonly:
+            raise Rejected("snapshot entity is not readonly")
         qs = e.attr("qs")
         if not _is_int(qs):
             raise Rejected(f"qs {qs!r} is not u64")
@@ -1312,6 +1431,8 @@ class Reader:
 
     # Step 4: updates, with the section 5 rules on blocks and client ids.
     def _check_update(self, e: Entity) -> tuple[Frame, list[Struct], str, list[int]]:
+        if not e.readonly:
+            raise Rejected("update entity is not readonly")
         qs = e.attr("qs")
         if not _is_int(qs):
             raise Rejected(f"qs {qs!r} is not u64")
@@ -1358,13 +1479,14 @@ class Reader:
         they belonged; anything they create later does not count."""
         if e.creator in members:
             return self.member_at(e)
-        at = self.revoked_at.get(e.creator)
-        return at is not None and e.created_at <= at
+        # each removal closes one membership interval [addedAtBlock, atBlock]; entries without
+        # addedAtBlock start at 0. Edits from a gap between memberships never count.
+        return any(start <= e.created_at <= end for start, end in self.revoked_at.get(e.creator, []))
 
     def load_updates(self, members: list[str], window_base: int | None) -> list[tuple[Entity, bytes, list[Struct]]]:
         min_qs = max(0, window_base - SNAPSHOT_WINDOW) if window_base is not None else 0
         accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
-        authors = sorted(set(members) | set(self.revoked_at))
+        authors = sorted(set(members) | set(self.revoked_at))  # removed members too, for their intervals
         for e in self.source.by_kind(self.link.doc, "u", authors, min_qs):
             if not self.wrote_as_member(e, members):
                 self._ignore(e, "created before its creator was added" if e.creator in members else "creator not in ACL")
@@ -1444,6 +1566,9 @@ class Reader:
             return []
         out: list[JoinRequest] = []
         for e in self.source.by_kind(self.link.doc, "j", None):
+            if not e.readonly:
+                self.log(f"join request {e.key}: not readonly")
+                continue
             try:
                 frame = open_join(e, self.member_key, self.link.doc)
                 self.schemas.check("join", frame.header)
@@ -1480,11 +1605,12 @@ class Reader:
             for m in raw_members
             if isinstance(m, dict) and isinstance(m.get("address"), str) and isinstance(m.get("addedAtBlock"), str) and m["addedAtBlock"].isdigit()
         }
-        self.revoked_at = {
-            str(r["address"]).lower(): int(r["atBlock"])
-            for r in revoked
-            if isinstance(r.get("address"), str) and isinstance(r.get("atBlock"), str) and r["atBlock"].isdigit()
-        }
+        self.revoked_at = {}
+        for r in revoked:
+            if isinstance(r.get("address"), str) and isinstance(r.get("atBlock"), str) and r["atBlock"].isdigit():
+                start = r.get("addedAtBlock")
+                begin = int(start) if isinstance(start, str) and start.isdigit() else 0
+                self.revoked_at.setdefault(str(r["address"]).lower(), []).append((begin, int(r["atBlock"])))
 
         # Read snapshots, then updates; if the updates show a snapshot must be
         # refused, start over without it; its creator then contributes no snapshot.

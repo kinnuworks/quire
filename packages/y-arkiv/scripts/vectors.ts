@@ -120,7 +120,7 @@ await settle(a.p, b.p, c.p)
   const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 0, header: { t: 0, salt: bytesToHex(forgedSalt), sig: await privateKeyToAccount(MALLORY_KEY).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(DOC), ...forgedSalt]) } }) }, data: update }, randomBytes)
   const payload = encodeOuter(0, await seal(deriveEpochZeroKey(SECRET), frame))
   await chain.store(mallory.address).batch({
-    creates: [{ payload, attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],
+    creates: [{ payload, attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true }],
   })
   chain.mine()
 }
@@ -139,7 +139,7 @@ await settle(a.p, b.p, c.p)
   const epochKey = (b.p as unknown as { epochKeys: Map<number, Uint8Array> }).epochKeys.get(1)!
   const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(DOC), epoch: 1, header: { t: "0", salt: bytesToHex(salt), sig }, data: Y.encodeStateAsUpdate(d, sv) }, randomBytes)
   await chain.store(bea.address).batch({
-    creates: [{ payload: encodeOuter(1, await seal(epochKey, frame)), attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],
+    creates: [{ payload: encodeOuter(1, await seal(epochKey, frame)), attributes: { doc: DOC, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true }],
   })
   chain.mine()
 }

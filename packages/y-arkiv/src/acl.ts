@@ -24,7 +24,7 @@ export type Member = {
   addedAtBlock: string
 }
 
-export type Revoked = { address: Hex; atBlock: string }
+export type Revoked = { address: Hex; atBlock: string; addedAtBlock?: string }
 
 /** The ACL as a session understands it. */
 export type Acl = {
@@ -38,6 +38,11 @@ export type Acl = {
   keepUntil: string | null
   members: Member[]
   revoked: Revoked[]
+  /**
+   * Keys of earlier epochs above 0, by epoch, carried in the sealed roster so a current member's
+   * fresh session can still read, and prove, edits written before the latest rotation.
+   */
+  prior?: Record<string, Hex>
   /**
    * For epochs above 0: the epoch key sealed to each member, in random order and
    * without labels. A member finds theirs by trying each; nobody else learns who they are for.
@@ -94,7 +99,15 @@ export function memberAddresses(acl: Acl): Hex[] {
 export function wroteAsMember(acl: Acl, address: Hex | undefined, createdAt: bigint): boolean {
   if (memberAt(acl, address, createdAt)) return true
   const a = address?.toLowerCase()
-  return acl.revoked.some((r) => r.address.toLowerCase() === a && /^[0-9]+$/.test(String(r.atBlock)) && createdAt <= BigInt(r.atBlock))
+  // each removal closes one membership interval: [addedAtBlock, atBlock]. Older entries without
+  // addedAtBlock start at 0. Edits from a gap between two memberships never count.
+  return acl.revoked.some(
+    (r) =>
+      r.address.toLowerCase() === a &&
+      /^[0-9]+$/.test(String(r.atBlock)) &&
+      createdAt <= BigInt(r.atBlock) &&
+      (r.addedAtBlock === undefined || (/^[0-9]+$/.test(String(r.addedAtBlock)) && createdAt >= BigInt(r.addedAtBlock))),
+  )
 }
 
 /** Everyone whose updates can count: members, and removed members for what they wrote before removal. */
@@ -110,7 +123,8 @@ export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined, doc: 
   if (acl.epoch === 0) return { ...base, members: acl.members, revoked: acl.revoked }
   if (!epochKey) throw new Error("sealing the roster needs the current epoch key")
   // the roster names its document and epoch, so it cannot be replayed into another ACL
-  const roster = await seal(epochKey, enc.encode(JSON.stringify({ doc: doc.toLowerCase(), epoch: acl.epoch, members: acl.members, revoked: acl.revoked })))
+  const body = { doc: doc.toLowerCase(), epoch: acl.epoch, members: acl.members, revoked: acl.revoked, ...(acl.prior && Object.keys(acl.prior).length ? { prior: acl.prior } : {}) }
+  const roster = await seal(epochKey, enc.encode(JSON.stringify(body)))
   return { ...base, roster: `0x${bytesToHex(roster)}` }
 }
 
@@ -118,6 +132,22 @@ export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined, doc: 
  * Validates a header and opens its roster. `epochKey` is the current epoch's
  * key if this session holds it; without it an epoch 1+ roster stays hidden.
  */
+/** Member and removal entries as spec/schema/acl-header.json describes them, checked by hand so no schema library is needed. */
+function checkRoster(members: unknown, revoked: unknown): void {
+  const ok = (v: unknown, re: RegExp) => typeof v === "string" && re.test(v)
+  if (!Array.isArray(members) || members.length === 0 || !Array.isArray(revoked)) throw new Error("malformed ACL: members or revoked")
+  for (const m of members as Record<string, unknown>[]) {
+    const keys = Object.keys(m ?? {}).sort().join()
+    if (keys !== "addedAtBlock,address,name,publicKey,role") throw new Error("malformed ACL: a member entry has the wrong fields")
+    if (!ok(m.address, /^0x[0-9a-f]{40}$/) || !ok(m.publicKey, /^0x04[0-9a-f]{128}$/) || typeof m.name !== "string" || m.name.length > 40 || (m.role !== "owner" && m.role !== "writer") || !ok(m.addedAtBlock, /^[0-9]+$/)) {
+      throw new Error("malformed ACL: a member entry has a malformed field")
+    }
+  }
+  for (const r of revoked as Record<string, unknown>[]) {
+    if (!r || !ok(r.address, /^0x[0-9a-f]{40}$/) || !ok(r.atBlock, /^[0-9]+$/) || (r.addedAtBlock !== undefined && !ok(r.addedAtBlock, /^[0-9]+$/))) throw new Error("malformed ACL: a removal entry")
+  }
+}
+
 export async function fromHeader(header: Record<string, unknown>, owner: Hex, epochKey: (epoch: number) => Uint8Array | undefined, doc: Hex): Promise<Acl> {
   const h = header as unknown as AclHeader
   if (h.v !== 1 || typeof h.epoch !== "number" || typeof h.owner !== "string" || typeof h.ownerPublicKey !== "string") throw new Error("malformed ACL")
@@ -125,19 +155,27 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
   const fields = h.epoch === 0 ? ["v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps", "members", "revoked"] : ["v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps", "roster"]
   const keys = Object.keys(header)
   if (fields.some((f) => !keys.includes(f)) || keys.some((k) => !fields.includes(k))) throw new Error("malformed ACL: wrong fields for its epoch")
+  if (h.epoch === 0) checkRoster(h.members, h.revoked)
   if (h.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("ACL owner does not match the link")
   let members: Member[] = []
   let revoked: Revoked[] = []
   let rosterHidden = false
+  let prior: Record<string, Hex> | undefined
   if (h.epoch === 0) {
     members = h.members ?? []
     revoked = h.revoked ?? []
   } else {
     const key = epochKey(h.epoch)
     if (key && h.roster) {
-      const r = JSON.parse(dec.decode(await open(key, hexToBytes(h.roster)))) as { doc: string; epoch: number; members: Member[]; revoked: Revoked[] }
-      const rk = Object.keys(r).sort().join()
+      const r = JSON.parse(dec.decode(await open(key, hexToBytes(h.roster)))) as { doc: string; epoch: number; members: Member[]; revoked: Revoked[]; prior?: Record<string, Hex> }
+      const rk = Object.keys(r).filter((k) => k !== "prior").sort().join()
       if (rk !== "doc,epoch,members,revoked") throw new Error("malformed ACL roster: wrong fields")
+      if (r.prior !== undefined) {
+        const ok = typeof r.prior === "object" && r.prior !== null && Object.entries(r.prior).every(([n, k]) => /^[1-9][0-9]*$/.test(n) && Number(n) < h.epoch && typeof k === "string" && /^0x[0-9a-f]{64}$/.test(k))
+        if (!ok) throw new Error("malformed ACL roster: prior keys")
+        prior = r.prior
+      }
+      checkRoster(r.members, r.revoked)
       if (r.doc !== doc.toLowerCase() || r.epoch !== h.epoch) throw new Error("ACL roster belongs to another document or epoch")
       members = r.members
       revoked = r.revoked
@@ -146,5 +184,5 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
   if (!rosterHidden && !members.some((m) => m.address.toLowerCase() === owner.toLowerCase() && m.role === "owner")) {
     throw new Error("ACL does not list its owner")
   }
-  return { v: 1, owner: h.owner, ownerPublicKey: h.ownerPublicKey, epoch: h.epoch, keepUntil: h.keepUntil ?? null, wraps: Array.isArray(h.wraps) ? h.wraps : [], members, revoked, rosterHidden }
+  return { v: 1, owner: h.owner, ownerPublicKey: h.ownerPublicKey, epoch: h.epoch, keepUntil: h.keepUntil ?? null, wraps: Array.isArray(h.wraps) ? h.wraps : [], members, revoked, rosterHidden, ...(prior ? { prior } : {}) }
 }

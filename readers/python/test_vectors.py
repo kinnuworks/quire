@@ -132,7 +132,9 @@ def seal(kind: str, epoch: int, header: dict, data: bytes, key: bytes, frame_epo
 
 
 def make_entity(template, *, key: str, kind: str, creator: str, block: int, payload: bytes,
-                readonly: bool = False, permissionless: bool = False):
+                readonly: bool | None = None, permissionless: bool = False):
+    # section 1: every kind but the member list is created readonly
+    readonly = kind != "a" if readonly is None else readonly
     attrs = []
     for a in template.attributes:
         value = {"qk": kind, "qs": block}.get(a.name, a.value)
@@ -301,21 +303,22 @@ class AuditTests(unittest.TestCase):
             quire_audit.check_flags(version), ["version does not allow permissionless extension"]
         )
 
-    def test_snapshot_has_no_flags(self) -> None:
-        # Section 1: a snapshot carries no flags, readonly included.
+    def test_snapshot_must_be_readonly(self) -> None:
+        # Section 1: a snapshot is readonly, so its creator can never patch it later.
         entities = quire_audit.load_vectors(DOCUMENT)[1]
         snap = next(e for e in entities if e.kind == "s")
-        snap.readonly, snap.flags_raw = True, 1
-        self.assertEqual(quire_audit.check_flags(snap), ["snapshot is readonly, expected no flags"])
+        self.assertEqual(quire_audit.check_flags(snap), [])
+        snap.readonly, snap.flags_raw = False, 0
+        self.assertEqual(quire_audit.check_flags(snap), ["snapshot is not readonly, so its creator could patch it later"])
 
     def test_vectors_carry_creation_flags_like_the_rpc(self) -> None:
         for raw in VEC["entities"]:
             acl = quire_audit.parse_entity(raw).kind == "a"
             self.assertEqual(
-                raw["creationFlags"], {"readonly": False, "permissionlessExtension": acl, "raw": 2 if acl else 0}
+                raw["creationFlags"], {"readonly": not acl, "permissionlessExtension": acl, "raw": 2 if acl else 1}
             )
         for e in quire_audit.load_vectors(DOCUMENT)[1]:
-            self.assertEqual(e.flags_raw, 2 if e.kind == "a" else 0)
+            self.assertEqual(e.flags_raw, 2 if e.kind == "a" else 1)
 
     def test_unknown_raw_flag_fails(self) -> None:
         e = next(x for x in quire_audit.load_vectors(DOCUMENT)[1] if x.kind == "u")
@@ -341,11 +344,11 @@ class AuditTests(unittest.TestCase):
             version.flags_raw = raw
             self.assertEqual(not quire_audit.check_flags(version), ok, raw)
         update = next(e for e in quire_audit.load_vectors(DOCUMENT)[1] if e.kind == "u")
-        for raw, ok in ((0, True), (1, False), (2, False), (3, False), (4, False)):
+        for raw, ok in ((1, True), (0, False), (2, False), (3, False), (5, False)):
             update.flags_raw = raw
             self.assertEqual(not quire_audit.check_flags(update), ok, raw)
         # The booleans and raw must agree in both directions.
-        update.flags_raw, update.readonly = 0, True
+        update.flags_raw, update.readonly = 1, False
         self.assertIn("bit 0 disagrees", " ".join(quire_audit.check_flags(update)))
 
     def test_raw_flag_mismatch_fails_audit(self) -> None:
@@ -363,7 +366,8 @@ class AuditTests(unittest.TestCase):
                 for a in template.attributes
             ],
         )
-        for ro, pe, ok in ((False, False, True), (True, True, True), (False, True, False), (True, False, False)):
+        # readonly alone (a snapshot chunk) or both (a version chunk); never without readonly
+        for ro, pe, ok in ((True, False, True), (True, True, True), (False, False, False), (False, True, False)):
             chunk.readonly, chunk.permissionless_extension = ro, pe
             chunk.flags_raw = quire_audit.raw_flags(ro, pe)
             self.assertEqual(not quire_audit.check_flags(chunk), ok, (ro, pe))
@@ -534,7 +538,7 @@ class ReaderTests(unittest.TestCase):
         chunk = make_entity(
             head, key=chunk_key, kind="c", creator=head.creator, block=head.created_at,
             payload=seal("c", chunk_epoch, {"i": 1, "of": of}, frame.data[100:], reader.keys[chunk_epoch]),
-            readonly=chunk_flags, permissionless=chunk_flags,
+            readonly=True, permissionless=chunk_flags,
         )
         entities = [e for e in entities if e is not head] + [chunk, new_head]
         return new_head, self._reader(entities).read()
@@ -1303,8 +1307,10 @@ class ReaderTests(unittest.TestCase):
         for name in cases:
             with self.subTest(case=name):
                 data, entities = quire_audit.load_vectors(os.path.join(folder, name))
-                result = quire_read.Reader(quire_read.parse_link(data["link"]), quire_read.VectorSource(entities)).read()
+                key = quire_read.load_private_key(data["memberKey"]) if data.get("memberKey") else None
+                result = quire_read.Reader(quire_read.parse_link(data["link"]), quire_read.VectorSource(entities), key).read()
                 self.assertEqual(result.text, data["expected"]["text"], data["description"])
+                self.assertEqual(sorted(result.applied), data["expected"]["applied"], data["description"])
 
     def test_an_empty_newer_snapshot_cannot_erase_the_document(self) -> None:
         # Section 5 step 3: each member's newest snapshot is applied, so Bea's

@@ -275,7 +275,7 @@ export class ArkivProvider extends Observable<string> {
     const owner: Member = {
       address: identity.address.toLowerCase() as Hex,
       publicKey: `0x${bytesToHex(publicKeyOf(identity.privateKey))}`,
-      name: identity.name,
+      name: identity.name.slice(0, 40), // the schema's limit, so every reader accepts the list
       role: "owner",
       addedAtBlock: head.toString(),
     }
@@ -395,6 +395,8 @@ export class ArkivProvider extends Observable<string> {
       }
     }
     const acl = await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc)
+    // earlier epochs' keys, carried in the sealed roster: a fresh member session reads all of the history
+    for (const [n, k] of Object.entries(acl.prior ?? {})) if (!this.epochKeys.has(Number(n))) this.epochKeys.set(Number(n), hexToBytes(k))
     this.acl = acl
     this.aclKey = entity.key
     this.appliedKeys.add(entity.key)
@@ -459,7 +461,7 @@ export class ArkivProvider extends Observable<string> {
       const trial = new Y.Doc()
       Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
       Y.applyUpdate(trial, st.state)
-      if (overridesVerified(trial, verified)) {
+      if (snapshotConflicts(this.doc, st.state, verified) || overridesVerified(trial, verified)) {
         this.reject()
         this.refusedSnapshots.add(st.key)
         continue
@@ -894,7 +896,8 @@ export class ArkivProvider extends Observable<string> {
       const trial = new Y.Doc()
       Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
       Y.applyUpdate(trial, st.state)
-      if (overridesVerified(trial, this.history.map((h) => h.update))) {
+      const verified = this.history.map((h) => h.update)
+      if (snapshotConflicts(this.doc, st.state, verified) || overridesVerified(trial, verified)) {
         this.reject()
         this.refusedSnapshots.add(st.key)
         continue
@@ -962,6 +965,9 @@ export class ArkivProvider extends Observable<string> {
 
   private async openEntity(entity: StoredEntity, kind: Kind, epochHint?: number): Promise<Frame | null> {
     if (entity.attributes.kind !== kind || entity.attributes.doc !== this.link.doc) return null
+    // edits, snapshots, chunks and join requests MUST be readonly: a patchable one could be rewritten
+    // after the fact while keeping its original creation block
+    if (kind !== KIND.acl && !entity.readonly) throw new MalformedHeader(`${kind} entity is not readonly`)
     const frame = await this.decryptEntity(entity, kind, epochHint)
     // a frame that decrypts but breaks its header schema is ignored for good (callers count it as rejected)
     const problem = frame && headerProblem(kind, frame.header)
@@ -1065,7 +1071,8 @@ export class ArkivProvider extends Observable<string> {
       const payload = encodeOuter(epoch, await seal(key, encodeFrame({ kind: KIND.update, doc: hexToBytes(this.link.doc), epoch, header, data: merged }, randomBytes)))
       const result = await this.store.batch({
         // an edit lives as long as a snapshot would: it must never expire before one covers it
-        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: this.snapshotLifetime(head) }],
+        // readonly: an edit can never be patched later, so what readers prove is what was written
+        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: this.snapshotLifetime(head), readonly: true }],
       })
       this.stats.writes++
       const entity = result.created[0]!
@@ -1310,13 +1317,13 @@ export class ArkivProvider extends Observable<string> {
     if (!this.identity) throw new Error("joining needs an identity")
     return this.serial(async () => {
       const head = await this.store.head()
-      const header = { publicKey: `0x${bytesToHex(publicKeyOf(this.identity!.privateKey))}`, name: this.identity!.name }
+      const header = { publicKey: `0x${bytesToHex(publicKeyOf(this.identity!.privateKey))}`, name: this.identity!.name.slice(0, 40) }
       if (!this.acl) throw new Error("not connected")
       // sealed to the owner's public key: other link holders, including removed members, cannot read it
       const frame = encodeFrame({ kind: KIND.join, doc: hexToBytes(this.link.doc), epoch: 0, header, data: new Uint8Array() }, randomBytes)
       const payload = encodeOuter(0, await sealTo(hexToBytes(this.acl.ownerPublicKey), frame, "join"))
       const result = await this.store.batch({
-        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.join, seq: head }, lifetimeSeconds: LIFETIME.join }],
+        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.join, seq: head }, lifetimeSeconds: LIFETIME.join, readonly: true }],
       })
       this.stats.writes++
       const key = result.created[0]!
@@ -1373,9 +1380,18 @@ export class ArkivProvider extends Observable<string> {
     const epochKey = randomBytes(32)
     await this.updateAcl(async (acl, head) => {
       if (target) {
+        const leaving = acl.members.find((m) => m.address.toLowerCase() === target)
         acl.members = acl.members.filter((m) => m.address.toLowerCase() !== target)
-        acl.revoked.push({ address: target, atBlock: head.toString() })
+        // the interval this removal closes, so edits from any later gap never count
+        acl.revoked.push({ address: target, atBlock: head.toString(), ...(leaving ? { addedAtBlock: leaving.addedAtBlock } : {}) })
       }
+      // carry every earlier epoch key above 0 forward, sealed under the new key with the roster
+      const prior: Record<string, Hex> = { ...(acl.prior ?? {}) }
+      for (let n = 1; n <= acl.epoch; n++) {
+        const k = this.epochKeys.get(n)
+        if (k) prior[String(n)] = `0x${bytesToHex(k)}`
+      }
+      acl.prior = prior
       acl.epoch += 1
       const wraps: Hex[] = []
       for (const m of acl.members) wraps.push(`0x${bytesToHex(await wrapForMember(epochKey, hexToBytes(m.publicKey), acl.epoch))}`)
@@ -1702,8 +1718,10 @@ async function writeSnapshotEntities(
   for (let i = headSize; i < state.length; i += size) parts.push(state.subarray(i, i + size))
   const id = bytesToHex(randomBytes(16))
   const docBytes = hexToBytes(doc)
-  // only published versions may be kept alive by anyone; a document's own entities are not
-  const flags = { readonly, permissionlessExtension: kind === KIND.version }
+  // every snapshot, version and chunk is readonly: its creator could otherwise patch the content later
+  // and keep the original block. Only published versions may be kept alive by anyone.
+  void readonly
+  const flags = { readonly: true, permissionlessExtension: kind === KIND.version }
   const spec = async (frame: Frame, k: Kind): Promise<CreateSpec> => ({
     payload: encodeOuter(epoch, await seal(key, encodeFrame(frame, randomBytes))),
     attributes: { doc, kind: k, seq: head },
@@ -1759,6 +1777,29 @@ export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
         if (!(found instanceof Y.Item) || found.deleted) continue
         if (unitKey(doc, found, struct.id.clock + i - found.id.clock) !== unitKey(doc, struct, i)) return true
       }
+    }
+  }
+  return false
+}
+
+/**
+ * True if the snapshot itself carries, at a clock a verified update wrote, an item other than that
+ * update's: struct against struct, before anything is merged. Merging alone hides this when the
+ * update is already integrated, because Yjs then drops the snapshot's struct and applies the rest.
+ */
+export function snapshotConflicts(doc: Y.Doc, state: Uint8Array, updates: Uint8Array[]): boolean {
+  const verified = new Map<string, string>()
+  for (const u of updates) {
+    for (const st of Y.decodeUpdate(u).structs) {
+      if (!(st instanceof Y.Item)) continue
+      for (let k = 0; k < st.length; k++) verified.set(`${st.id.client}:${st.id.clock + k}`, unitKey(doc, st, k))
+    }
+  }
+  for (const st of Y.decodeUpdate(state).structs) {
+    if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
+    for (let k = 0; k < st.length; k++) {
+      const want = verified.get(`${st.id.client}:${st.id.clock + k}`)
+      if (want !== undefined && want !== unitKey(doc, st, k)) return true
     }
   }
   return false

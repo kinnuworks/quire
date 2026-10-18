@@ -111,7 +111,9 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
     // this tab typed, then reload. At most twice a minute, so a persistent clash cannot loop.
     p.on("diverged", () => {
       const now = Date.now()
-      rebuilds.splice(0, rebuilds.length, ...rebuilds.filter((t) => now - t < 60_000))
+      // at most twice in ten minutes: each reload costs three queries, and a hostile snapshot could
+      // otherwise keep spending a reader's free budget
+      rebuilds.splice(0, rebuilds.length, ...rebuilds.filter((t) => now - t < 600_000))
       if (rebuilds.length >= 2) {
         log({ kind: "rejected", text: "A snapshot conflicts with a checked edit again; not reloading. Reopen the page to rebuild." })
         return

@@ -39,7 +39,7 @@ const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch:
 const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame))
 const head = await store.head()
 const result = await new SdkStore({ privateKey: malloryKey }).batch({
-  creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: LIFETIME.snapshot }],
+  creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }],
 })
 demo.open.forgery = { by: mallory.address.toLowerCase(), entity: result.created[0], tx: result.txHash }
 writeFileSync(demoPath, JSON.stringify(demo, null, 2))

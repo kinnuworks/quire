@@ -8,6 +8,7 @@
  * Run: npx tsx scripts/edge-cases.ts
  */
 import { mkdirSync, writeFileSync } from "node:fs"
+import * as encoding from "lib0/encoding"
 import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
 import { bucketFor, encodeOuter } from "../src/codec.js"
@@ -78,19 +79,45 @@ async function setup() {
   para(a.doc, "Owner line.")
   await a.p.flush()
   await settle()
-  return { chain, link, b }
+  return { chain, link, b, a, settle, open }
 }
 
-/** Bea's raw entity: an update or snapshot whose frame the case controls. */
-async function beaWrites(chain: MemoryChain, link: DocLink, kind: Kind, frame: Uint8Array, seq: bigint): Promise<Hex> {
-  const r = await chain.store(bea.address).batch({
-    creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind, seq }, lifetimeSeconds: 3600 }],
+/** The owner's raw snapshot holding any state the case builds. */
+async function ownerSnapshot(chain: MemoryChain, link: DocLink, state: Uint8Array): Promise<Hex> {
+  const qs = chain.block
+  const header = JSON.stringify({ id: bytesToHex(randomBytes(16)), base: qs.toString(), t: 0, chunks: [], size: state.length, authors: {} })
+  const r = await chain.store(owner.address).batch({
+    creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), rawFrame(KIND.snapshot, link.doc, 0, header, state))), attributes: { doc: link.doc, kind: KIND.snapshot, seq: qs }, lifetimeSeconds: 3600, readonly: true }],
   })
   chain.mine()
   return r.created[0]!
 }
 
-async function beaUpdate(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string, header: (salt: Uint8Array, sig: string) => string, opts: { bom?: boolean; seq?: bigint; salt?: Uint8Array } = {}): Promise<Hex> {
+const anyBytes = (v: number, asFloat: boolean) => {
+  const e = encoding.createEncoder()
+  if (asFloat) {
+    encoding.writeUint8(e, 123)
+    encoding.writeFloat64(e, v)
+  } else encoding.writeAny(e, v)
+  return encoding.toUint8Array(e)
+}
+function replaceOnce(hay: Uint8Array, needle: Uint8Array, by: Uint8Array): Uint8Array {
+  const at: number[] = []
+  for (let i = 0; i + needle.length <= hay.length; i++) if (needle.every((x, j) => hay[i + j] === x)) at.push(i)
+  if (at.length !== 1) throw new Error(`expected one occurrence, found ${at.length}`)
+  return new Uint8Array([...hay.subarray(0, at[0]!), ...by, ...hay.subarray(at[0]! + needle.length)])
+}
+
+/** Bea's raw entity: an update or snapshot whose frame the case controls. */
+async function beaWrites(chain: MemoryChain, link: DocLink, kind: Kind, frame: Uint8Array, seq: bigint, readonly = true): Promise<Hex> {
+  const r = await chain.store(bea.address).batch({
+    creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind, seq }, lifetimeSeconds: 3600, readonly }],
+  })
+  chain.mine()
+  return r.created[0]!
+}
+
+async function beaUpdate(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string, header: (salt: Uint8Array, sig: string) => string, opts: { bom?: boolean; seq?: bigint; salt?: Uint8Array; readonly?: boolean } = {}): Promise<Hex> {
   const salt = opts.salt ?? randomBytes(16)
   const d = new Y.Doc()
   d.clientID = clientIdFor(bea.address, salt)
@@ -98,7 +125,7 @@ async function beaUpdate(chain: MemoryChain, link: DocLink, base: Y.Doc, line: s
   const sv = Y.encodeStateVector(d)
   para(d, line)
   const frame = rawFrame(KIND.update, link.doc, 0, header(salt, await sigFor(link.doc, salt)), Y.encodeStateAsUpdate(d, sv), opts.bom)
-  return beaWrites(chain, link, KIND.update, frame, opts.seq ?? chain.block)
+  return beaWrites(chain, link, KIND.update, frame, opts.seq ?? chain.block, opts.readonly ?? true)
 }
 
 async function beaSnapshot(chain: MemoryChain, link: DocLink, base: Y.Doc, line: string | null, opts: { sizeDelta?: number; qs?: bigint; id?: string } = {}): Promise<Hex> {
@@ -143,11 +170,13 @@ function exportCase(chain: MemoryChain, link: DocLink, order?: (es: StoredEntity
   }
 }
 
-async function write(name: string, rule: string, vec: ReturnType<typeof exportCase>) {
+async function write(name: string, rule: string, vec: ReturnType<typeof exportCase>, memberKey?: Hex) {
   const doc = new Y.Doc()
-  const p = new ArkivProvider(doc, { store: vectorStore(vec), link: parseDocLink(vec.link)!, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+  const identity = memberKey ? person(memberKey, "reader") : undefined
+  const p = new ArkivProvider(doc, { store: vectorStore(vec), link: parseDocLink(vec.link)!, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
   await p.connect()
-  writeFileSync(new URL(`${name}.json`, out), JSON.stringify({ description: rule, ...vec, expected: { text: text(doc) } }, null, 2))
+  const applied = [...p.appliedKeys].sort()
+  writeFileSync(new URL(`${name}.json`, out), JSON.stringify({ description: rule, ...vec, ...(memberKey ? { memberKey } : {}), expected: { text: text(doc), applied } }, null, 2))
   console.log(`${name}: ${JSON.stringify(text(doc))}`)
   p.destroy()
 }
@@ -234,5 +263,68 @@ const header = (t: string) => (salt: Uint8Array, sig: string) => `{"t":${t},"sal
   await beaUpdate(chain, link, b.doc, "Bea one.", header("1"), { salt })
   await beaUpdate(chain, link, b.doc, "Bea two.", header("1"), { salt })
   await write("update-duplicate-clocks", "Two updates that put different content at the same clocks: the earlier one (by createdAt, then key) stands and the later is ignored.", exportCase(chain, link))
+}
+{
+  const { chain, link, b } = await setup()
+  // Bea's verified update writes a paragraph; the owner's snapshot holds other text at her clocks,
+  // plus a paragraph of his own. The whole snapshot is refused, not just the clashing part.
+  const salt = randomBytes(16)
+  await beaUpdate(chain, link, b.doc, "Bea genuine.", header("1"), { salt })
+  const forged = new Y.Doc()
+  Y.applyUpdate(forged, Y.encodeStateAsUpdate(b.doc))
+  forged.clientID = clientIdFor(bea.address, salt)
+  para(forged, "Bea forged!!")
+  forged.clientID = 424242
+  para(forged, "Owner extra paragraph.")
+  await ownerSnapshot(chain, link, Y.encodeStateAsUpdate(forged))
+  await write("snapshot-differs-at-verified-clock", "A snapshot that holds other content at a clock a verified update wrote is refused whole, even where the update is already integrated and Yjs would quietly keep the update's struct.", exportCase(chain, link))
+}
+{
+  const { chain, link, b } = await setup()
+  // Bea's update pushes 12345 to an array; the owner's snapshot carries the same item with the number
+  // encoded as a float64. Same value, so no conflict: the snapshot and its extra paragraph apply.
+  const salt = randomBytes(16)
+  const d = new Y.Doc()
+  d.clientID = clientIdFor(bea.address, salt)
+  Y.applyUpdate(d, Y.encodeStateAsUpdate(b.doc))
+  const sv = Y.encodeStateVector(d)
+  d.getArray("a").push([12345])
+  const update = Y.encodeStateAsUpdate(d, sv)
+  const frame = rawFrame(KIND.update, link.doc, 0, header("1")(salt, await sigFor(link.doc, salt)), update)
+  await beaWrites(chain, link, KIND.update, frame, chain.block)
+  const full = new Y.Doc()
+  Y.applyUpdate(full, Y.encodeStateAsUpdate(d))
+  full.clientID = 424243
+  para(full, "Owner extra paragraph.")
+  await ownerSnapshot(chain, link, replaceOnce(Y.encodeStateAsUpdate(full), anyBytes(12345, false), anyBytes(12345, true)))
+  await write("snapshot-number-encoding", "Content is compared by value: 12345 written as an integer and as a float64 is the same item, so the snapshot applies.", exportCase(chain, link))
+}
+{
+  const { chain, link, b } = await setup()
+  await beaUpdate(chain, link, b.doc, "Bea, an update that is not readonly.", header("1"), { readonly: false })
+  await write("update-not-readonly", "An update created without the readonly flag could be patched later under its original block, so it is ignored.", exportCase(chain, link))
+}
+{
+  // two rotations: Bea writes under epoch 1, then a second removal moves the key to epoch 2. A fresh
+  // session of Bea's opens epoch 2 from her wrap and epoch 1 from the roster's prior keys, so her
+  // epoch 1 edit is applied (and proven), not just carried by a snapshot.
+  const { chain, link, a, b, settle, open } = await setup()
+  const cal = person(`0x${"33".repeat(32)}`, "Cal")
+  const dan = person(`0x${"55".repeat(32)}`, "Dan")
+  for (const who of [cal, dan]) {
+    const s = await open(who)
+    await s.p.requestJoin()
+    await settle()
+    await a.p.approve(who.address)
+    await settle()
+  }
+  await a.p.revoke(cal.address)
+  await settle()
+  para(b.doc, "Bea, written under epoch 1.")
+  await b.p.flush()
+  await settle()
+  await a.p.revoke(dan.address)
+  await settle()
+  await write("two-rotations-prior-keys", "After two rotations a current member still reads edits from the earlier epoch: the roster carries earlier epoch keys in prior. Read with memberKey.", exportCase(chain, link), BEA_KEY)
 }
 process.exit(0)

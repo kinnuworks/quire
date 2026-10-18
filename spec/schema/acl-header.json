@@ -101,6 +101,11 @@
           "atBlock": {
             "type": "string",
             "pattern": "^[0-9]+$"
+          },
+          "addedAtBlock": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "when the membership this entry ends began; edits count only between addedAtBlock and atBlock"
           }
         }
       }

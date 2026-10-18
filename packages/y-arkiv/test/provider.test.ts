@@ -66,7 +66,7 @@ describe("ArkivProvider", () => {
     const store = chain.store(mallory.address)
     const honest = (await a.provider.store.query({ doc: link.doc, kind: KIND.snapshot })).entities[0]!
     await store.batch({
-      creates: [{ payload: honest.payload, attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }],
+      creates: [{ payload: honest.payload, attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true }],
     })
     await settle(chain, [a, m])
     expect(text(a)).toBe("")

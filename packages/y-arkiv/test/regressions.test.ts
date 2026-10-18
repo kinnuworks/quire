@@ -161,7 +161,7 @@ describe("the 'old epoch is refused' regression test passes for the wrong reason
     const header = { t: 0, salt: bytesToHex(salt), sig: await signSalt(b.id!, link, salt) }
     const upd = appendAs(new Y.Doc(), clientIdFor(b.id!.address, salt), "readable by cal")
     const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header, data: upd }, randomBytes)))
-    await chain.store(b.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600 }] })
+    await chain.store(b.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true }] })
     await settle(chain, [a])
     // documents current behaviour (PROTOCOL s5 says stale-epoch writes are applied); the existing test
     // "an edit encrypted for an old epoch after a revocation is refused" only passes because it omits the salt
@@ -185,7 +185,7 @@ describe("a member's empty snapshot hides older content from late joiners", () =
       const state = Y.encodeStateAsUpdate(new Y.Doc())
       const frame = encodeFrame({ kind: KIND.snapshot, doc: hexToBytes(link.doc), epoch: 0, header: { id: bytesToHex(randomBytes(16)), base: String(chain.block), t: 0, chunks: [], size: state.length, authors: {} }, data: state }, randomBytes)
       const payload = encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame))
-      await chain.store(c.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot }] })
+      await chain.store(c.id!.address).batch({ creates: [{ payload, attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: LIFETIME.snapshot, readonly: true }] })
       chain.mine(100)
     }
     await settle(chain, [a, c])
@@ -201,7 +201,7 @@ describe("anyone who knows the public doc id can make the owner's session burn i
     // a stranger reads qd off any public Quire entity and writes junk with qk = "j": no link, no valid crypto
     const stranger = identity("spam")
     for (let b = 0; b < 40; b++) {
-      const creates = Array.from({ length: 100 }, () => ({ payload: new Uint8Array(8), attributes: { doc: link.doc, kind: KIND.join, seq: chain.block }, lifetimeSeconds: 30 * 86400 }))
+      const creates = Array.from({ length: 100 }, () => ({ payload: new Uint8Array(8), attributes: { doc: link.doc, kind: KIND.join, seq: chain.block }, lifetimeSeconds: 30 * 86400, readonly: true }))
       await chain.store(stranger.address).batch({ creates })
     }
     chain.mine()

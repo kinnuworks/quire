@@ -66,6 +66,11 @@
           "atBlock": {
             "type": "string",
             "pattern": "^[0-9]+$"
+          },
+          "addedAtBlock": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "when the membership this entry ends began; edits count only between addedAtBlock and atBlock"
           }
         }
       }
@@ -77,6 +82,17 @@
     "epoch": {
       "type": "integer",
       "minimum": 1
+    },
+    "prior": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[1-9][0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^0x[0-9a-f]{64}$"
+      },
+      "description": "keys of earlier epochs above 0, by epoch, so current members can read and prove edits written before the latest rotation"
     }
   }
 }

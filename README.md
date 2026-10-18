@@ -11,6 +11,10 @@ Under the editor is `y-arkiv`, a Yjs provider. A Yjs app (Tiptap, BlockNote, Cod
 
 Built for Arkiv: Global Tour Stop, in the Privacy, Open Source and Security tracks. Testnet only; all demo data is synthetic.
 
+- **Privacy:** text is encrypted in the browser and padded before it leaves, and the key travels only in the link, so no server, RPC operator or Arkiv node can read, scan or hand over a document's words. [Who is harmed today](#who-is-harmed-today), [what still leaks](#privacy-model).
+- **Open Source:** a published protocol with JSON Schema, conformance vectors and 23 edge cases, two independent readers (TypeScript and Python) diffed against each other, and a Yjs provider any editor can swap in. [PROTOCOL.md](PROTOCOL.md).
+- **Security:** every edit is a readonly entity whose `$creator` nobody can forge, so `y-arkiv blame` proves which key wrote each passage, checked against the member list as it stood at that block, without trusting us.
+
 **Check it in a minute.** Open the [live demo document](https://quire-five.vercel.app/#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546): it is read straight from Arkiv in three queries, plus one that lists the writes kept out. Turn on **Who wrote what** to color each paragraph by the key that wrote it, and open **Explorer** to see the public entity next to what your browser decrypts. Then, without our app:
 
 ```bash
@@ -41,7 +45,7 @@ In Quire each edit is an entity whose on-chain creator nobody can forge, stamped
 What this does and does not prove:
 
 - **Which key, not which person.** An address is a key made for one document, and the signed phrase ties it to whoever holds it.
-- **For as long as the owner keeps the document.** Edits live 30 days by default. Any writer can press **Keep my proof as long as the document** to extend their own edits to the lifetime the owner chose (up to three years); proof cannot outlive the document. Both readers enforce that ceiling, not just our app: an edit or snapshot that some other client extended past the owner's lifetime, or more than 30 days past its own last extension, is ignored. The ceiling is anchored to each entity's own `updatedAt`, so a live tab and a reader opening the document a week later reach the same verdict.
+- **For as long as the owner keeps the document.** Edits live 30 days by default; a document created as an **authorship record** (a switch under New document) keeps everything a year from the first transaction, so proof does not lapse while nobody opens it. Any writer can press **Keep my proof as long as the document** to extend their own edits to the lifetime the owner chose (up to three years); proof cannot outlive the document. Both readers enforce that ceiling, not just our app: an edit or snapshot that some other client extended past the owner's lifetime, or more than 30 days past its own last extension, is ignored. The ceiling is anchored to each entity's own `updatedAt`, so a live tab and a reader opening the document a week later reach the same verdict.
 - **Removal does not erase it.** Edits a removed member wrote before the removal block still count.
 - **The owner cannot rewrite it.** The owner can patch the member list to change who was added when or who was removed, or lower `keepUntil`, but every reader (the app, `read`, `verify`, `blame`, `timeline` and the Python reader) checks the list as it stood at each edit's block with `atBlock`, past state nobody can rewrite. The owner can still delete the member list, which stops readers from opening the document today, but not from reading it as it stood before: `y-arkiv blame '<link>' --at <block>` (or `quire_read.py --at <block>`) pins every read to that block, and our probe found `atBlock` reads reaching back to the chain's first block.
 - **Expired edits become claims.** Text whose edits have expired survives only in snapshots and reads as claimed, vouched for by whoever wrote the snapshot, not proven.
@@ -174,7 +178,7 @@ Addresses behind the demos:
 | `0x2a776803c552eebdc8bbbcf86fe10991bdce4b8b` | open demo: writer (Ravi); join request and edits |
 | `0x17ef1625ee116713e75c7877bbf639297b1acffa` | revocation demo: owner; created the ACL, rotated the key |
 | `0xf7ffae901984c2c05807cbc4542080e2339ba466` | revocation demo: writer who stayed; wrote a snapshot under the new key |
-| `0x8dc3011f5a1ac8dd68ab3980c072436862b11feb` | revocation demo: removed member; his join request has since expired (1 hour), its transaction remains in block history |
+| `0x8dc3011f5a1ac8dd68ab3980c072436862b11feb` | revocation demo: removed member; their join request has since expired (1 hour), its transaction remains in block history |
 | `0x443ac73b7ca5af51f8171770c42324d4c3c589a9` | open demo: planted forgery. Holds the link, wrote one valid encrypted edit, is not a member, so no reader applies it (`scripts/plant-forgery.ts`) |
 
 Document ids: open demo `0x7066382f176eef205ab54ef9b784f1a328873493adc950379e9088d567072f67`, revocation demo `0xdfc8a38bf6afe62153437f387000f65eaab372000193d42da719031600bef6c4`. Every entity carries `qd` equal to its document id, so this query lists them all:

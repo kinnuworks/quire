@@ -69,3 +69,18 @@ Opening a document costs three queries; the app's People tab then spends one mor
 | Renew lease | extensions for my snapshot and its chunks, and the ACL, only where they move expiry later |
 | Shred my edit history | deletes of my updates and join requests |
 | Delete document | deletes of the ACL and every entity the owner created |
+
+## Wallets that create entities
+
+Every address that wrote to Tiramisu for this submission, with its role (the same table as in the README's submission evidence):
+
+| Address | Role |
+|---|---|
+| `0x7ad475ff24a9d6d06b69f460005300fa914d8e11` | gas drip sponsor; funded every key below with a plain transfer. As the development key it also created the friction probes' entities (`qp = probe-…`) and funded the live-test keys |
+| `0xa7da7e4e17101ad0b4832c7cce0f87bf6e84b546` | open demo: owner (Asha); created the ACL, snapshots and edits |
+| `0xd947e727fe2dbb93a1b5c966090e9463565c00a4` | open demo: writer (Bea); join request and edits |
+| `0x2a776803c552eebdc8bbbcf86fe10991bdce4b8b` | open demo: writer (Ravi); join request and edits |
+| `0x17ef1625ee116713e75c7877bbf639297b1acffa` | revocation demo: owner; created the ACL, rotated the key |
+| `0xf7ffae901984c2c05807cbc4542080e2339ba466` | revocation demo: writer who stayed; wrote a snapshot under the new key |
+| `0x8dc3011f5a1ac8dd68ab3980c072436862b11feb` | revocation demo: removed member; their join request has since expired (1 hour), its transaction remains in block history |
+| `0x443ac73b7ca5af51f8171770c42324d4c3c589a9` | open demo: planted forgery. Holds the link, wrote one valid encrypted edit, is not a member, so no reader applies it (`scripts/plant-forgery.ts`) |

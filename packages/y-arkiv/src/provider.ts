@@ -405,7 +405,12 @@ export class ArkivProvider extends Observable<string> {
    * Creates a new document owned by `identity`: the ACL and a first snapshot
    * land in one atomic batch, so a document never exists without its member list.
    */
-  static async createDocument(options: { store: ArkivStore; link: DocLink; identity: Identity; doc?: Y.Doc }): Promise<{ aclKey: Hex; snapshotKey: Hex }> {
+  /**
+   * Creates a document: the member list and the first snapshot in one transaction. `keepForSeconds`
+   * sets the owner's lifetime from the start (as keepFor would later), for a document meant as an
+   * authorship record: the list, the snapshot and every edit then live until that block.
+   */
+  static async createDocument(options: { store: ArkivStore; link: DocLink; identity: Identity; doc?: Y.Doc; keepForSeconds?: number }): Promise<{ aclKey: Hex; snapshotKey: Hex }> {
     const { store, link, identity } = options
     if (identity.address.toLowerCase() !== link.owner.toLowerCase()) throw new Error("the link owner must be the creating identity")
     const head = await store.head()
@@ -417,13 +422,27 @@ export class ArkivProvider extends Observable<string> {
       addedAtBlock: head.toString(),
     }
     const acl = emptyAcl(owner)
+    const keepUntil = options.keepForSeconds && options.keepForSeconds > LIFETIME.snapshot ? head + blocks(options.keepForSeconds) : undefined
+    if (keepUntil !== undefined) acl.keepUntil = keepUntil.toString()
     const metaKey = deriveMetaKey(link.secret)
     const contentKey = deriveEpochZeroKey(link.secret)
     const state = Y.encodeStateAsUpdate(options.doc ?? new Y.Doc())
-    // the member list and the first snapshot land in the same transaction
-    const w = await writeSnapshotEntities(store, link.doc, 0, contentKey, state, head, Date.now(), KIND.snapshot, {}, LIFETIME.snapshot, {
-      creates: [await aclSpec(link.doc, metaKey, acl, undefined, head)],
-    })
+    const aclCreate = await aclSpec(link.doc, metaKey, acl, undefined, head)
+    // the member list and the first snapshot land in the same transaction, both until keepUntil if one is set
+    const w = await writeSnapshotEntities(
+      store,
+      link.doc,
+      0,
+      contentKey,
+      state,
+      head,
+      Date.now(),
+      KIND.snapshot,
+      {},
+      LIFETIME.snapshot,
+      { creates: [keepUntil === undefined ? aclCreate : { ...aclCreate, expiresAtBlock: keepUntil }] },
+      keepUntil,
+    )
     return { aclKey: w.result.created[0]!, snapshotKey: w.headKey }
   }
 

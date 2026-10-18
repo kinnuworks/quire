@@ -173,3 +173,5 @@ pre.code { padding: 12px; border-radius: var(--r-md); background: #1B1B1F; color
 .link-button{padding:0;border:0;background:none;font:inherit;color:var(--accent-ink);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
 .demo-link{margin-top:14px;color:var(--ink-3)}
 .demo-link a{color:var(--accent-ink);text-decoration:underline;text-underline-offset:2px}
+.record-toggle { display: flex; justify-content: center; margin: 12px auto 0; }
+.record-note { max-width: 420px; margin: 4px auto 0; text-align: center; }

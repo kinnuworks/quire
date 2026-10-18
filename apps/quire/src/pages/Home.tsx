@@ -36,6 +36,8 @@ function CreateForm({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null)
   // the key survives retries, so funding it by hand and pressing the button again works
   const [pending, setPending] = useState<Identity | null>(null)
+  // a record of who wrote what should outlive the 30-day lease from the start
+  const [record, setRecord] = useState(false)
 
   async function create(e?: React.FormEvent, viaWallet = false) {
     e?.preventDefault()
@@ -50,7 +52,7 @@ function CreateForm({ id }: { id: string }) {
       const gas = viaWallet ? await fundFromWallet(identity.address) : await ensureGas(identity.address)
       if (!gas.ok) throw new Error(gas.reason)
       setBusy("Writing to Arkiv…")
-      await ArkivProvider.createDocument({ store: new SdkStore({ privateKey: identity.privateKey }), link, identity })
+      await ArkivProvider.createDocument({ store: new SdkStore({ privateKey: identity.privateKey }), link, identity, keepForSeconds: record ? 365 * 86400 : undefined })
       saveIdentity(link.doc, identity)
       saveLink(link)
       location.hash = formatDocLink(link)
@@ -68,6 +70,15 @@ function CreateForm({ id }: { id: string }) {
           {busy ?? (pending && error ? "Try again" : "New document")}
         </button>
       </form>
+      <label className="toggle-row record-toggle">
+        <input className="switch" type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} />
+        Keep it as an authorship record for a year
+      </label>
+      <p className="t-micro t-muted record-note">
+        {record
+          ? "Every edit lives a year from today, so blame keeps proving who wrote what even if nobody opens it. Only you can end it sooner, by deleting it."
+          : "Off: it lives while people use it, and expires a month after the last visit. You can keep it longer later."}
+      </p>
       {error && pending ? (
         <div className="card create-help">
           <p className="error">{error}</p>

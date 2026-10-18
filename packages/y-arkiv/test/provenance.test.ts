@@ -1244,3 +1244,27 @@ describe("after the owner deletes the document", () => {
     past.destroy()
   })
 })
+
+describe("a document created as an authorship record", () => {
+  it("keeps its member list, snapshot and edits until the owner's date from the first transaction", async () => {
+    const chain = new MemoryChain()
+    const owner = identity("owner")
+    const link: DocLink = { doc: `0x${bytesToHex(randomBytes(32))}`, secret: randomBytes(32), owner: owner.address }
+    const { aclKey, snapshotKey } = await ArkivProvider.createDocument({ store: chain.store(owner.address), link, identity: owner, keepForSeconds: 365 * 86400 })
+    chain.mine()
+    const acl = (await chain.store(undefined).get(aclKey))!
+    const snap = (await chain.store(undefined).get(snapshotKey))!
+    const a = await peer(chain, link, owner)
+    const keepUntil = BigInt(a.provider.acl!.keepUntil!)
+    expect(acl.expiresAt).toBe(keepUntil)
+    expect(snap.expiresAt).toBe(keepUntil)
+    a.doc.getText("t").insert(0, "kept")
+    const info = await a.provider.flush()
+    await settle(chain, [a])
+    expect((await chain.store(undefined).get(info!.entity))!.expiresAt).toBe(keepUntil)
+    // a year on, nothing has been renewed and the proof still reads
+    chain.mine((300 * 86400) / 2)
+    const later = await peer(chain, link, undefined)
+    expect(text(later)).toBe("kept")
+  })
+})

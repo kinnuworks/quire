@@ -202,7 +202,7 @@ export function HeroStage() {
               <i />
               <i />
             </div>
-            <span className="window__title">Water access study · Who wrote what</span>
+            <span className="window__title"><span className="hide-sm">Water access study · </span>Who wrote what</span>
           </div>
           <div className="hero-doc__note">
             <b>Typed first by someone else.</b> This paragraph is one paste by Asha. Bea typed the same words earlier, at blocks 734926 to 734961.

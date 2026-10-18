@@ -916,6 +916,19 @@ class Source:
     def entity(self, key: str) -> Entity | None:
         raise NotImplementedError
 
+    # a vectors file holds only the current state, so an audit there falls back to today's list
+    has_history = False
+
+    def entity_at(self, key: str, block: int) -> Entity | None:
+        """The entity as it stood at `block` (arkiv_getEntity with a block), or None if it did not exist then."""
+        return None
+
+    def all_updates(self, doc: str, max_pages: int) -> tuple[list[Entity], bool]:
+        """Every update entity for `doc` whoever wrote it, for an audit; at most
+        `max_pages` pages of 200. The bool says whether that was all of them."""
+        es = self.by_kind(doc, "u", None)
+        return es, True
+
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         """Every entity for `doc` whose creator is not a member, join
         requests aside (strangers send those by design). The member-filtered
@@ -970,6 +983,8 @@ class VectorSource(Source):
 class RpcSource(Source):
     """Live Arkiv node, raw query strings as listed in section 5."""
 
+    has_history = True
+
     def __init__(self, url: str) -> None:
         self.url = url
 
@@ -998,6 +1013,15 @@ class RpcSource(Source):
 
     def head(self) -> int:
         return qa._int(qa.rpc_call(self.url, "eth_blockNumber", []))
+
+    def entity_at(self, key: str, block: int) -> Entity | None:
+        raw = qa.rpc_call(self.url, "arkiv_getEntity", [key, block])
+        e = qa.parse_entity(raw) if raw else None
+        return e if e is not None and well_formed(e) else None
+
+    def all_updates(self, doc: str, max_pages: int) -> tuple[list[Entity], bool]:
+        es = self._run(self._base(doc, "u"), max_pages=max_pages)
+        return es, len(es) < max_pages * 200
 
     def entity(self, key: str) -> Entity | None:
         raw = qa.get_entity(self.url, key)
@@ -1182,6 +1206,43 @@ class Loaded:
     structs: list[Struct]
 
 
+Membership = tuple[list[str], dict[str, int], dict[str, list[tuple[int, int]]]]
+
+
+def membership(roster: dict[str, Any]) -> Membership:
+    """Members, the block each was added, and each removed member's closed
+    intervals [addedAtBlock, atBlock], from a roster (section 5)."""
+    raw_members = roster.get("members") if isinstance(roster.get("members"), list) else []
+    members = sorted({
+        str(m["address"]).lower() for m in raw_members
+        if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.fullmatch(m["address"])
+    })
+    added_at = {
+        str(m["address"]).lower(): int(m["addedAtBlock"])
+        for m in raw_members
+        if isinstance(m, dict) and isinstance(m.get("address"), str) and isinstance(m.get("addedAtBlock"), str) and m["addedAtBlock"].isdigit()
+    }
+    revoked_at: dict[str, list[tuple[int, int]]] = {}
+    for r in roster.get("revoked") or []:
+        if isinstance(r, dict) and isinstance(r.get("address"), str) and isinstance(r.get("atBlock"), str) and r["atBlock"].isdigit():
+            start = r.get("addedAtBlock")
+            begin = int(start) if isinstance(start, str) and start.isdigit() else 0
+            revoked_at.setdefault(str(r["address"]).lower(), []).append((begin, int(r["atBlock"])))
+    return members, added_at, revoked_at
+
+
+def wrote_as(e: Entity, m: Membership) -> bool:
+    """Section 5's rule against one member list: a member added at or before the
+    entity's block, or inside one of its creator's removal intervals."""
+    members, added_at, revoked_at = m
+    if e.creator in members and e.creator in added_at and e.created_at >= added_at[e.creator]:
+        return True
+    return any(start <= e.created_at <= end for start, end in revoked_at.get(e.creator, []))
+
+
+AUDIT_PAGES = 5  # pages of 200 an audit reads without the creator filter, as the TypeScript CLI does
+
+
 class Reader:
     def __init__(
         self,
@@ -1192,8 +1253,15 @@ class Reader:
         schemas: Schemas | None = None,
         own_salt: str | None = None,
         scan_outsiders: bool = True,
+        audit: bool = False,
     ) -> None:
         self.link = link
+        # Section 5, auditors: read every update still on chain, and check each author against the
+        # member list as it stood at that update's block (arkiv_getEntity with a block), which no
+        # later patch of the list can change
+        self.audit = audit
+        self.audit_narrowed = False
+        self._acl_at: dict[int, Membership | None | bool] = {}
         # one more query on a live node; the trust report wants it, plain reading does not
         self.scan_outsiders = scan_outsiders
         self.source = source
@@ -1241,6 +1309,28 @@ class Reader:
         return decrypt_frame(e, key, self.link.doc)
 
     # Steps 1 and 2: ACL, epoch key, roster.
+    def parse_acl(self, e: Entity) -> dict[str, Any]:
+        """Decrypt an ACL entity and apply the header rules; raises if it breaks one."""
+        header = decrypt_frame(e, meta_key(self.link.secret), self.link.doc).header
+        self.schemas.check("acl", header)
+        # the same field-set rules without jsonschema, so the verdict never depends on it
+        epoch0 = header.get("epoch") == 0
+        fields = {"v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps"} | ({"members", "revoked"} if epoch0 else {"roster"})
+        if not isinstance(header, dict) or set(header) != fields:
+            raise Rejected("ACL header has the wrong fields for its epoch")
+        if not (_is_safe_int(header["epoch"]) and header["epoch"] >= 0
+                and isinstance(header["owner"], str) and ADDRESS_LOWER.fullmatch(header["owner"])
+                and isinstance(header["ownerPublicKey"], str) and re.fullmatch(r"0x04[0-9a-f]{128}", header["ownerPublicKey"])
+                and (header["keepUntil"] is None or (isinstance(header["keepUntil"], str) and re.fullmatch(r"[0-9]+", header["keepUntil"])))
+                and isinstance(header["wraps"], list)
+                and all(isinstance(w, str) and re.fullmatch(r"0x04[0-9a-f]{128}[0-9a-f]{120}", w) for w in header["wraps"])
+                and (epoch0 or (isinstance(header["roster"], str) and re.fullmatch(r"0x[0-9a-f]+", header["roster"])))):
+            raise Rejected("ACL header field breaks its pattern")
+        header["epoch"] = int(header["epoch"])  # 0.0 is the integer 0, as JSON Schema says
+        if str(header.get("owner", "")).lower() != self.link.owner:
+            raise Rejected("ACL header owner differs from link owner")
+        return header
+
     def load_acl(self) -> dict[str, Any]:
         mkey = meta_key(self.link.secret)
         for e in self.source.acl(self.link.doc, self.link.owner):
@@ -1514,6 +1604,28 @@ class Reader:
         added = self.added_at.get(e.creator)
         return added is not None and e.created_at >= added
 
+    def member_then(self, e: Entity, members: list[str]) -> bool:
+        """In an audit, whether the creator was in the member list as it stood at the
+        entity's block; otherwise (or where that past list cannot be opened, being
+        sealed under a key this reader lacks) today's list decides (wrote_as_member)."""
+        if not self.audit or not self.source.has_history or self.acl_entity is None:
+            return self.wrote_as_member(e, members)
+        block = e.created_at
+        if block not in self._acl_at:
+            then: Membership | None | bool = None  # None: no valid list from the owner at that block
+            past = self.source.entity_at(self.acl_entity.key, block)
+            if past is not None and past.creator == self.link.owner:
+                try:
+                    roster = self.roster(self.parse_acl(past))
+                    then = membership(roster) if roster is not None else True
+                except Exception:
+                    then = None
+            self._acl_at[block] = then
+        then = self._acl_at[block]
+        if then is True:
+            return self.wrote_as_member(e, members)
+        return isinstance(then, tuple) and wrote_as(e, then)
+
     def wrote_as_member(self, e: Entity, members: list[str]) -> bool:
         """Section 5: written by a member, or by a removed member at or before
         their removal block. Removal does not erase what they wrote while
@@ -1528,8 +1640,18 @@ class Reader:
         min_qs = max(0, window_base - SNAPSHOT_WINDOW) if window_base is not None else 0
         accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
         authors = sorted(set(members) | set(self.revoked_at))  # removed members too, for their intervals
-        for e in self.source.by_kind(self.link.doc, "u", authors, min_qs):
-            if not self.wrote_as_member(e, members):
+        if self.audit:
+            # every update, not only today's members': someone erased from the list's history still wrote
+            # what they wrote. Anyone can write junk under the document id, so the unfiltered read stops
+            # after AUDIT_PAGES pages and falls back to the filter, saying so.
+            found, complete = self.source.all_updates(self.link.doc, AUDIT_PAGES)
+            if not complete:
+                self.audit_narrowed = True
+            candidates = found if complete else self.source.by_kind(self.link.doc, "u", authors, 0)
+        else:
+            candidates = self.source.by_kind(self.link.doc, "u", authors, min_qs)
+        for e in candidates:
+            if not self.member_then(e, members):
                 self._ignore(e, "created before its creator was added" if e.creator in members else "creator not in ACL")
                 continue
             try:
@@ -1668,22 +1790,8 @@ class Reader:
                 self.authors, None, doc, self.kinds, self.creators,
             )
         raw_members = roster.get("members") if isinstance(roster.get("members"), list) else []
-        members = sorted({
-            str(m["address"]).lower() for m in raw_members
-            if isinstance(m, dict) and isinstance(m.get("address"), str) and ADDRESS_HEX.fullmatch(m["address"])
-        })
         revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
-        self.added_at = {
-            str(m["address"]).lower(): int(m["addedAtBlock"])
-            for m in raw_members
-            if isinstance(m, dict) and isinstance(m.get("address"), str) and isinstance(m.get("addedAtBlock"), str) and m["addedAtBlock"].isdigit()
-        }
-        self.revoked_at = {}
-        for r in revoked:
-            if isinstance(r.get("address"), str) and isinstance(r.get("atBlock"), str) and r["atBlock"].isdigit():
-                start = r.get("addedAtBlock")
-                begin = int(start) if isinstance(start, str) and start.isdigit() else 0
-                self.revoked_at.setdefault(str(r["address"]).lower(), []).append((begin, int(r["atBlock"])))
+        members, self.added_at, self.revoked_at = membership(roster)
 
         # Read snapshots, then updates; if the updates show a snapshot must be
         # refused, start over without it; its creator then contributes no snapshot.
@@ -1707,8 +1815,8 @@ class Reader:
         if self.scan_outsiders:
             seen = {k for k, _r in self.ignored}
             for e in self.source.outsiders(self.link.doc, members):
-                if e.kind == "u" and self.wrote_as_member(e, members):
-                    continue  # a removed member's edit from before their removal
+                if e.kind == "u" and (self.wrote_as_member(e, members) or e.key in self.applied):
+                    continue  # a removed member's edit from before their removal, or one an audit accepted
                 if e.key not in seen and not (e.kind == "a" and e.creator == self.link.owner):
                     self._ignore(e, "creator not in ACL")
 
@@ -2030,6 +2138,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--own-salt", help="your writing session's salt (32 hex): refuse snapshots that write"
                     " under your own client id beyond your verified updates; needs --member-key")
     ap.add_argument("--verify", action="store_true", help="print a trust report instead of the text")
+    ap.add_argument("--audit", action="store_true", help="read every update and check each author against the member list as it"
+                    " stood at that edit's block (arkiv_getEntity with a block), which the owner cannot rewrite; --rpc only")
     ap.add_argument("--json", action="store_true", help="print the verdict as JSON (text, applied, ignored), for comparing readers")
     ap.add_argument("--no-schema", action="store_true", help="skip JSON Schema checks")
     ap.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
@@ -2055,7 +2165,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0
         link = parse_link(args.link or data.get("link") or "")
         key = load_private_key(args.member_key) if args.member_key else None
-        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt, scan_outsiders=args.verify or args.json or isinstance(source, VectorSource))
+        reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt, scan_outsiders=args.verify or args.json or isinstance(source, VectorSource), audit=args.audit)
         result = reader.read()
         if args.json:
             proven: dict[str, int] = {}
@@ -2068,6 +2178,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "applied": sorted(result.applied),
                 "ignored": sorted([k, r] for k, r in result.ignored),
                 "proven": dict(sorted((a, n) for a, n in proven.items() if n)),
+                **({"auditNarrowed": reader.audit_narrowed} if args.audit else {}),
             }, indent=2))
             return 0
         if args.verify:

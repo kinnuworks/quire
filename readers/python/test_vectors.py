@@ -419,6 +419,30 @@ class ReaderTests(unittest.TestCase):
         reader = self._reader()
         return reader, reader.read()
 
+    def _audit(self, at):
+        """An audit over the vectors, with `at(source, key, block)` standing in for arkiv_getEntity at a block."""
+        data, loaded = quire_audit.load_vectors(DOCUMENT)
+
+        class History(quire_read.VectorSource):
+            has_history = True
+
+            def entity_at(self, key, block):
+                return at(self, key, block)
+
+        reader = quire_read.Reader(quire_read.parse_link(data["link"]), History(loaded), quire_read.load_private_key(BEA_KEY), audit=True)
+        return reader, reader.read()
+
+    def test_audit_with_an_unchanged_member_list_reads_as_usual(self) -> None:
+        _plain_reader, plain = self._member_result()
+        _reader, audited = self._audit(lambda src, key, block: src.entity(key))
+        self.assertEqual(audited.text, plain.text)
+        self.assertEqual(sorted(audited.applied), sorted(plain.applied))
+
+    def test_audit_counts_no_edit_from_a_block_where_the_owner_had_no_member_list(self) -> None:
+        reader, audited = self._audit(lambda src, key, block: None)
+        self.assertFalse([k for k in audited.applied if reader.kinds.get(k) == "u"])
+        self.assertTrue([r for _k, r in audited.ignored if r == "creator not in ACL"])
+
     def test_roster_is_sealed_from_link_holders(self) -> None:
         reader = self._reader(key=None)
         result = reader.read()

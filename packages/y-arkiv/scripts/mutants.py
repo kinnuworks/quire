@@ -56,7 +56,7 @@ MUTANTS = [
     (P, "earlier epoch keys carried forward", "    for (const [n, k] of Object.entries(acl.prior ?? {})) if (!this.epochKeys.has(Number(n))) this.epochKeys.set(Number(n), hexToBytes(k))\n", ""),
     (P, "delete removes all but versions", "e.attributes.kind !== KIND.version && !(e.attributes.kind === KIND.chunk && e.permissionlessExtension)", "!e.readonly"),
     (P, "owner's expiry ceiling enforced", "&& this.acl && entity.expiresAt > this.expiryCeiling()) {", "&& false) {"),
-    (P, "membership read at each edit's block", "    if (acl.rosterHidden) return undefined\n    return isMember(acl, entity.creator)", "    return undefined"),
+    (P, "membership read at each edit's block", "    if (acl.rosterHidden) return undefined\n    // the whole section 5 rule against that list: a patch in the edit's own block may already show\n    // the removal, and the removal interval still covers the edit\n    return wroteAsMember(acl, entity.creator, entity.createdAt)", "    return undefined"),
     (A, "members only from their added block", "createdAt >= BigInt(m.addedAtBlock)", "true"),
     (P, "author claim id", "clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client) &&", "true &&"),
     (P, "author claim signature", "(await signedBy(this.link.doc, entry.salt, entry.sig, entry.address as Hex))", "true"),

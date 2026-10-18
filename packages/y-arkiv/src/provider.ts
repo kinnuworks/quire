@@ -207,7 +207,9 @@ export class ArkivProvider extends Observable<string> {
     const acl = this.aclAt.get(block)
     if (!acl) return false
     if (acl.rosterHidden) return undefined
-    return isMember(acl, entity.creator)
+    // the whole section 5 rule against that list: a patch in the edit's own block may already show
+    // the removal, and the removal interval still covers the edit
+    return wroteAsMember(acl, entity.creator, entity.createdAt)
   }
 
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */

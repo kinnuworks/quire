@@ -2,7 +2,8 @@
  * Runs the TypeScript reader and the Python reader (readers/python, written
  * as a second implementation of PROTOCOL.md) on the same documents and diffs
  * their verdicts: the text, the entities applied, and the outside writes
- * rejected. Cases: both live demo documents on Tiramisu (arkiv/demo.json), the
+ * rejected. Cases: both live demo documents on Tiramisu (arkiv/demo.json), read
+ * normally and (the open one) as an audit that checks membership at each edit's block, the
  * conformance vectors as a member and as a link holder, and every edge case in
  * spec/vectors/cases.
  *
@@ -42,10 +43,10 @@ function plain(doc: Y.Doc): string {
   return doc.getXmlFragment("default").toArray().map(walk).join("\n")
 }
 
-async function typescript(store: ArkivStore, link: string, memberKey?: Hex): Promise<Verdict> {
+async function typescript(store: ArkivStore, link: string, memberKey?: Hex, audit = false): Promise<Verdict> {
   const doc = new Y.Doc()
   const identity = memberKey ? { address: privateKeyToAccount(memberKey).address.toLowerCase() as Hex, privateKey: memberKey, name: "member" } : undefined
-  const p = new ArkivProvider(doc, { store, link: parseDocLink(link)!, identity, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+  const p = new ArkivProvider(doc, { store, link: parseDocLink(link)!, identity, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit, membershipAtBlock: audit })
   p.on("error", () => undefined) // a member session may try to renew a lease on a read-only store
   await p.connect()
   const outsiders = (await p.outsiderEntities()).map((e) => e.key)
@@ -78,6 +79,8 @@ if (!offline) {
   cases.push(
     { name: "live open demo", ts: () => typescript(live(), demo.open.link), py: () => pythonReader(["--link", demo.open.link]) },
     { name: "live revocation demo", ts: () => typescript(live(), demo.revoked.link), py: () => pythonReader(["--link", demo.revoked.link]) },
+    // the audit: every update, each author checked against the member list as it stood at that edit's block
+    { name: "live open demo, audit", ts: () => typescript(live(), demo.open.link, undefined, true), py: () => pythonReader(["--link", demo.open.link, "--audit"]) },
   )
 }
 

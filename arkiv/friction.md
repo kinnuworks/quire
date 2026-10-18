@@ -23,7 +23,8 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 11 | Docs | `atBlock` retention range is not stated | Low |
 | 12 | WebSocket gateway | Handshakes are rate-limited per IP in bursts, and a refused handshake reaches the client as a bare error with no status | Medium: live push silently stopped |
 | 13 | Entity metadata | A patch keeps `createdAt`, and `updatedAt` moves on extensions too, so a reader cannot tell rewritten content from a renewed lease | High for us: authorship could be backdated |
-| 14 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
+| 14 | Entity lifetimes | `expiresIn` counts from the block a write lands in, and there is no absolute expiry, so carrying an expiry forward drifts | Medium: a kept document lost its text after about 300 sessions until we fixed it |
+| 15 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
 ## 1. Keyless query budget: the SDK hangs on 429 without saying so
 
@@ -234,6 +235,16 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 **Suggested fix.** Expose when the payload last changed, separately from expiry changes, and mention `readonly` in the patch docs as the way to make content immutable.
 
 **What we did.** Every update, snapshot, chunk and join request is created `readonly`, and both readers ignore those kinds unless they are readonly ([PROTOCOL.md](../PROTOCOL.md) section 1, edge case `update-not-readonly`).
+
+## 14. Lifetimes are relative to the block a write lands in, and there is no absolute expiry
+
+**What happened.** A blind review found that a document kept for a year slowly lost its text. Our snapshots carried the previous snapshot's expiry forward as "expiry minus the head I just read". A transaction can never land in a block that is already sealed, so it lands at least one block after that head, and `expiresIn` counts from the landing block. Each compaction pushed the expiry a block or more past the owner's ceiling. After about 300 sessions both readers, correctly, refused the snapshot as outliving the owner's lifetime.
+
+**Expected.** A way to say "expire at block N" for an entity, since apps that tie lifetimes together (a document and its parts, a member list and its content) think in absolute blocks.
+
+**Suggested fix.** Accept an absolute `expiresAtBlock` alongside `expiresIn` in `createEntity`, `extendEntity` and `executeBatch`, and say in the docs which block a relative lifetime counts from.
+
+**What we did.** Every snapshot's lifetime is computed afresh from the owner's `keepUntil`, never from an earlier expiry, so the overshoot is the one or two blocks of landing delay and never grows ([provider.ts](../packages/y-arkiv/src/provider.ts) `writeSnapshot`, test "does not creep past the owner's ceiling").
 
 ## Paths we tested that worked well
 

@@ -9,12 +9,12 @@ import sys
 
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-P, A = "src/provider.ts", "src/acl.ts"
+P, A, R = "src/provider.ts", "src/acl.ts", "../../api/rpc.ts"
 MUTANTS = [
     (P, "client id derivation", "if (clients.some((c) => c !== expected)) return false", "if (false) return false"),
     (P, "salt signature", "if (!(await signedBy(this.link.doc, salt, sig, author))) return false", "if (false) return false"),
     (P, "takeover rule", "if (holder && holder !== author.toLowerCase()) return false", "if (false) return false"),
-    (P, "update member filter", "if (!this.acl || !wroteAsMember(this.acl, entity.creator, entity.createdAt)) {\n      this.seen.add(entity.key)\n      return this.reject()", "if (!this.acl) {\n      this.seen.add(entity.key)\n      return this.reject()"),
+    (P, "update member filter", "if (!this.acl || !(then ?? wroteAsMember(this.acl, entity.creator, entity.createdAt))) {", "if (!this.acl || !(then ?? true)) {"),
     (P, "future qs on updates", "if (entity.attributes.seq > entity.createdAt) return this.reject()", "if (false) return this.reject()"),
     (P, "backdated qs on updates", "if (entity.attributes.seq + CATCH_UP_MARGIN_BLOCKS < entity.createdAt) return this.reject()", "if (false) return this.reject()"),
     (P, "own client id in snapshots", "if (this.identity && ours !== undefined && ours >", "if (false && ours !== undefined && ours >"),
@@ -27,7 +27,14 @@ MUTANTS = [
     (P, "versions must be readonly", "if (!entity.readonly) throw", "if (false) throw"),
     (P, "proven clocks skip Skip gaps", "        if (!(st instanceof Y.Item)) continue\n", ""),
     (P, "member list re-read before a write", "      if (await this.refreshAcl()) this.enqueue(() => this.loadState())\n", ""),
-    (P, "conflicting duplicate edits refused", "    if (this.conflictsWithProven(frame.data)) return this.reject()\n", ""),
+    (P, "conflicting duplicate edits refused", "    if (this.conflictsWithProven(frame.data)) {", "    if (false) {"),
+    (P, "live clash out of order reported", "if (live && this.clashesWithLater(entity, frame.data)) this.emit(\"diverged\", [entity.key])", "if (false) this.emit(\"diverged\", [entity.key])"),
+    (P, "member's own snapshot speaks for them", "    const overruled = overruledByOwners(this.doc, states, owners)", "    const overruled = new Set<Hex>()"),
+    (P, "own snapshot rule on live snapshots", " || overruledByOwners(this.doc, [st], others).size) {", ") {"),
+    (P, "snapshot lifetime clamped to ceiling", "const lifetime = Math.max(this.snapshotLifetime(head), Math.min(minLifetimeSeconds, this.snapshotLifetime(head)))", "const lifetime = Math.max(this.snapshotLifetime(head), minLifetimeSeconds, this.snapshot && this.snapshot.creator === this.identity!.address.toLowerCase() ? Number(this.snapshot.expiresAt - head) * BLOCK_SECONDS : 0)"),
+    (P, "audit page cap", "for (let pages = 1; cursor && pages < AUDIT_PAGES; pages++)", "for (let pages = 1; cursor; pages++)"),
+    (A, "names counted in code points", "[...m.name].length > 40", "m.name.length > 40"),
+    (R, "relay page size checked", "(hex(o.limit, 2) && Number(o.limit) >= 1 && Number(o.limit) <= 200)", "true"),
     (P, "read-only sessions never write", "batch: (spec) => (readOnly ? Promise.reject(new Error(\"this session was opened read-only\")) : inner.batch(spec)),", "batch: (spec) => inner.batch(spec),"),
     (A, "ACL field set checked", "if (fields.some((f) => !keys.includes(f)) || keys.some((k) => !fields.includes(k))) throw", "if (false) throw"),
     (A, "removed members only before removal", "createdAt <= BigInt(r.atBlock) &&", "true &&"),
@@ -49,6 +56,7 @@ MUTANTS = [
     (P, "earlier epoch keys carried forward", "    for (const [n, k] of Object.entries(acl.prior ?? {})) if (!this.epochKeys.has(Number(n))) this.epochKeys.set(Number(n), hexToBytes(k))\n", ""),
     (P, "delete removes all but versions", "e.attributes.kind !== KIND.version && !(e.attributes.kind === KIND.chunk && e.permissionlessExtension)", "!e.readonly"),
     (P, "owner's expiry ceiling enforced", "&& this.acl && entity.expiresAt > this.expiryCeiling()) {", "&& false) {"),
+    (P, "membership read at each edit's block", "    if (acl.rosterHidden) return undefined\n    return isMember(acl, entity.creator)", "    return undefined"),
     (A, "members only from their added block", "createdAt >= BigInt(m.addedAtBlock)", "true"),
     (P, "author claim id", "clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client) &&", "true &&"),
     (P, "author claim signature", "(await signedBy(this.link.doc, entry.salt, entry.sig, entry.address as Hex))", "true"),
@@ -61,7 +69,7 @@ MUTANTS = [
     (A, "ACL lists its owner", "if (!rosterHidden && !members.some((m) => m.address.toLowerCase() === owner.toLowerCase() && m.role === \"owner\")) {", "if (false) {"),
 ]
 
-originals = {path: open(path).read() for path in {P, A}}
+originals = {path: open(path).read() for path in {P, A, R}}
 survivors = []
 try:
     for path, name, find, replace in MUTANTS:

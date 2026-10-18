@@ -5,8 +5,8 @@ import { blame } from "../src/blame.js"
 import { MemoryChain } from "../src/memory.js"
 import { KIND, LIFETIME } from "../src/protocol.js"
 import { ArkivProvider } from "../src/provider.js"
-import { decodeOuter, encodeFrame, encodeOuter } from "../src/codec.js"
-import { clientIdFor, deriveEpochZeroKey, randomBytes, seal } from "../src/crypto.js"
+import { decodeFrame, decodeOuter, encodeFrame, encodeOuter } from "../src/codec.js"
+import { clientIdFor, deriveEpochZeroKey, open, randomBytes, seal } from "../src/crypto.js"
 import { bytesToHex, hexToBytes } from "../src/hex.js"
 import type { DocLink } from "../src/link.js"
 import type { ArkivStore, Hex } from "../src/store.js"
@@ -746,5 +746,165 @@ describe("expiry ceiling", () => {
     const later = await peer(chain, link, undefined)
     expect(later.provider.appliedKeys.has(snap.key) || later.provider.snapshot!.creator !== bea.id!.address).toBe(true)
     a.provider.destroy()
+  })
+})
+
+describe("membership at each edit's block", () => {
+  it("an owner who rewrites the member list's history cannot erase a member's proof or backdate a newcomer", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    const mal = await peer(chain, link, identity("mallory"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "Bea wrote this. ")
+    await bea.provider.flush()
+    await settle(chain, [a, bea, mal])
+    // Mallory writes while she is nobody
+    const salt = randomBytes(16)
+    const d = new Y.Doc()
+    Y.applyUpdate(d, Y.encodeStateAsUpdate(bea.doc))
+    d.clientID = clientIdFor(mal.id!.address, salt)
+    const sv = Y.encodeStateVector(d)
+    d.getText("t").insert(d.getText("t").length, "EARLY ")
+    await rawUpdate(chain, mal.id!, link, salt, Y.encodeStateAsUpdate(d, sv))
+    await settle(chain, [a, bea, mal])
+    await a.provider.revoke(bea.id!.address)
+    await settle(chain, [a, bea, mal])
+    await admit(chain, a, mal)
+    // the owner rewrites history: no trace that Bea was ever a member, and Mallory "added" at block 0
+    await (a.provider as unknown as { updateAcl: (f: (acl: { revoked: unknown[]; members: { address: string; addedAtBlock: string }[] }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => {
+      acl.revoked = []
+      for (const m of acl.members) if (m.address === mal.id!.address) m.addedAtBlock = "0"
+      return {}
+    })
+    await settle(chain, [a, bea, mal])
+    const read = async (membershipAtBlock: boolean) => {
+      const doc = new Y.Doc()
+      const p = new ArkivProvider(doc, { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: true, membershipAtBlock })
+      await p.connect()
+      const proven = blame(doc, p).flat().filter((r) => r.proven)
+      return { bea: proven.filter((r) => r.address === bea.id!.address).map((r) => r.text).join(""), mal: proven.filter((r) => r.address === mal.id!.address).map((r) => r.text).join("") }
+    }
+    // against today's rewritten list, the forgery works both ways
+    expect(await read(false)).toEqual({ bea: "", mal: "EARLY " })
+    // against the list as it stood at each edit's block, it does not
+    expect(await read(true)).toEqual({ bea: "Bea wrote this. ", mal: "" })
+    a.provider.destroy()
+  })
+})
+
+describe("snapshot expiry under keepUntil", () => {
+  it("does not creep past the owner's ceiling when each transaction lands after the head the writer read", async () => {
+    const chain = new MemoryChain()
+    chain.mine(10)
+    // on a real chain the head is the last sealed block and a transaction lands in the next one
+    const lagging = (address: Hex): ArkivStore => ({ ...chain.store(address), head: async () => chain.block - 1n })
+    const owner = identity("Owner")
+    const link: DocLink = { doc: `0x${bytesToHex(randomBytes(32))}`, secret: randomBytes(32), owner: owner.address }
+    await ArkivProvider.createDocument({ store: lagging(owner.address), link, identity: owner })
+    chain.mine()
+    const open = async () => {
+      const doc = new Y.Doc()
+      const p = new ArkivProvider(doc, { store: lagging(owner.address), link, identity: owner, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+      p.on("error", () => undefined)
+      await p.connect()
+      return { doc, p }
+    }
+    const first = await open()
+    await first.p.keepFor(365 * 86400)
+    chain.mine()
+    const keepUntil = BigInt(first.p.acl!.keepUntil!)
+    first.p.destroy()
+    const expiries: bigint[] = []
+    for (let i = 0; i < 6; i++) {
+      const s = await open()
+      const p = new Y.XmlElement("paragraph")
+      p.insert(0, [new Y.XmlText(`session ${i}`)])
+      s.doc.getXmlFragment("default").push([p])
+      await s.p.flush()
+      chain.mine()
+      await s.p.compact()
+      chain.mine()
+      expiries.push((await chain.store(owner.address).get(s.p.snapshot!.key))!.expiresAt)
+      s.p.destroy()
+    }
+    // a block or two of landing delay, once, never growing session after session
+    for (const e of expiries) expect(e - keepUntil).toBeLessThanOrEqual(3n)
+  })
+})
+
+describe("audit flood", () => {
+  it("an audit stops reading junk update entities after a few pages and says it narrowed to the member list", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "Owner wrote this.")
+    await a.provider.flush()
+    await settle(chain, [a])
+    // anyone can write `u` entities under the public document id; these are not even ciphertext
+    const stranger = identity("stranger")
+    for (let i = 0; i < 6; i++) {
+      await chain.store(stranger.address).batch({
+        creates: Array.from({ length: 200 }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true })),
+      })
+      chain.mine()
+    }
+    const base = chain.store(undefined)
+    let queries = 0
+    const counting: ArkivStore = { ...base, query: (spec) => (queries++, base.query(spec)) }
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: counting, link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true, membershipAtBlock: true })
+    await audit.connect()
+    expect(doc.getText("t").toString()).toBe("Owner wrote this.")
+    expect(audit.auditNarrowed).toBe(true)
+    // ACL, snapshots, five unfiltered pages, then one filtered read: not one query per junk page
+    expect(queries).toBeLessThanOrEqual(9)
+    audit.destroy()
+  })
+})
+
+describe("a member's own snapshot speaks for their client id", () => {
+  it("a newer snapshot from another member that rewrites those clocks is refused, on load and live", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const b = await peer(chain, link, identity("bea"))
+    const m = await peer(chain, link, identity("mal"))
+    await admit(chain, a, b)
+    await admit(chain, a, m)
+    const before = Y.encodeStateAsUpdate(b.doc)
+    b.doc.getText("t").insert(0, "Bea: I approve a budget of 100.")
+    await b.provider.flush()
+    await settle(chain, [a, b, m])
+    const edit = (await chain.store(undefined).query({ doc: link.doc, kind: KIND.update, creators: [b.id!.address] })).entities[0]!
+    const { salt, sig } = decodeFrame(await open(deriveEpochZeroKey(link.secret), decodeOuter(edit.payload).envelope)).header as { salt: string; sig: Hex }
+    // Bea's edit leaves the catch-up window; her own snapshot now holds her words
+    chain.mine(100)
+    await a.provider.compact()
+    await b.provider.compact()
+    await settle(chain, [a, b, m])
+    // a session that loads now has Bea's words from her snapshot only
+    const watcher = await peer(chain, link, undefined)
+    expect(text(watcher)).toBe("Bea: I approve a budget of 100.")
+    const rejectedBefore = watcher.provider.stats.rejectedWrites
+    // Mal: the state before Bea's edit, plus other words at Bea's client id and clocks
+    const forged = new Y.Doc()
+    Y.applyUpdate(forged, before)
+    forged.clientID = clientIdFor(b.id!.address, hexToBytes(salt))
+    forged.getText("t").insert(0, "Bea: I approve a budget of 900.")
+    const state = Y.encodeStateAsUpdate(forged)
+    const header = { id: bytesToHex(randomBytes(16)), base: chain.block.toString(), t: 1, chunks: [], size: state.length, authors: { [String(forged.clientID)]: { address: b.id!.address, salt, sig } } }
+    const frame = encodeFrame({ kind: KIND.snapshot, doc: hexToBytes(link.doc), epoch: 0, header, data: state }, randomBytes)
+    await chain.store(m.id!.address).batch({
+      creates: [{ payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind: KIND.snapshot, seq: chain.block }, lifetimeSeconds: 30 * 86400, readonly: true }],
+    })
+    await settle(chain, [a, b, m, watcher])
+    // live: refused, so it never becomes the lease or the carrier of Bea's words
+    expect(watcher.provider.stats.rejectedWrites).toBe(rejectedBefore + 1)
+    expect(watcher.provider.snapshot?.creator).not.toBe(m.id!.address)
+    // on load: Bea's words, not Mal's, though Mal's snapshot is the newest
+    const cold = await peer(chain, link, undefined)
+    expect(text(cold)).toBe("Bea: I approve a budget of 100.")
   })
 })

@@ -11,7 +11,7 @@ import * as Y from "yjs"
 import { recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { Observable } from "lib0/observable"
-import { type Acl, emptyAcl, fromHeader, isMember, type Member, memberAddresses, memberAt, toHeader, updateAuthors, wroteAsMember } from "./acl.js"
+import { type Acl, clipName, emptyAcl, fromHeader, isMember, type Member, memberAddresses, memberAt, toHeader, updateAuthors, wroteAsMember } from "./acl.js"
 import { decodeFrame, decodeOuter, encodeFrame, encodeOuter, equalBytes, type Frame } from "./codec.js"
 import {
   addressOfPublicKey,
@@ -85,7 +85,15 @@ export type ProviderStats = {
 }
 
 /** A snapshot that decoded and passed its own checks, waiting on the verified-clock check before it counts. */
-type PendingSnapshot = { key: Hex; state: Uint8Array; commit: (trimHistory: boolean) => void; registerClaims: () => void }
+type PendingSnapshot = {
+  key: Hex
+  state: Uint8Array
+  /** the snapshot's creator, and the client ids its valid `authors` entries give to that creator */
+  creator: Hex
+  own: Set<number>
+  commit: (trimHistory: boolean) => void
+  registerClaims: () => void
+}
 
 export type ProviderOptions = {
   store: ArkivStore
@@ -105,6 +113,12 @@ export type ProviderOptions = {
    * unwraps the current key) without touching the document.
    */
   readOnly?: boolean
+  /**
+   * Check each update's author against the member list as it stood at that update's block, read with
+   * atBlock, instead of against today's list. The owner can rewrite the current list's history; nobody
+   * can rewrite past state. Costs one free read by key per distinct block. For audits (blame, verify).
+   */
+  membershipAtBlock?: boolean
   /** Re-read recent updates this often, to cover a dropped socket. 0 disables. Default 15 minutes. */
   resyncIntervalMs?: number
   /** Compact this long after the last flush if anything is uncovered. Default 2 minutes. */
@@ -167,14 +181,43 @@ export class ArkivProvider extends Observable<string> {
   private readonly carried = new Map<number, { from: number; to: number; via: Hex }[]>()
   /** True if the last outsider scan read one full page and stopped (there may be more). */
   outsidersTruncated = false
+  /** An audit found more update entities than AUDIT_PAGES pages and read only those from today's list (see queryUpdates). */
+  auditNarrowed = false
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
+  /**
+   * Whether `entity`'s creator was listed as a member in the member list as it stood at the entity's
+   * block, read with atBlock. False if the list did not exist yet; undefined if that past list is sealed
+   * under a key this session does not hold.
+   */
+  private async memberAtBlock(entity: StoredEntity): Promise<boolean | undefined> {
+    if (!this.aclKey) return undefined
+    const block = entity.createdAt
+    if (!this.aclAt.has(block)) {
+      let acl: Acl | null = null
+      try {
+        const past = await this.store.get(this.aclKey, block)
+        const frame = past && past.creator.toLowerCase() === this.link.owner.toLowerCase() ? await this.decryptEntity(past, KIND.acl) : null
+        acl = frame ? await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc) : null
+      } catch {
+        acl = null
+      }
+      this.aclAt.set(block, acl)
+    }
+    const acl = this.aclAt.get(block)
+    if (!acl) return false
+    if (acl.rosterHidden) return undefined
+    return isMember(acl, entity.creator)
+  }
+
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
   private readonly verifiedUnits = new StructIndex()
   /** Base block of every snapshot this session applied, so a reload knows them without re-reading. */
   private readonly snapshotBases = new Map<Hex, bigint>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
   private readonly refusedSnapshots = new Set<Hex>()
+  /** each member's applied snapshot, which speaks for the client ids its authors table gives that member */
+  private readonly ownSnapshots = new Map<Hex, { creator: Hex; state: Uint8Array; own: Set<number> }>()
   /** Our signature over (document, salt): proof that this client id is ours, for later snapshots to carry. */
   private saltSig: Hex | null = null
   /** Every edit applied since the newest snapshot, oldest first, for time travel. */
@@ -199,6 +242,9 @@ export class ArkivProvider extends Observable<string> {
   private readonly autoCompact: boolean
   private readonly fullHistory: boolean
   private readonly readOnly: boolean
+  private readonly membershipAtBlock: boolean
+  /** Member lists as they stood at past blocks, read with atBlock (membershipAtBlock). */
+  private readonly aclAt = new Map<bigint, Acl | null>()
   private readonly onDocUpdate: (update: Uint8Array, origin: unknown) => void
 
   constructor(doc: Y.Doc, options: ProviderOptions) {
@@ -226,6 +272,7 @@ export class ArkivProvider extends Observable<string> {
     this.autoCompact = options.autoCompact ?? true
     this.fullHistory = options.fullHistory ?? false
     this.readOnly = options.readOnly ?? false
+    this.membershipAtBlock = options.membershipAtBlock ?? false
     // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
     this.resyncInterval = options.resyncIntervalMs ?? 15 * 60_000
     this.idleCompactMs = options.idleCompactMs ?? 120_000
@@ -277,7 +324,7 @@ export class ArkivProvider extends Observable<string> {
     const owner: Member = {
       address: identity.address.toLowerCase() as Hex,
       publicKey: `0x${bytesToHex(publicKeyOf(identity.privateKey))}`,
-      name: identity.name.slice(0, 40), // the schema's limit, so every reader accepts the list
+      name: clipName(identity.name), // the schema's limit, so every reader accepts the list
       role: "owner",
       addedAtBlock: head.toString(),
     }
@@ -452,7 +499,9 @@ export class ArkivProvider extends Observable<string> {
     const before = { authors: new Map(this.claimedAuthors), via: new Map(this.claimedVia) }
     for (const st of states) st.registerClaims()
     // removed members too: what they wrote while they belonged still counts (wroteAsMember)
-    const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl), seqGte: from })
+    // an audit reads every update, not only those of today's list: someone the owner erased from the
+    // list's history still wrote what they wrote, and the member list at each edit's block decides
+    const updates = await this.queryUpdates(from)
     // oldest first is not required by Yjs, but it keeps intermediate states sensible
     // binding depends on order, so every reader uses the same one: creation block, then key
     const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
@@ -465,7 +514,15 @@ export class ArkivProvider extends Observable<string> {
     const restore = <K, V>(target: Map<K, V>, from: Map<K, V>) => (target.clear(), from.forEach((v, k) => target.set(k, v)))
     restore(this.claimedAuthors, before.authors)
     restore(this.claimedVia, before.via)
+    // a member speaks for their own client ids: judge only by snapshots that pass the verified-clock check
+    const owners = states.filter((st) => !snapshotConflicts(this.doc, st.state, verified))
+    const overruled = overruledByOwners(this.doc, states, owners)
     for (const st of states) {
+      if (overruled.has(st.key)) {
+        this.reject()
+        this.refusedSnapshots.add(st.key)
+        continue
+      }
       // A verified update can be pending, waiting on text only a snapshot holds. When the snapshot fills the
       // gap, Yjs keeps the snapshot's struct at that clock. So try each snapshot on a scratch copy first, and
       // refuse it if any verified clock would end up with different content.
@@ -479,8 +536,33 @@ export class ArkivProvider extends Observable<string> {
       }
       this.applyRemote(st.state)
       st.commit(false)
+      this.ownSnapshots.set(st.creator, st)
     }
     this.updatesSinceSnapshot = updates.entities.length
+  }
+
+  /**
+   * Updates from `from` on. Normally only from today's members and removed members (the `$creator`
+   * filter). An audit drops the filter, so an author the owner erased from the list's history still
+   * shows up and the list as it stood at each edit's block decides. Anyone can write junk `u`
+   * entities under the public document id, so the unfiltered read stops after AUDIT_PAGES pages and
+   * falls back to the filter, and `auditNarrowed` says so.
+   */
+  private async queryUpdates(from: bigint): Promise<{ entities: StoredEntity[]; block: bigint }> {
+    const filtered = { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl!), seqGte: from }
+    if (!this.membershipAtBlock) return queryAll(this.store, filtered)
+    const spec = { doc: this.link.doc, kind: KIND.update, seqGte: from }
+    const first = await this.store.query(spec)
+    const out = [...first.entities]
+    let cursor = first.cursor
+    for (let pages = 1; cursor && pages < AUDIT_PAGES; pages++) {
+      const page = await this.store.query({ ...spec, atBlock: first.block, cursor })
+      out.push(...page.entities)
+      cursor = page.cursor
+    }
+    if (!cursor) return { entities: out, block: first.block }
+    this.auditNarrowed = true
+    return queryAll(this.store, filtered)
   }
 
   /**
@@ -652,6 +734,18 @@ export class ArkivProvider extends Observable<string> {
     return false
   }
 
+  /** True if an applied update that section 5 orders after `entity` (later block, or same block and larger key) wrote other content at its clocks. */
+  private clashesWithLater(entity: StoredEntity, update: Uint8Array): boolean {
+    const structs = Y.decodeUpdate(update).structs.filter((st): st is Y.Item => st instanceof Y.Item && !(st.content instanceof Y.ContentDeleted))
+    for (const h of this.history) {
+      if (h.block < entity.createdAt || (h.block === entity.createdAt && h.entity <= entity.key)) continue
+      const index = new StructIndex()
+      index.add(h.update)
+      if (structs.some((st) => index.conflicts(this.doc, st))) return true
+    }
+    return false
+  }
+
   /** Records what an applied update wrote (see conflictsWithProven). */
   private recordUnits(update: Uint8Array): void {
     this.verifiedUnits.add(update)
@@ -731,7 +825,10 @@ export class ArkivProvider extends Observable<string> {
 
   private async applyUpdateEntityInner(entity: StoredEntity, live: boolean): Promise<void> {
     if (this.seen.has(entity.key)) return
-    if (!this.acl || !wroteAsMember(this.acl, entity.creator, entity.createdAt)) {
+    // in audits, the member list as it stood at the edit's block decides; it falls back to today's list
+    // only where that past state cannot be opened (an epoch whose key this session never held)
+    const then = this.membershipAtBlock ? await this.memberAtBlock(entity) : undefined
+    if (!this.acl || !(then ?? wroteAsMember(this.acl, entity.creator, entity.createdAt))) {
       this.seen.add(entity.key)
       return this.reject()
     }
@@ -752,8 +849,13 @@ export class ArkivProvider extends Observable<string> {
     // the edit's client id must derive from its creator's address with a salt the creator signed
     if (!(await this.checkAuthors(frame.data, entity.creator, frame.header.salt, frame.header.sig))) return this.reject()
     // a writer's two edits that claim the same clocks with different content cannot both count: the
-    // earlier one (by creation block, then key, on load; by arrival, live) stands and this one is ignored
-    if (this.conflictsWithProven(frame.data)) return this.reject()
+    // earlier one (by creation block, then key) stands and this one is ignored. Live, edits can arrive
+    // out of that order; if the one already applied is the later one, this session no longer matches a
+    // cold load, so it says so and a fresh load (which keeps the earlier edit) heals it
+    if (this.conflictsWithProven(frame.data)) {
+      if (live && this.clashesWithLater(entity, frame.data)) this.emit("diverged", [entity.key])
+      return this.reject()
+    }
     const svBefore = Y.decodeStateVector(Y.encodeStateVector(this.doc))
     this.applyRemote(frame.data)
     if (overridesVerified(this.doc, [frame.data])) {
@@ -880,9 +982,12 @@ export class ArkivProvider extends Observable<string> {
     // nothing about this snapshot is kept yet: the caller first checks it against the verified edits
     // (see overridesVerified) and commits it only if it passes, so a refused snapshot never becomes
     // the lease, the history base or a source of claimed authors
+    const creator = entity.creator.toLowerCase() as Hex
     collect.push({
       key: entity.key,
       state,
+      creator,
+      own: new Set(claims.filter((c) => c.address === creator).map((c) => c.client)),
       commit: (trimHistory) => this.commitSnapshot(entity, base, chunks, state, claims, trimHistory),
       registerClaims: () => this.registerClaims(entity, claims),
     })
@@ -938,13 +1043,15 @@ export class ArkivProvider extends Observable<string> {
       Y.applyUpdate(trial, Y.encodeStateAsUpdate(this.doc))
       Y.applyUpdate(trial, st.state)
       const verified = this.history.map((h) => h.update)
-      if (snapshotConflicts(this.doc, st.state, verified) || overridesVerified(trial, verified)) {
+      const others = [...this.ownSnapshots.values()].filter((o) => o.creator !== st.creator)
+      if (snapshotConflicts(this.doc, st.state, verified) || overridesVerified(trial, verified) || overruledByOwners(this.doc, [st], others).size) {
         this.reject()
         this.refusedSnapshots.add(st.key)
         continue
       }
       this.applyRemote(st.state)
       st.commit(true)
+      this.ownSnapshots.set(st.creator, st)
     }
   }
 
@@ -966,7 +1073,7 @@ export class ArkivProvider extends Observable<string> {
       key: entity.key,
       address: entity.creator.toLowerCase() as Hex,
       publicKey,
-      name: String(frame.header.name ?? "").slice(0, 40),
+      name: clipName(String(frame.header.name ?? "")),
       block: entity.createdAt,
     }
     this.joinRequests.push(request)
@@ -1162,7 +1269,9 @@ export class ArkivProvider extends Observable<string> {
     if (this.acl.rosterHidden) return 0
     const base = this.snapshot?.base ?? 0n
     const from = base > CATCH_UP_MARGIN_BLOCKS ? base - CATCH_UP_MARGIN_BLOCKS : 0n
-    const updates = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl), seqGte: from })
+    // an audit reads every update, not only those of today's list: someone the owner erased from the
+    // list's history still wrote what they wrote, and the member list at each edit's block decides
+    const updates = await this.queryUpdates(from)
     const before = this.stats.updatesApplied
     const byAge = [...updates.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
     for (const u of byAge) await this.applyUpdateEntity(u, false)
@@ -1184,8 +1293,11 @@ export class ArkivProvider extends Observable<string> {
     // replace my previous snapshot rather than pile up a new full copy every session
     const mineBefore = this.snapshot && this.snapshot.creator === this.identity!.address.toLowerCase() ? this.snapshot : null
     const previous = mineBefore ? [mineBefore.key, ...mineBefore.chunks] : []
-    // never shorter than the snapshot it replaces: one kept for proof (keepMyProof) stays kept
-    const lifetime = Math.max(this.snapshotLifetime(head), minLifetimeSeconds, mineBefore ? Number(mineBefore.expiresAt - head) * BLOCK_SECONDS : 0)
+    // The owner's lifetime, computed afresh from keepUntil: it already covers a snapshot kept for proof
+    // (keepMyProof never goes past keepUntil). Carrying the old snapshot's expiry forward instead would
+    // creep past the ceiling, since a transaction lands a block or more after `head`, until readers
+    // refuse the snapshot.
+    const lifetime = Math.max(this.snapshotLifetime(head), Math.min(minLifetimeSeconds, this.snapshotLifetime(head)))
     let written
     try {
       written = await writeSnapshotEntities(this.store, this.link.doc, epoch, key, state, head, this.now(), KIND.snapshot, this.authorTable(state), lifetime, {
@@ -1339,7 +1451,8 @@ export class ArkivProvider extends Observable<string> {
 
   /**
    * Owner: ends the document now. Deletes the member list and every entity the
-   * owner created, in one batch. Without the member list no reader can verify
+   * owner created, a hundred per transaction with the member list in the first,
+   * so a long-lived document fits the gas limit. Without the member list no reader can verify
    * any edit, so the document stops opening immediately; members' remaining
    * encrypted entities run out on their own expiry (30 days, or the keepUntil date).
    */
@@ -1350,12 +1463,22 @@ export class ArkivProvider extends Observable<string> {
       const mine = await queryAll(this.store, { doc: this.link.doc, creators: [me] })
       // everything the owner wrote for this document except published versions and their chunks
       // (the only chunks anyone may extend), which are meant to outlive it
-      const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me.toLowerCase() && e.attributes.kind !== KIND.version && !(e.attributes.kind === KIND.chunk && e.permissionlessExtension)).map((e) => e.key)
-      await this.store.batch({ deletes: keys })
-      this.stats.writes++
+      const keys = mine.entities
+        .filter((e) => e.owner.toLowerCase() === me.toLowerCase() && e.attributes.kind !== KIND.version && !(e.attributes.kind === KIND.chunk && e.permissionlessExtension))
+        .sort((x, y) => Number(y.attributes.kind === KIND.acl) - Number(x.attributes.kind === KIND.acl))
+        .map((e) => e.key)
+      await this.deleteInBatches(keys)
       this.emit("deleted", [keys.length])
       return keys.length
     })
+  }
+
+  /** Deletes a hundred entities per transaction, as rotate and keepMyProof batch theirs, so no transaction outgrows the gas limit. */
+  private async deleteInBatches(keys: Hex[]): Promise<void> {
+    for (let i = 0; i < keys.length; i += 100) {
+      await this.store.batch({ deletes: keys.slice(i, i + 100) })
+      this.stats.writes++
+    }
   }
 
   // ---------------------------------------------------------------- membership
@@ -1365,7 +1488,7 @@ export class ArkivProvider extends Observable<string> {
     if (!this.identity) throw new Error("joining needs an identity")
     return this.serial(async () => {
       const head = await this.store.head()
-      const header = { publicKey: `0x${bytesToHex(publicKeyOf(this.identity!.privateKey))}`, name: this.identity!.name.slice(0, 40) }
+      const header = { publicKey: `0x${bytesToHex(publicKeyOf(this.identity!.privateKey))}`, name: clipName(this.identity!.name) }
       if (!this.acl) throw new Error("not connected")
       // sealed to the owner's public key: other link holders, including removed members, cannot read it
       const frame = encodeFrame({ kind: KIND.join, doc: hexToBytes(this.link.doc), epoch: 0, header, data: new Uint8Array() }, randomBytes)
@@ -1539,8 +1662,7 @@ export class ArkivProvider extends Observable<string> {
         .filter((e) => e.owner.toLowerCase() === me.toLowerCase() && (e.attributes.kind === KIND.update || e.attributes.kind === KIND.join))
         .map((e) => e.key)
       if (!keys.length) return 0
-      await this.store.batch({ deletes: keys })
-      this.stats.writes++
+      await this.deleteInBatches(keys)
       return keys.length
     })
   }
@@ -1728,6 +1850,8 @@ export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, id
 const BLOCK_SECONDS = 2
 /** Slack on the expiry ceiling, for the gap between a writer's head and a reader's (ten minutes of blocks). */
 const EXPIRY_SLACK_BLOCKS = 300n
+/** How many pages (200 entities each) an audit reads without the `$creator` filter before it narrows to today's list. */
+const AUDIT_PAGES = 5
 /** How often a session catches up by query while its WebSocket is failing (one query each time). */
 const POLL_WHILE_SOCKET_DOWN_MS = 20_000
 
@@ -1859,9 +1983,10 @@ function rangesDiffer(doc: Y.Doc, x: Y.Item, y: Y.Item, a: number, b: number): b
 class StructIndex {
   private readonly byClient = new Map<number, Y.Item[]>()
 
-  add(update: Uint8Array): void {
+  add(update: Uint8Array, clients?: Set<number>): void {
     for (const st of Y.decodeUpdate(update).structs) {
       if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
+      if (clients && !clients.has(st.id.client)) continue
       const list = this.byClient.get(st.id.client) ?? []
       // keep clock order; structs of one client arrive almost always in order, so this is usually a push
       let i = list.length
@@ -1907,6 +2032,31 @@ export function snapshotConflicts(doc: Y.Doc, state: Uint8Array, updates: Uint8A
     if (st instanceof Y.Item && !(st.content instanceof Y.ContentDeleted) && verified.conflicts(doc, st)) return true
   }
   return false
+}
+
+/**
+ * Section 5: a member speaks for their own client ids. Returns the snapshots in `candidates` that
+ * carry, under a client id an owner snapshot's valid `authors` entry gives to that snapshot's own
+ * creator, an item other than the one the owner's snapshot holds at that clock. Age does not matter:
+ * a newer snapshot from someone else cannot rewrite what a member's own snapshot says they wrote.
+ */
+function overruledByOwners(doc: Y.Doc, candidates: PendingSnapshot[], owners: { creator: Hex; state: Uint8Array; own: Set<number> }[]): Set<Hex> {
+  const out = new Set<Hex>()
+  for (const owner of owners) {
+    if (!owner.own.size) continue
+    const index = new StructIndex()
+    index.add(owner.state, owner.own)
+    for (const st of candidates) {
+      if (st.creator === owner.creator || out.has(st.key)) continue
+      for (const s of Y.decodeUpdate(st.state).structs) {
+        if (s instanceof Y.Item && owner.own.has(s.id.client) && !(s.content instanceof Y.ContentDeleted) && index.conflicts(doc, s)) {
+          out.add(st.key)
+          break
+        }
+      }
+    }
+  }
+  return out
 }
 
 /** A canonical description of the item at clock `item.id.clock + k`; see overridesVerified. */

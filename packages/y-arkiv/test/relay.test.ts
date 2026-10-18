@@ -22,4 +22,28 @@ describe("relay", () => {
       ["arkiv_getEntity", false],
     ])
   })
+
+  it("forwards only the option values the SDK sends, rebuilt from the checked fields", async () => {
+    process.env.ARKIV_ACCESS_KEY = "test-key"
+    // the deployed relay lives outside this package, so it is loaded by URL rather than imported
+    const relay = new URL("../../../api/rpc.ts", import.meta.url).href
+    const { default: handler } = (await import(relay)) as { default: (req: unknown, res: unknown) => Promise<void> }
+    const sent: unknown[] = []
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { data: [], blockNumber: "0x10" } }))
+    })
+    const query = `qp = str('quire1') AND qd = bytes32(0x${"ab".repeat(32)})`
+    const call = async (opts: unknown, ip: string) => {
+      let status = 200
+      const res = { status: (n: number) => ((status = n), res), json: () => undefined, setHeader: () => undefined }
+      await handler({ method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [query, opts] }), headers: { "x-forwarded-for": ip } }, res)
+      return status
+    }
+    expect(await call({ select: "*", limit: "0xc8", cursor: "abc", atBlock: "0x10" }, "1.1.1.1")).toBe(200)
+    for (const bad of [{ limit: -5 }, { limit: 1.5 }, { limit: "0xc9" }, { limit: "0x0" }, { atBlock: -1 }, { atBlock: "latest" }, { cursor: 7 }, { cursor: "a b" }, { select: ["*"] }, { extra: 1 }]) {
+      expect(await call(bad, "1.1.1.2")).toBe(400)
+    }
+    expect(sent).toEqual([{ jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [query, { select: "*", limit: "0xc8", cursor: "abc", atBlock: "0x10" }] }])
+  })
 })

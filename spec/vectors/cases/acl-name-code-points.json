@@ -1,0 +1,120 @@
+{
+  "description": "A member name is limited to 40 characters counted as code points, as JSON Schema counts them: 30 emoji (60 UTF-16 units) is within the limit, so the document opens.",
+  "link": "/d/-kxDXP5UYHn7bwqaTZGdNrt9XUU9-YxjKblLn0YfYMo.k1HvL-xi_J015ki8ULLOiyQoN04jJ3C_MnUz96sAtFI.19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+  "head": "3",
+  "entities": [
+    {
+      "key": "0x59bb4888f1234fc0078f685d8af6c372a33a65666bdc6164ff5f54c5187d292f",
+      "creator": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "owner": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "createdAt": "0x2",
+      "expiresAt": "0x13c682",
+      "creationFlags": {
+        "readonly": true,
+        "permissionlessExtension": false,
+        "raw": 1
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xfa4c435cfe546079fb6f0a9a4d919d36bb7d5d453df98c6329b94b9f461f60ca"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "u"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x2"
+        }
+      ],
+      "payload": "0x510100000000268a00497a9950f0ee46601e751c3e9a3e674d130fbb2cfe05a242d42cb04f6598beff310b8ee718e7a8f3496e60400600450bf2c28614d7a4bf1cedec34850b64f3687f3ac63d4ab487673ee5afebd945ab94cb2a2efc3b97921b87a549ef66972a2a19b47f09b7250ca05dcd8d7b9561afd5a8325dd663185fd73eea7e5eb2318ce3420af278c322adb8593a56f87061bcf76bdd848af652d81d9014a1ebffa6097b719c9fe4844b1f360788f935f45a9a56e62db380b82087cab06955e9fa23747227c9adf688645ba7a88e64944bffbe46208ab65d30807828141f435414b064aa97d0bddbbd1d8259f19fd2047d51aa019782955ab2d1b76659c0f60436edb9e5445791fb730c3034cd08d7db624133191a191fe2fbce3470c184ca4206c8df49d181c9bba73612656bcd74dad1e0d6b686d5df37ceb89f44d42f55f6ef7d283ad746f2a1af0ccf4334a234503913cc2b9e117ab89edd80790a4c160667d3e95a5b93f2f925d344b769654c6f6f738f7bd5301cffc8fa874ed9b0bd27625ecf8fbb4542a648863c72234639635724b002603f28702bca2becc701d22c4259b3426501f3ae5ff03b596249aacb98a440fdc78f5c659ec37dd1f50292e1b9fe35bb51bc38c4254a064552d7d0d0f6dfb4bb08bb1dd9fa920e4ea6324040ab55c8da05f02fe921a63c3d94e99a34d590bba4953df4d33402fcf9f972e1747ed116043f57796b3c0a8808ea49f36f1e856ad2df083eb23f8c828c03d1c29ef7b372e45d5dca3c3739fbaf0649d571269e979aae16d62543acc06b4901fdf09dc6d5946645e7e565765c364415add581b2c59f0b0c5e2e3bd7323006a110983abecbd2a8d7f90b1a2f219200a4fe9567cd6d68caf83d029115b313a0f5e40c3af010433cf8669e972fa6b1f89ebde4989617cef742e96f1f3421f75f6a6494f327dcc1f1d5f3bc9b21d3fc0d1508b139a2b46ce7c78eb9e463e94203872b3875392287a0cab79e0298c26d17c27b402d4bfccbb25fed8760ad2a18329ab0f75486202fde291207adf3d34757588a4d1c85395a542b5f1ec850e41881b37a558b8f28ad5e4b5b0618103924df862c15dff91b9a6b2531f53ab3d7958c2d4e92ca8bda59c853c93ff5c2eb9c1c142ae8f2283d636773c406c5a9c24040ca287695320cbeabb57ab346ac150a3f6b7cbb7b00f142747dd00657c483097b47095cfb6118310418eb9c4c02d6d068cda377ec488cc2656a3b370b569556608aa08d583279be2ed86153a91a4472aac0795c1b9ddc76810c6f2fa7b3f08e4460ab85a23e029736df03546c5f0a61cdefeaacbb998d95f64e6edde3d35a0f283ef9ed47f06277068a66d80f5696994e64b05c2810e545e1f16ebf5977bafe3923a1309d3980cc062d98cf6c0b94e9247c7c400b25ac8fab72f00b030143306086320f4acb6bcb5cbf29b69ad5e34ef29bdc22f9e28a8a9b945608232ea71a08"
+    },
+    {
+      "key": "0x4df89c19f1f4cfae85331d098f1d86ce678be762bacb9ecef11e724ff3046d7d",
+      "creator": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "owner": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "createdAt": "0x1",
+      "expiresAt": "0x13c681",
+      "creationFlags": {
+        "readonly": true,
+        "permissionlessExtension": false,
+        "raw": 1
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xfa4c435cfe546079fb6f0a9a4d919d36bb7d5d453df98c6329b94b9f461f60ca"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "s"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x1"
+        }
+      ],
+      "payload": "0x510100000000755d20c4263bef5a53cb75923b200ce3a168b8fc8a62042a526cb35296e3ba1dfa36a6779062af7fa72487320da68df09f34e97eadc10792604362287bbdd4cfc8b3d5f7e79124c99528b22a6ebeaa5af2f24d453030ad8a19c10ac9da5ca58be3f9a3ce6dfeecb01e6adc53a6469455f5d32371edb75e60a61a78ca653e65ae334ba7e93036568ff936ccc88cea0afa5ca449ae4501cfbee4d507c66763bbfb3b39c0c2b142b77eb4d613c7fb0ee91f72a25c9565db5ed204e842c9c87085808dc7b93a33350f6a80ca5a254351d790b52e757df704c1bd53efa988d8cebecdd417affeef6d55e3daf76759413ec6fa51fda5d0f893b800f87b24e41062ef6c2349d154e0701edb94ac870253a2d51f4990ea9045f4a504c2233b86"
+    },
+    {
+      "key": "0x526590977e12ab6b28ee3ddcf1355c2e047863b91d2c9877529e19d85c0093fb",
+      "creator": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "owner": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+      "createdAt": "0x1",
+      "expiresAt": "0x13c681",
+      "creationFlags": {
+        "readonly": false,
+        "permissionlessExtension": true,
+        "raw": 2
+      },
+      "attributes": [
+        {
+          "name": "qp",
+          "type": "str",
+          "value": "quire1"
+        },
+        {
+          "name": "qd",
+          "type": "bytes32",
+          "value": "0xfa4c435cfe546079fb6f0a9a4d919d36bb7d5d453df98c6329b94b9f461f60ca"
+        },
+        {
+          "name": "qk",
+          "type": "str",
+          "value": "a"
+        },
+        {
+          "name": "qs",
+          "type": "u64",
+          "value": "0x1"
+        }
+      ],
+      "payload": "0x5101000000004d9271716ab0cdb6d2020e3ad54ddd50b8811d2cc995eae4174b3d45ad65c860e207011e3df4d9d80d4b31bf63b9f4a2e473a4684c5befde8670c1ea1a1aeb3b8c98dd12df6355b6f96aa660a669ee8536fa3fe7e52c05ac24b58fee37dea19efd1423cf16d57ad21bf563419717ee6067229c3fe33cb26b77e7936fc1337185b78c75046e138c12a13d163174c3658733c0256772cedd5a6461dc77a24a575838e796f8db5fa43c0be577f9bc3ad3264c3e2f1a37e430214d1884540f08922099123d14d112a44038c977f631cc2fd89dadf06849ab4899651a568b2bd02bbcec7487e6a8de376b1d876e700b7c3af9a946dc6764aa07eb0316d2fbc829cf8cae8564f14df53c61458688c80111135742cbc7a2ccd8842cb5cdbb493d8e18213d8fa480628172392defc658d9a6bcfc12de733332b4f04cc4752e059fc0ad4870dced8028077334d78ef2deeb8d1766aec0bb4113aa7b29e96f16dbe2388286f130bae754b274e26e7e6357c7e11310e3c0133dcd2c0764c79d1bce7c4c772e0c015b889e3a138b8a94fb4eabd49320963ffc092a7b5ff6baacb59175807d66c29670e9597157c819040d75ea1a9c58ff9980aae6ad60ac9bbaa062f2c1f60a990369884e03d8b2f1be48230024455c2a85296d3b0f03c51ba2f316db610abe44b7df734291903cf70f9ff353945994cf4ed23fc417e69ec9c7adc4f16f1c1b8523049ceeac53eb9c17e9581604e4aeff43d92f52abef69db9d473e7990d034cf73b140ef830cea1c5378db4a2b39a839e214b9a0ff8086b4cea78ba103de5271998db3bb1dd6daf57f805d244dda7da9ea85590f581902109c4deeaec8c78f80dfc80d2de6fc64c9afd756ddf6af4f06526ce4205ce40a6cee3ea4306cc3144234c0f13d57425148d5cf04f6fd7732877764bc6a3d8bbe8822df372c99b40e4e4dfe70d45d569cf67a15feff61691445934e74e386437974dd7079d410456322eeb7d348ba91d0452829839385d12d991d553557d71f2871d1f59910dd7b15f57dde8118d9116525fff598946bc2789dc77de3fdafb03b5c734f6f40b7c95183d9f2c04a5de03da5665b588ba9fa0265fbad6aad6ce214fa618914b788a5ea3c840d23c7ef08e6c95ec3a02b4c7e087a88da34ae7857eed52d62f78674a079961558f97677b86d4f9a86363c8e5ea5cc435baed68fb25dc81ab5d34cdb1050a4d92f394d57bb357ab6b6fd2fb08c28b17a3c85608667a2146eef36f43cb7ab7b91c331af5377da09c2f56e6cef40d631b9dbb76846e0f9094699c8d3286a1efb7e35ad7c932e6ba5f63c39ac4dbcfa59af2beda8fe21396a4819f46be0887c10578f07334b08ad447b6c627287971886406f2ccb3c468ccba253d1643194c8bd08ca135e354e1c89885159aa1c50c18c007a4c946ef64eba98151647eb5ecfb6cdff964f63fadaee32527cc8e284c2a70de678df2fde9e2890ae32"
+    }
+  ],
+  "expected": {
+    "text": "Owner line.",
+    "applied": [
+      "0x4df89c19f1f4cfae85331d098f1d86ce678be762bacb9ecef11e724ff3046d7d",
+      "0x526590977e12ab6b28ee3ddcf1355c2e047863b91d2c9877529e19d85c0093fb",
+      "0x59bb4888f1234fc0078f685d8af6c372a33a65666bdc6164ff5f54c5187d292f"
+    ]
+  }
+}

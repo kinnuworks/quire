@@ -53,8 +53,14 @@ export default async function handler(req: Req, res: Res) {
   // and only the options Quire sends: what to select, a page of at most 200, a cursor, a block
   const opts = Array.isArray(call.params) ? call.params[1] : undefined
   const allowed = ["select", "limit", "cursor", "atBlock"]
-  const limit = opts && typeof opts === "object" ? (opts as { limit?: unknown }).limit : undefined
-  const pageOk = limit === undefined || (typeof limit === "string" && /^0x[0-9a-fA-F]{1,4}$/.test(limit) && Number(limit) <= 200) || (typeof limit === "number" && limit <= 200)
+  // exactly what the SDK sends: select "*", a page of 1 to 200 and a block as hex quantities, an opaque cursor
+  const o = (opts && typeof opts === "object" ? opts : {}) as { select?: unknown; limit?: unknown; cursor?: unknown; atBlock?: unknown }
+  const hex = (v: unknown, digits: number) => typeof v === "string" && new RegExp(`^0x[0-9a-fA-F]{1,${digits}}$`).test(v)
+  const pageOk =
+    (o.select === undefined || o.select === "*") &&
+    (o.limit === undefined || (hex(o.limit, 2) && Number(o.limit) >= 1 && Number(o.limit) <= 200)) &&
+    (o.atBlock === undefined || hex(o.atBlock, 16)) &&
+    (o.cursor === undefined || (typeof o.cursor === "string" && /^[\x21-\x7e]{1,1024}$/.test(o.cursor)))
   if ((call.params as unknown[]).length > 2 || (opts !== undefined && (typeof opts !== "object" || opts === null || Object.keys(opts).some((k) => !allowed.includes(k)) || !pageOk))) {
     return res.status(400).json({ error: "The relay forwards only Quire's own query options." })
   }
@@ -78,7 +84,7 @@ export default async function handler(req: Req, res: Res) {
     // forward the request rebuilt from the checked values, never the raw bytes: a body that also carries
     // "Method" or "Params" would pass these checks, and a case-insensitive JSON decoder upstream could
     // take those instead
-    const request = JSON.stringify({ jsonrpc: "2.0", id: typeof call.id === "number" || typeof call.id === "string" ? call.id : 1, method: "arkiv_query", params: opts === undefined ? [query] : [query, opts] })
+    const request = JSON.stringify({ jsonrpc: "2.0", id: typeof call.id === "number" || typeof call.id === "string" ? call.id : 1, method: "arkiv_query", params: opts === undefined ? [query] : [query, Object.fromEntries(allowed.filter((k) => o[k as keyof typeof o] !== undefined).map((k) => [k, o[k as keyof typeof o]]))] })
     const upstream = await fetch(RPC, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "user-agent": "quire-relay/1" },

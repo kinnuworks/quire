@@ -385,4 +385,44 @@ const header = (t: string) => (salt: Uint8Array, sig: string) => `{"t":${t},"sal
   await settle()
   await write("two-rotations-prior-keys", "After two rotations a current member still reads edits from the earlier epoch: the roster carries earlier epoch keys in prior. Read with memberKey.", exportCase(chain, link), BEA_KEY)
 }
+{
+  // Bea's own snapshot holds her paragraph under her client id, with a valid authors entry for it; her
+  // update has expired. The owner's newer snapshot puts other words at those clocks. A member speaks
+  // for their own client ids, so the owner's snapshot is refused whole, however new it is.
+  const { chain, link, b } = await setup()
+  const salt = randomBytes(16)
+  const mine = new Y.Doc()
+  mine.clientID = clientIdFor(bea.address, salt)
+  Y.applyUpdate(mine, Y.encodeStateAsUpdate(b.doc))
+  para(mine, "Bea: I approve a budget of 100.")
+  const state = Y.encodeStateAsUpdate(mine)
+  const authors = { [String(mine.clientID)]: { address: bea.address, salt: bytesToHex(salt), sig: await sigFor(link.doc, salt) } }
+  const qs = chain.block
+  const head = JSON.stringify({ id: bytesToHex(randomBytes(16)), base: qs.toString(), t: 0, chunks: [], size: state.length, authors })
+  await beaWrites(chain, link, KIND.snapshot, rawFrame(KIND.snapshot, link.doc, 0, head, state), qs)
+  chain.mine(5)
+  const forged = new Y.Doc()
+  Y.applyUpdate(forged, Y.encodeStateAsUpdate(b.doc))
+  forged.clientID = clientIdFor(bea.address, salt)
+  para(forged, "Bea: I approve a budget of 900.")
+  await ownerSnapshot(chain, link, Y.encodeStateAsUpdate(forged))
+  await write("snapshot-rewrites-member-client", "A newer snapshot that holds other content under a client id another member's own snapshot speaks for (through a valid authors entry for that member) is refused: no one can rewrite what a member's own snapshot says they wrote.", exportCase(chain, link))
+}
+{
+  // the owner's name is 30 emoji: 30 characters as JSON Schema counts them (code points), 60 UTF-16 units
+  const chain = new MemoryChain()
+  const named = { ...owner, name: "\u{1F600}".repeat(30) }
+  const link: DocLink = { doc: `0x${bytesToHex(randomBytes(32))}`, secret: randomBytes(32), owner: owner.address }
+  await ArkivProvider.createDocument({ store: chain.store(owner.address), link, identity: named })
+  chain.mine()
+  const doc = new Y.Doc()
+  const p = new ArkivProvider(doc, { store: chain.store(owner.address), link, identity: named, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+  await p.connect()
+  para(doc, "Owner line.")
+  await p.flush()
+  chain.mine()
+  await p.idle()
+  p.destroy()
+  await write("acl-name-code-points", "A member name is limited to 40 characters counted as code points, as JSON Schema counts them: 30 emoji (60 UTF-16 units) is within the limit, so the document opens.", exportCase(chain, link))
+}
 process.exit(0)

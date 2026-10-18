@@ -55,6 +55,7 @@ Opening a document costs three queries; the app's People tab then spends one mor
 | 5b | keep my proof | `… AND qk = str('u') AND $creator = addr(<me>)` | `provider.ts` keepMyProof |
 | 5c | writes kept out | `qp = str('quire1') AND qd = bytes32(<doc>)`, one page of 200, no creator filter | `provider.ts` outsiderEntities |
 | 6 | history check | queries 1 to 3 with `atBlock = <past block>` | `provider.ts` loadAt |
+| 6b | audit (blame, timeline) | `arkiv_getEntity(<ACL key>, <edit's block>)`, one free read per distinct block, so each author is checked against the member list as it stood then | `provider.ts` memberAtBlock |
 | 7 | live | `watchEntityEvents` over WebSocket, no `fromBlock`; then `arkiv_getEntity(<key>)` | [`sdk.ts`](../packages/y-arkiv/src/sdk.ts) |
 
 ## Batches

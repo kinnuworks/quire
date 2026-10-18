@@ -1599,6 +1599,36 @@ class Reader:
                         " that differs from a verified update's"
                     )
                     break
+        if out:
+            return out
+        # A member speaks for their own client ids: a snapshot whose structs, under a client id
+        # that another snapshot's valid `authors` entry gives to that snapshot's own creator,
+        # differ from what the creator's snapshot holds there is refused, however new it is.
+        for owner in snapshots:
+            own = self.own_clients(owner)
+            if not own:
+                continue
+            index = Verified()
+            index.add([s for s in owner.structs if s.client in own])
+            for snap in snapshots:
+                if snap.entity.creator == owner.entity.creator or snap.entity.key in out:
+                    continue
+                for s in snap.structs:
+                    clock = index.conflict(s) if s.client in own else None
+                    if clock is not None:
+                        out[snap.entity.key] = (
+                            f"snapshot carries an item at client {s.client} clock {clock} that differs from"
+                            f" {owner.entity.creator}'s own snapshot, which speaks for that client id"
+                        )
+                        break
+        return out
+
+    def own_clients(self, snap: Loaded) -> set[int]:
+        """Client ids that a snapshot's valid `authors` entries give to its own creator."""
+        out: set[int] = set()
+        for cid_text, entry in snap.frame.header["authors"].items():
+            if author_problem(cid_text, entry, self.link.doc) is None and str(entry["address"]).lower() == snap.entity.creator:
+                out.add(int(cid_text))
         return out
 
     def join_requests(self, acl: dict[str, Any]) -> list[JoinRequest]:

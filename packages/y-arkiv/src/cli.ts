@@ -89,7 +89,10 @@ async function main() {
   if (key && !/^0x[0-9a-fA-F]{64}$/.test(key)) fail("QUIRE_KEY must be 0x followed by 64 hex characters")
   const identity = key ? { address: privateKeyToAccount(key).address.toLowerCase() as `0x${string}`, privateKey: key, name: "reader" } : undefined
   // blame reads every update still on chain, not only those after the newest snapshot
-  const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" || cmd === "timeline" })
+  // blame and timeline read every update still on chain, and check each author against the member list
+  // as it stood at that edit's block (atBlock), which the owner cannot rewrite
+  const audit = cmd === "blame" || cmd === "timeline"
+  const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: audit, membershipAtBlock: audit })
   // a refused WebSocket (the gateway rate-limits handshakes) only matters to watch; say so once, quietly
   let warned = false
   provider.on("error", () => {
@@ -145,6 +148,7 @@ async function main() {
     })
     console.log("")
     for (const [a, t] of total) console.log(`${a}  ${t.proven} characters proven, ${t.claimed} claimed`)
+    console.log(audited(provider))
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)
   }
@@ -173,6 +177,7 @@ async function main() {
       const mins = (Number(s.to - s.from) * 2) / 60
       console.log(`${a}  ${s.edits} ${s.edits === 1 ? "edit" : "edits"}, ${s.added} characters added, over ${mins < 1 ? "under a minute" : Math.round(mins) === 1 ? "about a minute" : `${mins.toFixed(0)} minutes`} (blocks ${s.from} to ${s.to})`)
     }
+    console.log(audited(provider))
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)
   }
@@ -183,9 +188,17 @@ async function main() {
       console.log(`--- block ${e.block} by ${e.author}${e.latencyMs !== undefined ? `, ${(e.latencyMs / 1000).toFixed(1)}s after it was written` : ""}`)
       console.log(text(doc))
     })
+    provider.on("diverged", () => console.log("--- two writes clashed and arrived out of order; run read again for the text every cold reader sees"))
     return
   }
   fail(`unknown command ${cmd}`)
+}
+
+/** How the audit checked membership, for blame and timeline. */
+function audited(provider: ArkivProvider): string {
+  return provider.auditNarrowed
+    ? "members    checked at each edit's block, but over 1000 update entities exist (anyone can write junk under the document id), so only today's members and removed members were read"
+    : "members    every update read, each author checked against the member list as it stood at that edit's block"
 }
 
 main().catch((e: Error) => fail(e.message))

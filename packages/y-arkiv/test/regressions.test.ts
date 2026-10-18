@@ -282,3 +282,41 @@ describe("a missed revocation keeps a writer on the old key until reload", () =>
     expect(seen!.frame?.epoch).toBe(a.provider.acl!.epoch)
   })
 })
+
+describe("clashing edits that arrive out of section 5's order", () => {
+  it("a live session reports the divergence and a fresh one keeps the earlier edit, as cold readers do", async () => {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const chain = new MemoryChain()
+      const { owner, link } = await newDocument(chain)
+      const a = await peer(chain, link, owner)
+      const bea = identity("bea")
+      const b = await peer(chain, link, bea)
+      await admit(chain, a, b)
+      let diverged = false
+      a.provider.on("diverged", () => (diverged = true))
+      // two edits under one salt from one base, in one transaction: same clocks, different words
+      const salt = randomBytes(16)
+      const sig = await privateKeyToAccount(bea.privateKey).signMessage({ message: { raw: new Uint8Array([...new TextEncoder().encode("quire1:salt:"), ...hexToBytes(link.doc), ...salt]) } })
+      const edit = async (words: string) => {
+        const d = new Y.Doc()
+        Y.applyUpdate(d, Y.encodeStateAsUpdate(b.doc))
+        d.clientID = clientIdFor(bea.address, salt)
+        const sv = Y.encodeStateVector(d)
+        d.getText("t").insert(0, words)
+        const data = Y.encodeStateAsUpdate(d, sv)
+        const frame = encodeFrame({ kind: KIND.update, doc: hexToBytes(link.doc), epoch: 0, header: { t: 1, salt: bytesToHex(salt), sig }, data }, randomBytes)
+        return { payload: encodeOuter(0, await seal(deriveEpochZeroKey(link.secret), frame)), attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 86400, readonly: true }
+      }
+      const r = await chain.store(bea.address).batch({ creates: [await edit("Bea says YES."), await edit("Bea says NO!!")] })
+      // the case that matters: the first event to arrive has the larger key, so it is the later edit
+      if (!(r.created[0]! > r.created[1]!)) continue
+      await settle(chain, [a, b], 2)
+      expect(a.doc.getText("t").toString()).toBe("Bea says YES.")
+      expect(diverged).toBe(true)
+      const fresh = await peer(chain, link, owner)
+      expect(fresh.doc.getText("t").toString()).toBe("Bea says NO!!")
+      return
+    }
+    throw new Error("no key order in 30 tries")
+  })
+})

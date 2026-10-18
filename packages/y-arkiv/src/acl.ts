@@ -143,7 +143,7 @@ function checkRoster(members: unknown, revoked: unknown): void {
     seen.add(m?.address)
     const keys = Object.keys(m ?? {}).sort().join()
     if (keys !== "addedAtBlock,address,name,publicKey,role") throw new Error("malformed ACL: a member entry has the wrong fields")
-    if (!ok(m.address, /^0x[0-9a-f]{40}$/) || !ok(m.publicKey, /^0x04[0-9a-f]{128}$/) || typeof m.name !== "string" || m.name.length > 40 || (m.role !== "owner" && m.role !== "writer") || !ok(m.addedAtBlock, /^[0-9]+$/)) {
+    if (!ok(m.address, /^0x[0-9a-f]{40}$/) || !ok(m.publicKey, /^0x04[0-9a-f]{128}$/) || typeof m.name !== "string" || [...m.name].length > 40 || (m.role !== "owner" && m.role !== "writer") || !ok(m.addedAtBlock, /^[0-9]+$/)) {
       throw new Error("malformed ACL: a member entry has a malformed field")
     }
   }
@@ -203,4 +203,9 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
     throw new Error("ACL does not list its owner")
   }
   return { v: 1, owner: h.owner, ownerPublicKey: h.ownerPublicKey, epoch: h.epoch, keepUntil: h.keepUntil ?? null, wraps: Array.isArray(h.wraps) ? h.wraps : [], members, revoked, rosterHidden, ...(prior ? { prior } : {}) }
+}
+
+/** A name cut to the schema's 40 characters, counted as JSON Schema counts them (code points), so no surrogate pair is split. */
+export function clipName(name: string): string {
+  return [...name].slice(0, 40).join("")
 }

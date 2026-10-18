@@ -105,8 +105,9 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       else bump()
     })
     p.on("lease", () => bump())
-    // a snapshot clashed with a genuine edit: rebuild this session from the chain, where the
-    // updates-first load and the override check settle it in the genuine edit's favour
+    // a snapshot clashed with a genuine edit, or two clashing edits arrived out of order: rebuild this
+    // session from the chain, where the updates-first load and the ordering rules settle it as every
+    // cold reader does
     // Never compact here: a snapshot of a diverged state would carry the clash forward. Send only what
     // this tab typed, then reload. At most twice a minute, so a persistent clash cannot loop.
     p.on("diverged", () => {
@@ -115,11 +116,11 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
       // otherwise keep spending a reader's free budget
       rebuilds.splice(0, rebuilds.length, ...rebuilds.filter((t) => now - t < 600_000))
       if (rebuilds.length >= 2) {
-        log({ kind: "rejected", text: "A snapshot conflicts with a checked edit again; not reloading. Reopen the page to rebuild." })
+        log({ kind: "rejected", text: "Writes clashed again; not reloading. Reopen the page to rebuild." })
         return
       }
       rebuilds.push(now)
-      log({ kind: "rejected", text: "A snapshot conflicted with a checked edit; reloading from Arkiv" })
+      log({ kind: "rejected", text: "Two writes clashed and this tab saw them out of order; reloading from Arkiv" })
       void p.flush().catch(() => undefined).finally(() => setAttempt((n) => n + 1))
     })
     p.on("history", () => bump())

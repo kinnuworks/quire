@@ -5,6 +5,8 @@ Quire is a collaborative document editor that keeps no copy of your documents. E
 Under the editor is `y-arkiv`, a Yjs provider. A Yjs app (Tiptap, BlockNote, CodeMirror) can use it in place of `y-websocket` to get end-to-end encrypted document sync with no sync server. It takes three more arguments than `y-websocket` (a store, the writer's key and a salt from `prepareDoc`), and it syncs the document only: there are no shared cursors or presence, each writer needs a key with a little test gas, and edits arrive in three to seven seconds rather than instantly.
 
 - Live app: **https://quire-five.vercel.app**
+- Demo video (2:37): **https://youtu.be/H66nLomfLE4**
+- npm: [y-arkiv](https://www.npmjs.com/package/y-arkiv), so `npx y-arkiv blame '<link>'` works with nothing to clone
 - Protocol: [PROTOCOL.md](PROTOCOL.md), with [JSON Schema](spec/schema) and [test vectors](spec/vectors)
 - Arkiv schema and queries: [arkiv/schema.md](arkiv/schema.md)
 - Friction report: [arkiv/friction.md](arkiv/friction.md)

@@ -1923,8 +1923,10 @@ export class ArkivProvider extends Observable<string> {
       (e) =>
         e.attributes.kind !== KIND.join &&
         !members.has(e.creator.toLowerCase() as Hex) &&
-        // a removed member's edits from before their removal count, so they are not outside writes
-        !(e.attributes.kind === KIND.update && wroteAsMember(acl, e.creator, e.createdAt)),
+        // a removed member's edits from before their removal count, so they are not outside writes,
+        // and neither is anything this session applied (an audit applies an erased member's edits)
+        !(e.attributes.kind === KIND.update && wroteAsMember(acl, e.creator, e.createdAt)) &&
+        !this.appliedKeys.has(e.key),
     )
   }
 

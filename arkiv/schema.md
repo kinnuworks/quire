@@ -84,3 +84,5 @@ Every address that wrote to Tiramisu for this submission, with its role (the sam
 | `0xf7ffae901984c2c05807cbc4542080e2339ba466` | revocation demo: writer who stayed; wrote a snapshot under the new key |
 | `0x8dc3011f5a1ac8dd68ab3980c072436862b11feb` | revocation demo: removed member; their join request has since expired (1 hour), its transaction remains in block history |
 | `0x443ac73b7ca5af51f8171770c42324d4c3c589a9` | open demo: planted forgery. Holds the link, wrote one valid encrypted edit, is not a member, so no reader applies it (`scripts/plant-forgery.ts`) |
+| `0xb83063cf00de65f09187c9600b0b3fd951f60fb0` | contested demo: owner (Asha); created the ACL, erased Bea from it, pasted the finding as her own |
+| `0xa1a15fbf2c460e9aab1f92b008782d7430c44ec4` | contested demo: co-author (Bea); join request and the seven edits that wrote the finding |

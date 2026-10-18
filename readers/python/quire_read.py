@@ -1978,11 +1978,13 @@ class Reader:
                 break
             refused.update(more)
 
-        # Report entities the member filter excluded (e.g. forged writes).
+        # Report entities the member filter excluded (e.g. forged writes). An update this read accepted
+        # (an audit accepts an erased member's edits) is not an outside write.
+        accepted_keys = {u[0].key for u in updates}
         if self.scan_outsiders:
             seen = {k for k, _r in self.ignored}
             for e in self.source.outsiders(self.link.doc, members):
-                if e.kind == "u" and (self.wrote_as_member(e, members) or e.key in self.applied):
+                if e.kind == "u" and (self.wrote_as_member(e, members) or e.key in accepted_keys):
                     continue  # a removed member's edit from before their removal, or one an audit accepted
                 if e.key not in seen and not (e.kind == "a" and e.creator == self.link.owner):
                     self._ignore(e, "creator not in ACL")

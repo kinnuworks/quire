@@ -29,5 +29,20 @@
     "revoked": [
       "0x8dc3011f5a1ac8dd68ab3980c072436862b11feb"
     ]
+  },
+  "contested": {
+    "link": "#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0",
+    "doc": "0x0ea1a239c1785872a03a47dc05c11a9ec984772b522c11c3bf912441fe983454",
+    "owner": "0xb83063cf00de65f09187c9600b0b3fd951f60fb0",
+    "members": {
+      "Asha": "0xb83063cf00de65f09187c9600b0b3fd951f60fb0",
+      "Bea": "0xa1a15fbf2c460e9aab1f92b008782d7430c44ec4"
+    },
+    "beaWroteBetween": [
+      "734924",
+      "734965"
+    ],
+    "ashaPastedAt": "735002",
+    "createdAt": "2026-10-18T10:36:24.630Z"
   }
 }

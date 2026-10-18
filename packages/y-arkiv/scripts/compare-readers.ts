@@ -84,6 +84,13 @@ if (!offline) {
     { name: "live revocation demo", ts: () => typescript(live(), demo.revoked.link), py: () => pythonReader(["--link", demo.revoked.link]) },
     // the audit: every update, each author checked against the member list as it stood at that edit's block
     { name: "live open demo, audit", ts: () => typescript(live(), demo.open.link, undefined, true), py: () => pythonReader(["--link", demo.open.link, "--audit"]) },
+    // the contested demo: an erased co-author, proven by the audit today and as of the block after her edits
+    { name: "live contested demo, audit", ts: () => typescript(live(), demo.contested.link, undefined, true), py: () => pythonReader(["--link", demo.contested.link, "--audit"]) },
+    {
+      name: "live contested demo, as Bea finished",
+      ts: () => typescript(atBlockStore(live(), BigInt(demo.contested.beaWroteBetween[1]) + 5n), demo.contested.link, undefined, true),
+      py: () => pythonReader(["--link", demo.contested.link, "--at", String(BigInt(demo.contested.beaWroteBetween[1]) + 5n), "--audit"]),
+    },
     // pinned to a past block with atBlock, as a reader would after the owner deleted the document
     {
       name: "live open demo, 100 blocks ago",

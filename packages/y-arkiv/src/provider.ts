@@ -1323,7 +1323,9 @@ export class ArkivProvider extends Observable<string> {
     const me = this.identity.address
     return this.serial(async () => {
       const mine = await queryAll(this.store, { doc: this.link.doc, creators: [me] })
-      const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me.toLowerCase() && !e.readonly).map((e) => e.key)
+      // everything the owner wrote for this document except published versions and their chunks
+      // (the only chunks anyone may extend), which are meant to outlive it
+      const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me.toLowerCase() && e.attributes.kind !== KIND.version && !(e.attributes.kind === KIND.chunk && e.permissionlessExtension)).map((e) => e.key)
       await this.store.batch({ deletes: keys })
       this.stats.writes++
       this.emit("deleted", [keys.length])

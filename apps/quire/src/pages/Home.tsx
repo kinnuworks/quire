@@ -240,12 +240,8 @@ export function Home() {
                   <span>Google Docs locked journalists out of their own drafts with a mistaken terms-of-service flag.</span>
                 </li>
                 <li>
-                  <time>Jul 2019</time>
-                  <span>GitHub restricted private repositories for developers in Iran, Syria and Crimea under US sanctions.</span>
-                </li>
-                <li>
-                  <time>9 Sep 2024</time>
-                  <span>Notion cut off its users in Russia and told them to export their data.</span>
+                  <time>Any day</time>
+                  <span>The host can delete a document, close an account or shut down, and the only copy goes with it.</span>
                 </li>
               </ul>
               <div className="flow">
@@ -259,7 +255,7 @@ export function Home() {
             <div className="card card--chosen reveal" style={{ "--i": 1 } as React.CSSProperties}>
               <p className="t-title">With Quire</p>
               <p className="t-small" style={{ marginTop: 14 }}>
-                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. The page itself is served by Vercel; the readers in the repository check documents without it.
+                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. What still stands in the way: this page is served by Vercel, today's network has one public endpoint, and new keys get gas from our sponsor. The readers in the repository work without the page, and any Arkiv node can serve the data.
               </p>
               <div className="flow">
                 <span>Your browser</span>
@@ -464,13 +460,13 @@ export function Home() {
               Open protocol
             </span>
             <h2>Built so others can build on it.</h2>
-            <p className="lead">The editor is one client. The protocol, the library, a CLI and a Python reader written from the spec alone are in the repository under MIT.</p>
+            <p className="lead">The editor is one client. The protocol, the library, a CLI and a second reader in Python, written against the spec and its test vectors, are in the repository under MIT.</p>
           </div>
           <div className="grid grid-3">
             {[
               { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Swap it for y-websocket and a Yjs editor syncs its document over Arkiv: each writer needs a little test gas, and there are no shared cursors yet." },
               { i: <BookIcon />, t: "A written spec", d: "PROTOCOL.md, JSON Schema for every entity, and test vectors with a forged write." },
-              { i: <TerminalIcon />, t: "Read without us", d: "Our CLI, and a Python reader written from the spec alone, rebuild any document from chain data and check every rule." },
+              { i: <TerminalIcon />, t: "Read without us", d: "Our CLI and the Python reader rebuild any document from chain data and check its membership and authorship, and a script shows the two agree." },
               { i: <HistoryIcon />, t: "Time travel", d: "Rebuild a document exactly as Arkiv held it at a past block, with atBlock reads." },
               { i: <SnowIcon />, t: "Frozen versions", d: "Publish a readonly copy with its own key. Anyone with the link can keep it alive." },
               { i: <ShieldIcon />, t: "Privacy audit", d: "A standard-library script checks what the explorer can see for any document id." },

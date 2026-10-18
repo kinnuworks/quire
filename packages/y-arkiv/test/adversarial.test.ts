@@ -139,9 +139,14 @@ describe("expiry belongs to the document's people", () => {
     const a = await peer(chain, link, owner)
     a.doc.getText("t").insert(0, "short-lived")
     await a.provider.flush()
-    await a.provider.deleteDocument()
+    const version = await a.provider.publishVersion()
+    chain.mine()
+    // the member list, the first snapshot and the edit: every entity the owner wrote, except the version
+    expect(await a.provider.deleteDocument()).toBe(3)
     chain.mine()
     await expect(peer(chain, link, undefined)).rejects.toThrow(/not found/)
+    const left = (await chain.store(undefined).query({ doc: link.doc, creators: [owner.address] })).entities
+    expect(left.map((e) => e.key)).toEqual([version.key])
   })
 })
 

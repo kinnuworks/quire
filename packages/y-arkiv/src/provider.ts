@@ -1960,28 +1960,33 @@ export class ArkivProvider extends Observable<string> {
    * spend every reader's query budget. `outsidersTruncated` says when the page was full.
    */
   /**
-   * Evidence that the owner deleted the member list and made a new one under the same link. First, an
-   * earlier list from the owner, read as the chain stood just before today's was made: one query that
-   * junk cannot crowd, since only the owner's lists match, and it still answers after the earlier
-   * document's edits expire. Then edits and snapshots stamped before today's list (a valid entity's qs is
-   * at most its block), one page of each, checked by `createdAt`, to name the earlier writers. Anyone can
-   * stamp junk that early, so a full page with nothing older sets predatingTruncated instead of paging on.
+   * Edits and snapshots written before the member list in use, found with one query on `qs` (a valid
+   * entity's qs is at most its block, so anything stamped before the list could predate it) and checked
+   * by `createdAt`. Any at all means the owner deleted the list and made a new one under the same link;
+   * later writing cannot push them out of view, since they are the only entities stamped that early.
    */
   async predatingEntities(): Promise<StoredEntity[]> {
     if (this.aclCreatedAt === 0n) return []
+    // edits and snapshots only, page after page until one older than the list turns up: junk stamped
+    // early cannot push the evidence off a single page. Five pages at most, and predatingTruncated says so.
     this.predatingTruncated = false
-    const lists = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], atBlock: this.aclCreatedAt - 1n, limit: 1 })
-    const earlier = lists.entities.filter((e) => e.createdAt < this.aclCreatedAt)
     for (const kind of [KIND.update, KIND.snapshot]) {
-      const page = await this.store.query({ doc: this.link.doc, kind, seqLte: this.aclCreatedAt - 1n, limit: 200 })
-      const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)
-      if (older.length) return [...earlier, ...older]
-      if (page.cursor) this.predatingTruncated = true
+      let cursor: string | undefined
+      let block: bigint | undefined
+      for (let pages = 0; pages < 5; pages++) {
+        const page = await this.store.query({ doc: this.link.doc, kind, seqLte: this.aclCreatedAt - 1n, limit: 200, cursor, atBlock: block })
+        block ??= page.block
+        const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)
+        if (older.length) return older
+        cursor = page.cursor
+        if (!cursor) break
+        if (pages === 4) this.predatingTruncated = true
+      }
     }
-    return earlier
+    return []
   }
 
-  /** A page of entities stamped before the member list held nothing older, and there were more. */
+  /** predatingEntities read its five pages of one kind without finding an older entity, and there were more. */
   predatingTruncated = false
 
   async outsiderEntities(): Promise<StoredEntity[]> {

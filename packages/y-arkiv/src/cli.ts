@@ -239,7 +239,7 @@ async function main() {
  */
 function recreated(provider: ArkivProvider, older: StoredEntity[]): string {
   if (!older.length && provider.predatingTruncated) {
-    return `recreated  no earlier member list from the owner; not checked to the end for older edits: over 200 entities are stamped before this member list (made at block ${provider.aclCreatedAt}), and none of the first 200 of a kind is older than it`
+    return `recreated  not checked to the end: over 1,000 entities are stamped before this member list (made at block ${provider.aclCreatedAt}), and none of the first 1,000 of a kind is older than it`
   }
   if (!older.length) return ""
   const writers = [...new Set(older.map((e) => e.creator.toLowerCase()))]

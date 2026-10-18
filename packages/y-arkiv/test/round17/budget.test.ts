@@ -20,7 +20,7 @@ async function verifyCost(chain: Awaited<ReturnType<typeof setup>>["chain"], lin
 }
 
 describe("a stranger runs up every verify and blame", () => {
-  it("2,000 junk entities stamped qs = 0 add nothing to what verify and blame spend", async () => {
+  it("2,000 junk entities stamped qs = 0 add at most eight queries to verify and blame", async () => {
     const { chain, a, bea, link } = await setup()
     await typeSlowly(chain, bea, [a], "Bea's genuine words.")
     a.provider.destroy()
@@ -39,9 +39,11 @@ describe("a stranger runs up every verify and blame", () => {
     await settle(chain, [])
     const junk = { verify: await verifyCost(chain, link, false), blame: await verifyCost(chain, link, true) }
     // one query lists outside writes; the recreated check is one query for an earlier list and one page each of edits and snapshots
-    expect(clean.verify.total - clean.verify.load).toBe(4)
-    expect(junk.verify.total).toBe(clean.verify.total)
-    expect(junk.blame.total).toBe(clean.blame.total)
+    // one query lists outside writes; the recreated check reads one page each of edits and snapshots,
+    // and junk stamped that early stretches it to five pages of each, no further (README, junk and the query budget)
+    expect(clean.verify.total - clean.verify.load).toBe(3)
+    expect(junk.verify.total - clean.verify.total).toBeLessThanOrEqual(8)
+    expect(junk.blame.total - clean.blame.total).toBeLessThanOrEqual(8)
     expect(junk.verify.recreatedFound).toBe(0)
   })
 })

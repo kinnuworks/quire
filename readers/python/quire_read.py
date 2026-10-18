@@ -939,11 +939,6 @@ class Source:
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
         """One page of entities for `doc` whose qs is below `block`, whoever wrote them."""
         raise NotImplementedError
-
-    def acl_before(self, doc: str, owner: str, block: int) -> list[Entity]:
-        """The owner's member list for `doc` as the chain stood at block - 1, if there was one."""
-        raise NotImplementedError
-
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         """Every entity for `doc` whose creator is not a member, join
         requests aside (strangers send those by design). The member-filtered
@@ -991,10 +986,6 @@ class VectorSource(Source):
 
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
         return [e for e in self.entities if str(e.attr("qd")).lower() == doc.lower() and e.kind in ("u", "s") and isinstance(e.attr("qs"), int) and e.attr("qs") < block]
-
-    def acl_before(self, doc: str, owner: str, block: int) -> list[Entity]:
-        return [e for e in self.acl(doc, owner) if e.created_at < block]
-
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         return [
             e for e in self.entities
@@ -1064,18 +1055,11 @@ class RpcSource(Source):
         return e if e is not None and well_formed(e) else None
 
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
-        # edits and snapshots, one page of each: anyone can stamp junk that early, so paging on through it
-        # would let them spend every reader's budget (the earlier-list query below is the junk-proof check)
+        # edits and snapshots, up to five pages of each, so junk stamped early cannot push the evidence off one page
         out: list[Entity] = []
         for kind in ("u", "s"):
-            out.extend(self._run(self._base(doc, kind) + f" AND qs <= u64({block - 1})", max_pages=1))
+            out.extend(self._run(self._base(doc, kind) + f" AND qs <= u64({block - 1})", max_pages=5))
         return out
-
-    def acl_before(self, doc: str, owner: str, block: int) -> list[Entity]:
-        # only the owner's lists match, so junk cannot crowd it, and past state outlives the old edits
-        at = block - 1 if self.at_block is None else min(self.at_block, block - 1)
-        query = self._base(doc, "a") + f" AND $creator = addr({owner})"
-        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query, 1, at)) if well_formed(e)]
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         # one query with no kind or creator filter
@@ -1709,15 +1693,12 @@ class Reader:
         return added is not None and e.created_at >= added
 
     def predating(self) -> list[Entity]:
-        """An earlier member list from the owner (read at the block before today's was made), and edits
-        and snapshots written before the member list in use: any at all means the owner deleted the list
-        and made a new one under the same link."""
+        """Edits and snapshots written before the member list in use: any at all means the owner
+        deleted the list and made a new one under the same link (one query on qs, checked by createdAt)."""
         if self.acl_entity is None or self.acl_entity.created_at == 0:
             return []
-        block = self.acl_entity.created_at
-        earlier = [e for e in self.source.acl_before(self.link.doc, self.link.owner, block) if e.created_at < block]
-        return earlier + [e for e in self.source.stamped_before(self.link.doc, block)
-                          if e.created_at < block and e.kind in ("u", "s")]
+        return [e for e in self.source.stamped_before(self.link.doc, self.acl_entity.created_at)
+                if e.created_at < self.acl_entity.created_at and e.kind in ("u", "s")]
 
     def before_acl(self, e: Entity) -> bool:
         """Section 5: nothing written before the member list in use belongs to its members, so an

@@ -16,6 +16,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
+import { blame } from "../src/blame.js"
 import { parseDocLink } from "../src/link.js"
 import { ArkivProvider } from "../src/provider.js"
 import { SdkStore } from "../src/sdk.js"
@@ -29,7 +30,7 @@ const demo = JSON.parse(readFileSync(`${root}arkiv/demo.json`, "utf8"))
 const vectorsPath = `${root}spec/vectors/document.json`
 const vectors = JSON.parse(readFileSync(vectorsPath, "utf8"))
 
-type Verdict = { text: string; applied: string[]; outsiders: string[] }
+type Verdict = { text: string; applied: string[]; outsiders: string[]; proven: Record<string, number> }
 
 function plain(doc: Y.Doc): string {
   const walk = (n: unknown): string =>
@@ -48,14 +49,17 @@ async function typescript(store: ArkivStore, link: string, memberKey?: Hex): Pro
   p.on("error", () => undefined) // a member session may try to renew a lease on a read-only store
   await p.connect()
   const outsiders = (await p.outsiderEntities()).map((e) => e.key)
+  // characters proven per address, from blame: who wrote what, as each reader would testify
+  const proven: Record<string, number> = {}
+  for (const run of blame(doc, p).flat()) if (run.proven && run.address) proven[run.address] = (proven[run.address] ?? 0) + run.text.length
   p.destroy()
-  return { text: plain(doc), applied: [...p.appliedKeys].sort(), outsiders: outsiders.sort() }
+  return { text: plain(doc), applied: [...p.appliedKeys].sort(), outsiders: outsiders.sort(), proven: Object.fromEntries(Object.entries(proven).sort()) }
 }
 
 function pythonReader(args: string[]): Verdict {
   const out = execFileSync(python, [`${root}readers/python/quire_read.py`, "--json", ...args], { encoding: "utf8", env: process.env })
-  const v = JSON.parse(out) as { text: string; applied: string[]; ignored: [string, string][] }
-  return { text: v.text, applied: v.applied.sort(), outsiders: v.ignored.filter(([, r]) => r === "creator not in ACL").map(([k]) => k).sort() }
+  const v = JSON.parse(out) as { text: string; applied: string[]; ignored: [string, string][]; proven: Record<string, number> }
+  return { text: v.text, applied: v.applied.sort(), outsiders: v.ignored.filter(([, r]) => r === "creator not in ACL").map(([k]) => k).sort(), proven: v.proven }
 }
 
 const cases: { name: string; ts: () => Promise<Verdict>; py: () => Verdict }[] = [
@@ -82,6 +86,7 @@ for (const c of cases) {
   const [ts, py] = [await c.ts(), c.py()]
   const diffs: string[] = []
   if (ts.text !== py.text) diffs.push(`text\n    ts: ${JSON.stringify(ts.text)}\n    py: ${JSON.stringify(py.text)}`)
+  if (JSON.stringify(ts.proven) !== JSON.stringify(py.proven)) diffs.push(`proven characters per address\n    ts: ${JSON.stringify(ts.proven)}\n    py: ${JSON.stringify(py.proven)}`)
   for (const field of ["applied", "outsiders"] as const) {
     const only = (a: string[], b: string[]) => a.filter((k) => !b.includes(k))
     const tsOnly = only(ts[field], py[field])

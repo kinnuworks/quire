@@ -136,7 +136,11 @@ export async function toHeader(acl: Acl, epochKey: Uint8Array | undefined, doc: 
 function checkRoster(members: unknown, revoked: unknown): void {
   const ok = (v: unknown, re: RegExp) => typeof v === "string" && re.test(v)
   if (!Array.isArray(members) || members.length === 0 || !Array.isArray(revoked)) throw new Error("malformed ACL: members or revoked")
+  const seen = new Set<unknown>()
   for (const m of members as Record<string, unknown>[]) {
+    // one entry per address: two would give readers two different joining blocks to pick from
+    if (seen.has(m?.address)) throw new Error("malformed ACL: a member is listed twice")
+    seen.add(m?.address)
     const keys = Object.keys(m ?? {}).sort().join()
     if (keys !== "addedAtBlock,address,name,publicKey,role") throw new Error("malformed ACL: a member entry has the wrong fields")
     if (!ok(m.address, /^0x[0-9a-f]{40}$/) || !ok(m.publicKey, /^0x04[0-9a-f]{128}$/) || typeof m.name !== "string" || m.name.length > 40 || (m.role !== "owner" && m.role !== "writer") || !ok(m.addedAtBlock, /^[0-9]+$/)) {
@@ -155,6 +159,20 @@ export async function fromHeader(header: Record<string, unknown>, owner: Hex, ep
   const fields = h.epoch === 0 ? ["v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps", "members", "revoked"] : ["v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps", "roster"]
   const keys = Object.keys(header)
   if (fields.some((f) => !keys.includes(f)) || keys.some((k) => !fields.includes(k))) throw new Error("malformed ACL: wrong fields for its epoch")
+  // and the patterns of spec/schema/acl-header.json, by hand, as the Python reader checks them
+  const str = (v: unknown, re: RegExp) => typeof v === "string" && re.test(v)
+  if (
+    !Number.isSafeInteger(h.epoch) ||
+    h.epoch < 0 ||
+    !str(h.owner, /^0x[0-9a-f]{40}$/) ||
+    !str(h.ownerPublicKey, /^0x04[0-9a-f]{128}$/) ||
+    !(h.keepUntil === null || str(h.keepUntil, /^[0-9]+$/)) ||
+    !Array.isArray(h.wraps) ||
+    !h.wraps.every((w) => str(w, /^0x04[0-9a-f]{128}[0-9a-f]{120}$/)) ||
+    (h.epoch > 0 && !str(h.roster, /^0x[0-9a-f]+$/))
+  ) {
+    throw new Error("malformed ACL: a header field breaks its pattern")
+  }
   if (h.epoch === 0) checkRoster(h.members, h.revoked)
   if (h.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("ACL owner does not match the link")
   let members: Member[] = []

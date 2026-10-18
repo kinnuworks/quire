@@ -75,10 +75,14 @@ export default async function handler(req: Req, res: Res) {
   all.push(now)
 
   try {
+    // forward the request rebuilt from the checked values, never the raw bytes: a body that also carries
+    // "Method" or "Params" would pass these checks, and a case-insensitive JSON decoder upstream could
+    // take those instead
+    const request = JSON.stringify({ jsonrpc: "2.0", id: typeof call.id === "number" || typeof call.id === "string" ? call.id : 1, method: "arkiv_query", params: opts === undefined ? [query] : [query, opts] })
     const upstream = await fetch(RPC, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": key, "user-agent": "quire-relay/1" },
-      body: raw,
+      body: request,
     })
     const text = await upstream.text()
     const retry = upstream.headers.get("retry-after")

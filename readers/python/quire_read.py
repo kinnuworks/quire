@@ -878,6 +878,9 @@ def check_roster_entries(members: Any, revoked: Any) -> None:
     hand so the verdict never depends on a schema library."""
     if not isinstance(members, list) or not members or not isinstance(revoked, list):
         raise RuntimeError("ACL members or revoked is malformed")
+    addresses = [m.get("address") for m in members if isinstance(m, dict)]
+    if len(addresses) != len(set(addresses)):
+        raise RuntimeError("an ACL member is listed twice")
     for m in members:
         if not isinstance(m, dict) or set(m) != {"address", "publicKey", "name", "role", "addedAtBlock"}:
             raise RuntimeError("an ACL member entry has the wrong fields")
@@ -1252,6 +1255,15 @@ class Reader:
                 fields = {"v", "owner", "ownerPublicKey", "epoch", "keepUntil", "wraps"} | ({"members", "revoked"} if epoch0 else {"roster"})
                 if not isinstance(header, dict) or set(header) != fields:
                     raise Rejected("ACL header has the wrong fields for its epoch")
+                if not (_is_safe_int(header["epoch"]) and header["epoch"] >= 0
+                        and isinstance(header["owner"], str) and ADDRESS_LOWER.fullmatch(header["owner"])
+                        and isinstance(header["ownerPublicKey"], str) and re.fullmatch(r"0x04[0-9a-f]{128}", header["ownerPublicKey"])
+                        and (header["keepUntil"] is None or (isinstance(header["keepUntil"], str) and re.fullmatch(r"[0-9]+", header["keepUntil"])))
+                        and isinstance(header["wraps"], list)
+                        and all(isinstance(w, str) and re.fullmatch(r"0x04[0-9a-f]{128}[0-9a-f]{120}", w) for w in header["wraps"])
+                        and (epoch0 or (isinstance(header["roster"], str) and re.fullmatch(r"0x[0-9a-f]+", header["roster"])))):
+                    raise Rejected("ACL header field breaks its pattern")
+                header["epoch"] = int(header["epoch"])  # 0.0 is the integer 0, as JSON Schema says
             except Exception as exc:  # a malformed ACL entity is skipped
                 self._ignore(e, _why(exc))
                 continue
@@ -1506,9 +1518,9 @@ class Reader:
         """Section 5: written by a member, or by a removed member at or before
         their removal block. Removal does not erase what they wrote while
         they belonged; anything they create later does not count."""
-        if e.creator in members:
-            return self.member_at(e)
-        # each removal closes one membership interval [addedAtBlock, atBlock]; entries without
+        if e.creator in members and self.member_at(e):
+            return True
+        # an earlier stint counts too, for a member removed and added again: each removal closes one membership interval [addedAtBlock, atBlock]; entries without
         # addedAtBlock start at 0. Edits from a gap between memberships never count.
         return any(start <= e.created_at <= end for start, end in self.revoked_at.get(e.creator, []))
 
@@ -2016,10 +2028,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         reader = Reader(link, source, key, log, schemas, own_salt=args.own_salt, scan_outsiders=args.verify or args.json or isinstance(source, VectorSource))
         result = reader.read()
         if args.json:
+            proven: dict[str, int] = {}
+            for r in result.ranges or []:
+                author = result.authors.get(r.client)
+                if r.proven and author is not None:
+                    proven[author.address] = proven.get(author.address, 0) + len(r.text.encode("utf-16-le")) // 2
             print(json.dumps({
                 "text": result.text,
                 "applied": sorted(result.applied),
                 "ignored": sorted([k, r] for k, r in result.ignored),
+                "proven": dict(sorted((a, n) for a, n in proven.items() if n)),
             }, indent=2))
             return 0
         if args.verify:

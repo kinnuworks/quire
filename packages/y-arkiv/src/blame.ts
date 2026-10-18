@@ -58,9 +58,12 @@ function runs(items: Item[], provider: ArkivProvider): BlameRun[] {
   const out: BlameRun[] = []
   for (const it of items) {
     const str = it.content.str!
+    // PROTOCOL section 5: a Yjs item merged from several ranges is proven only if its whole range is
+    // covered by verified updates; otherwise all of it is claimed, as the Python reader and the editor see it
+    const whole = provider.authorOfItem(it.id.client, it.id.clock, it.length)?.proven ?? false
     for (let i = 0; i < str.length; i++) {
       const clock = it.id.clock + i
-      const where = provider.provenanceOf(it.id.client, clock)
+      const where = whole ? provider.provenanceOf(it.id.client, clock) : undefined
       const who = provider.authorOfItem(it.id.client, clock)
       const run: BlameRun = where
         ? { text: str[i]!, address: who?.address ?? null, proven: true, entity: where.entity, block: where.block }

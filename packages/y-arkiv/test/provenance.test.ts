@@ -254,7 +254,9 @@ describe("blame cannot be faked", () => {
     await p.connect()
     expect(doc.getText("t").toString()).toBe(pasted)
     const proven = blame(doc, p).flat().filter((r) => r.proven).map((r) => r.text).join("")
-    expect(proven).toBe("PD")
+    // the paste is one merged Yjs item whose range the update covers only at its two ends, so all of it
+    // is claimed (PROTOCOL section 5: a merged item is proven only if its whole range is covered)
+    expect(proven).toBe("")
     await a.provider.destroy()
   })
 })
@@ -446,7 +448,9 @@ describe("claimed text names its carrier", () => {
     await p.connect()
     const runs = blame(doc, p).flat()
     expect(runs.find((r) => r.text.includes("I resign"))).toMatchObject({ address: bea.id!.address, proven: false, via: mal.id!.address })
-    expect(runs.find((r) => r.text.includes("Bea writes"))).toMatchObject({ proven: true })
+    // Bea's genuine words and the forged ones merged into one Yjs item, so under the whole-item rule
+    // all of it reads as claimed, carried by Mallory's snapshot: never as Bea's proven text
+    expect(runs.find((r) => r.text.includes("Bea writes"))).toMatchObject({ proven: false, via: mal.id!.address })
     // the editor's colored bars ask authorOfItem directly: it must name the carrier too
     type It = { id: { client: number; clock: number }; content: { str?: string }; right: It | null }
     let item = (doc.getText("t") as unknown as { _start: It | null })._start

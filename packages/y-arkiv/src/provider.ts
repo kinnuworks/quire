@@ -169,6 +169,8 @@ export class ArkivProvider extends Observable<string> {
   outsidersTruncated = false
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
+  /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
+  private readonly verifiedUnits = new Map<string, string>()
   /** Base block of every snapshot this session applied, so a reload knows them without re-reading. */
   private readonly snapshotBases = new Map<Hex, bigint>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
@@ -642,16 +644,27 @@ export class ArkivProvider extends Observable<string> {
 
   /** True if the update carries, at a clock an applied update already proved, an item other than that one. */
   private conflictsWithProven(update: Uint8Array): boolean {
+    // struct against struct, as each applied update wrote it: whether that item was deleted since does
+    // not matter, or a writer could delete their text and reuse its clocks for something else
     for (const st of Y.decodeUpdate(update).structs) {
-      if (!(st instanceof Y.Item)) continue
+      if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
       for (let k = 0; k < st.length; k++) {
-        const clock = st.id.clock + k
-        if (!this.coveredByProven(st.id.client, clock, clock + 1)) continue
-        const found = Y.getItem(this.doc.store, Y.createID(st.id.client, clock)) as Y.Item | Y.GC
-        if (found instanceof Y.Item && !found.deleted && unitKey(this.doc, found, clock - found.id.clock) !== unitKey(this.doc, st, k)) return true
+        const want = this.verifiedUnits.get(`${st.id.client}:${st.id.clock + k}`)
+        if (want !== undefined && want !== unitKey(this.doc, st, k)) return true
       }
     }
     return false
+  }
+
+  /** Records what an applied update wrote at each clock (see conflictsWithProven). */
+  private recordUnits(update: Uint8Array): void {
+    for (const st of Y.decodeUpdate(update).structs) {
+      if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
+      for (let k = 0; k < st.length; k++) {
+        const key = `${st.id.client}:${st.id.clock + k}`
+        if (!this.verifiedUnits.has(key)) this.verifiedUnits.set(key, unitKey(this.doc, st, k))
+      }
+    }
   }
 
   private coveredByProven(client: number, from: number, to: number): boolean {
@@ -768,6 +781,7 @@ export class ArkivProvider extends Observable<string> {
         if (from < st.id.clock + st.length) ranges.push([st.id.client, from, st.id.clock + st.length])
       }
       this.markProven(ranges, entity.createdAt, entity.key)
+      this.recordUnits(frame.data)
     }
     this.pushHistory({ block: entity.createdAt, author: entity.creator.toLowerCase() as Hex, update: frame.data, entity: entity.key })
     this.appliedKeys.add(entity.key)
@@ -1382,6 +1396,8 @@ export class ArkivProvider extends Observable<string> {
     const req = this.joinRequests.find((j) => j.address.toLowerCase() === address.toLowerCase())
     if (!req) throw new Error("no join request from that address")
     await this.updateAcl(async (acl, head) => {
+      // updateAcl works on the latest list: a second approve that raced the first must not add a duplicate
+      if (isMember(acl, req.address)) return {}
       acl.members.push({ address: req.address, publicKey: req.publicKey, name: req.name, role: "writer", addedAtBlock: head.toString() })
       if (acl.epoch > 0) {
         const epochKey = this.epochKeys.get(acl.epoch)!
@@ -1408,6 +1424,9 @@ export class ArkivProvider extends Observable<string> {
   async revoke(address: Hex, options: { shredOldEpoch?: boolean } = {}): Promise<{ shredded: number }> {
     const target = address.toLowerCase()
     if (target === this.link.owner.toLowerCase()) throw new Error("the owner cannot be revoked")
+    // a removal records the interval it closes; for someone who never joined there is none, and an entry
+    // without one would read as membership from block 0
+    if (!this.acl || !isMember(this.acl, target as Hex)) throw new Error("that address is not a member")
     return this.rotate(target as Hex, options)
   }
 

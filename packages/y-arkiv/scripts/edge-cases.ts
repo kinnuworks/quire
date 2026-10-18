@@ -318,6 +318,51 @@ const header = (t: string) => (salt: Uint8Array, sig: string) => `{"t":${t},"sal
   await write("snapshot-past-owner-lifetime", "A snapshot extended past the larger of the owner's keepUntil and a fresh 30-day lease is ignored: no member can keep a readable copy past the owner's ceiling.", exportCase(chain, link))
 }
 {
+  // Bea writes "Hello" under salt S, deletes it, then writes other text at the same clocks under the same
+  // salt. Deleting does not free the clocks: the third update conflicts with the first and is ignored.
+  const { chain, link, b } = await setup()
+  const salt = randomBytes(16)
+  const sig = await sigFor(link.doc, salt)
+  const base = new Y.Doc()
+  Y.applyUpdate(base, Y.encodeStateAsUpdate(b.doc))
+  const d = new Y.Doc()
+  Y.applyUpdate(d, Y.encodeStateAsUpdate(base))
+  d.clientID = clientIdFor(bea.address, salt)
+  let sv = Y.encodeStateVector(d)
+  para(d, "Hello")
+  const u1 = Y.encodeStateAsUpdate(d, sv)
+  sv = Y.encodeStateVector(d)
+  const t = (d.getXmlFragment("default").get(d.getXmlFragment("default").length - 1) as Y.XmlElement).get(0) as Y.XmlText
+  t.delete(0, 5)
+  const u2 = Y.encodeStateAsUpdate(d, sv)
+  const e = new Y.Doc()
+  Y.applyUpdate(e, Y.encodeStateAsUpdate(base))
+  e.clientID = clientIdFor(bea.address, salt)
+  const sv0 = Y.encodeStateVector(e)
+  para(e, "Jello SMUGGLED")
+  const u3 = Y.encodeStateAsUpdate(e, sv0)
+  for (const u of [u1, u2, u3]) await beaWrites(chain, link, KIND.update, rawFrame(KIND.update, link.doc, 0, `{"t":1,"salt":"${bytesToHex(salt)}","sig":"${sig}"}`, u), chain.block)
+  await write("update-reuses-deleted-clocks", "An update that puts other content at clocks an earlier update wrote is ignored even if that text was deleted since: deleting does not free the clocks.", exportCase(chain, link))
+}
+{
+  // Bea writes, is removed, asks again and is added back, writes again. Both stints stay proven.
+  const { chain, link, a, b, settle } = await setup()
+  para(b.doc, "Bea, first stint.")
+  await b.p.flush()
+  await settle()
+  await a.p.revoke(bea.address)
+  await settle()
+  await b.p.requestJoin()
+  await settle()
+  await a.p.approve(bea.address)
+  await settle()
+  await b.p.resync({ joins: true })
+  para(b.doc, "Bea, second stint.")
+  await b.p.flush()
+  await settle()
+  await write("member-readded", "A member removed and added again keeps the proof of both stints: each removal entry closes one interval. Read with memberKey (the owner's).", exportCase(chain, link), OWNER_KEY)
+}
+{
   // two rotations: Bea writes under epoch 1, then a second removal moves the key to epoch 2. A fresh
   // session of Bea's opens epoch 2 from her wrap and epoch 1 from the roster's prior keys, so her
   // epoch 1 edit is applied (and proven), not just carried by a snapshot.

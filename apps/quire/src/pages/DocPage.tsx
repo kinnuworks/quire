@@ -262,6 +262,17 @@ export function DocPage({ link }: { link: DocLink }) {
         </div>
       )}
 
+      {session.fullHistory && provider?.status === "synced" && (provider.auditNarrowed || provider.auditUnchecked > 0) && (
+        <div className="ws-banner">
+          <span>
+            <b>This check is incomplete.</b>{" "}
+            {provider.auditNarrowed && (provider.listWalkCut ? "The member list has more versions than the app will read, and the document holds more entities than it reads unfiltered, so someone the owner erased may be missing. " : "The member list's history could not be read in full, and the document holds more entities than the app reads unfiltered, so someone the owner erased may be missing. ")}
+            {provider.auditUnchecked > 0 && `${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit was" : "edits were"} judged by today's member list because the list at ${provider.auditUnchecked === 1 ? "its" : "their"} block could not be read. `}
+            Run <code>y-arkiv blame</code>, which waits out the network's read limit.
+          </span>
+        </div>
+      )}
+
       {copies.map((c) => (
         <div className="ws-banner accent" key={`${c.block}-${c.first}`}>
           <span>

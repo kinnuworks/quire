@@ -940,6 +940,10 @@ class Source:
         """One page of entities for `doc` whose qs is below `block`, whoever wrote them."""
         raise NotImplementedError
 
+    def acl_before(self, doc: str, owner: str, block: int) -> list[Entity]:
+        """The owner's member list for `doc` as the chain stood at block - 1, if there was one."""
+        raise NotImplementedError
+
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         """Every entity for `doc` whose creator is not a member, join
         requests aside (strangers send those by design). The member-filtered
@@ -987,6 +991,9 @@ class VectorSource(Source):
 
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
         return [e for e in self.entities if str(e.attr("qd")).lower() == doc.lower() and e.kind in ("u", "s") and isinstance(e.attr("qs"), int) and e.attr("qs") < block]
+
+    def acl_before(self, doc: str, owner: str, block: int) -> list[Entity]:
+        return [e for e in self.acl(doc, owner) if e.created_at < block]
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         return [
@@ -1057,11 +1064,18 @@ class RpcSource(Source):
         return e if e is not None and well_formed(e) else None
 
     def stamped_before(self, doc: str, block: int) -> list[Entity]:
-        # edits and snapshots, up to five pages of each, so junk stamped early cannot push the evidence off one page
+        # edits and snapshots, one page of each: anyone can stamp junk that early, so paging on through it
+        # would let them spend every reader's budget (the earlier-list query below is the junk-proof check)
         out: list[Entity] = []
         for kind in ("u", "s"):
-            out.extend(self._run(self._base(doc, kind) + f" AND qs <= u64({block - 1})", max_pages=5))
+            out.extend(self._run(self._base(doc, kind) + f" AND qs <= u64({block - 1})", max_pages=1))
         return out
+
+    def acl_before(self, doc: str, owner: str, block: int) -> list[Entity]:
+        # only the owner's lists match, so junk cannot crowd it, and past state outlives the old edits
+        at = block - 1 if self.at_block is None else min(self.at_block, block - 1)
+        query = self._base(doc, "a") + f" AND $creator = addr({owner})"
+        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query, 1, at)) if well_formed(e)]
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         # one query with no kind or creator filter
@@ -1302,6 +1316,9 @@ class Reader:
         self.audit = audit
         self.audit_narrowed = False
         self.audit_unchecked = 0  # edits whose past member list could not be read, so today's list decided
+        self.listed_so_far: list[str] = []  # addresses a member-list walk found before it stopped early
+        self.list_walk_cut = False  # the member list has more versions than a walk reads
+        self.today: list[str] | None = None  # set once today's roster is open
         # Section 5: a valid entity's qs is at most the block it landed in, so readers fetch qs <= head + 60;
         # far-future junk never enters a query, whoever wrote it
         self.qs_ceiling: int | None = None
@@ -1692,12 +1709,15 @@ class Reader:
         return added is not None and e.created_at >= added
 
     def predating(self) -> list[Entity]:
-        """Edits and snapshots written before the member list in use: any at all means the owner
-        deleted the list and made a new one under the same link (one query on qs, checked by createdAt)."""
+        """An earlier member list from the owner (read at the block before today's was made), and edits
+        and snapshots written before the member list in use: any at all means the owner deleted the list
+        and made a new one under the same link."""
         if self.acl_entity is None or self.acl_entity.created_at == 0:
             return []
-        return [e for e in self.source.stamped_before(self.link.doc, self.acl_entity.created_at)
-                if e.created_at < self.acl_entity.created_at and e.kind in ("u", "s")]
+        block = self.acl_entity.created_at
+        earlier = [e for e in self.source.acl_before(self.link.doc, self.link.owner, block) if e.created_at < block]
+        return earlier + [e for e in self.source.stamped_before(self.link.doc, block)
+                          if e.created_at < block and e.kind in ("u", "s")]
 
     def before_acl(self, e: Entity) -> bool:
         """Section 5: nothing written before the member list in use belongs to its members, so an
@@ -1739,18 +1759,29 @@ class Reader:
         """Every address any version of the member list named, as a member or a
         removal, found by walking the list's own history: the version before one
         last changed at block B is the list as it stood at B - 1 (arkiv_getEntity
-        with a block, free). None if a version could not be read or opened; a walk
-        cut short by the read limit keeps what it found and sets audit_narrowed."""
+        with a block, free). None if the walk stopped early: a version could not be
+        read or opened, or the list has more versions than the read limit (an owner
+        can renew it once a block to make one). The addresses found before stopping
+        are kept in listed_so_far, for the caller's fallback."""
         if self.acl_entity is None:
             return None
         out = set(today)
-        version = self.source.entity(self.acl_entity.key)
+        self.listed_so_far = sorted(out)
+
+        def stop() -> None:
+            self.listed_so_far = sorted(out)
+            return None
+
+        try:
+            version = self.source.entity(self.acl_entity.key)
+        except (OSError, qa.RpcError, ValueError):
+            return stop()
         reads = 1
         changed_at = lambda e: e.updated_at if e.updated_at is not None else e.created_at
         while version is not None:
             if reads >= 2000:
-                self.audit_narrowed = True
-                return sorted(out)
+                self.list_walk_cut = True
+                return stop()
             changed = changed_at(version)
             if changed <= version.created_at:
                 return sorted(out)
@@ -1759,17 +1790,17 @@ class Reader:
             before = self.past_acl(changed - 1)
             reads += 1
             if before is False:
-                return None
+                return stop()
             if before is None:
                 return sorted(out)
             if changed_at(before) >= changed:
-                return None  # a source without history answers with today's version again
+                return stop()  # a source without history answers with today's version again
             try:
                 roster = self.roster(self.parse_acl(before))
             except Exception:
-                return None
+                return stop()
             if roster is None:
-                return None
+                return stop()
             members, _added, revoked = membership(roster)
             out |= set(members) | set(revoked)
             version = before
@@ -1818,9 +1849,15 @@ class Reader:
             # under the document id, so that read stops after AUDIT_PAGES pages and falls back to the
             # filter, saying so.
             found, complete = self.source.all_updates(self.link.doc, AUDIT_PAGES)
-            if not complete:
+            if complete:
+                candidates = found
+            else:
+                # too much to read unfiltered: at least read everyone the cut-short walk found
                 self.audit_narrowed = True
-            candidates = found if complete else self.source.by_kind(self.link.doc, "u", members, 0, self.qs_ceiling, all_bounds)
+                candidates = self.source.by_kind(self.link.doc, "u", members, 0, self.qs_ceiling, all_bounds)
+                extra = [a for a in self.listed_so_far if a not in members and a not in all_bounds]
+                for i in range(0, len(extra), 64):
+                    candidates.extend(self.source.by_kind(self.link.doc, "u", extra[i:i + 64], 0, self.qs_ceiling))
         else:
             candidates = self.source.by_kind(self.link.doc, "u", members, min_qs, self.qs_ceiling, bounds)
         for e in candidates:
@@ -1967,6 +2004,7 @@ class Reader:
         raw_members = roster.get("members") if isinstance(roster.get("members"), list) else []
         revoked = [r for r in (roster.get("revoked") or []) if isinstance(r, dict)]
         members, self.added_at, self.revoked_at = membership(roster)
+        self.today = sorted(set(members) | set(self.revoked_at))  # today's list: members and removals
 
         # Read snapshots, then updates; if the updates show a snapshot must be
         # refused, start over without it; its creator then contributes no snapshot.
@@ -2219,6 +2257,14 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
             lines.append(f"recreated    {len(older)} entities predate this member list (created at block {ae.created_at}),"
                          f" written by {', '.join(writers)}: the owner deleted the list and made a new one"
                          f" under the same link. Read the earlier document with --at {ae.created_at - 1}")
+        if reader.source.has_history and reader.today is not None:
+            today = set(reader.today)
+            ever = reader.ever_listed(sorted(today))
+            erased = sorted(set(ever if ever is not None else reader.listed_so_far) - today)
+            if erased:
+                lines.append(f"erased       {', '.join(erased)}: named by an earlier version of the member list, missing"
+                             f" from today's. Run with --audit to prove what they wrote while members")
+        lines.extend(audit_warnings(reader))
         lines.append(f"acl flags    {qa.flags_text(ae)}  expected not readonly, extended by its owner:"
                      f" {_yes(not qa.check_flags(ae))}")
     lines.append(f"schemas      {reader.schemas.status}")
@@ -2382,7 +2428,20 @@ def main(argv: Iterable[str] | None = None) -> int:
     log(f"epoch keys: {result.epochs}; applied {len(result.applied)} entities")
     if result.text:
         print(result.text)
+    for line in audit_warnings(reader):
+        print(line, file=sys.stderr)
     return 0
+
+
+def audit_warnings(reader: Reader) -> list[str]:
+    """What an audit could not check, said in plain text as well as in --json."""
+    out = []
+    if reader.audit_narrowed:
+        why = "the member list has more versions than a walk reads" if reader.list_walk_cut else "the member list's history could not be read in full"
+        out.append(f"audit narrowed: {why}, and the document holds more entities than the audit reads unfiltered, so someone the owner erased may be missing")
+    if reader.audit_unchecked:
+        out.append(f"audit unchecked: {reader.audit_unchecked} edits were judged by today's member list because the list at their block could not be read")
+    return out
 
 
 if __name__ == "__main__":

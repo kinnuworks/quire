@@ -117,7 +117,7 @@ async function main() {
         : { address: undefined, head: () => store.head(), batch: (b) => store.batch(b), predictKeys: (n) => store.predictKeys(n), query: (q) => store.query(q), get: (k, b) => store.get(k, b), watch: () => () => undefined }
   // every command checks members at each edit's block (the provider's default), so read, verify, blame
   // and the app all reach the same verdict
-  const provider = new ArkivProvider(doc, { store: reads, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit })
+  const provider = new ArkivProvider(doc, { store: reads, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit, readPatienceMs: audit ? 61_000 : 0 })
   // a refused WebSocket (the gateway rate-limits handshakes) only matters to watch; say so once, quietly
   let warned = false
   provider.on("error", () => {
@@ -239,7 +239,7 @@ async function main() {
  */
 function recreated(provider: ArkivProvider, older: StoredEntity[]): string {
   if (!older.length && provider.predatingTruncated) {
-    return `recreated  not checked to the end: over 1,000 entities are stamped before this member list (made at block ${provider.aclCreatedAt}), and none of the first 1,000 of a kind is older than it`
+    return `recreated  no earlier member list from the owner; not checked to the end for older edits: over 200 entities are stamped before this member list (made at block ${provider.aclCreatedAt}), and none of the first 200 of a kind is older than it`
   }
   if (!older.length) return ""
   const writers = [...new Set(older.map((e) => e.creator.toLowerCase()))]

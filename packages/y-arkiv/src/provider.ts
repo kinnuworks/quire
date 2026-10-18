@@ -71,7 +71,7 @@ export type RemoteEdit = {
 export type HistoryEntry = { block: bigint; author: Hex; update: Uint8Array; entity: Hex }
 
 /** `via`: for claimed authorship, the member whose snapshot carried it. */
-export type Authorship = { address: Hex; proven: boolean; via?: Hex }
+export type Authorship = { address: Hex; proven: boolean; via?: Hex; pending?: boolean }
 
 export type FlushInfo = { txHash: Hex; block: bigint; bytes: number; entity: Hex }
 
@@ -109,6 +109,12 @@ export type ProviderOptions = {
    * one query plus more pages; every edit still on chain then counts as proven. For audits.
    */
   fullHistory?: boolean
+  /**
+   * How long an audit waits for a rate-limited read before trying again (three more times). The public
+   * gateway allows about 600 reads by key a minute, so a command-line audit of a long member-list history
+   * can wait the minute out; the app leaves it at 0 and says when its check was cut short.
+   */
+  readPatienceMs?: number
   /**
    * Never write: no lease renewal, no compaction. For audits that read as a member (an identity
    * unwraps the current key) without touching the document.
@@ -236,15 +242,17 @@ export class ArkivProvider extends Observable<string> {
    * whether the list existed then (null if it did not).
    */
   private async pastAclEntity(block?: bigint): Promise<StoredEntity | null | undefined> {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const attempts = this.readPatienceMs > 0 ? 6 : 3
+    for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         return await this.store.get(this.aclKey!, block)
       } catch {
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
+        if (attempt < attempts - 1) await new Promise((r) => setTimeout(r, attempt < 2 ? 500 * 2 ** attempt : this.readPatienceMs))
       }
     }
     return undefined
   }
+  private readonly readPatienceMs: number
 
   private async openPastAcl(past: StoredEntity | null): Promise<Acl | null> {
     try {
@@ -264,39 +272,57 @@ export class ArkivProvider extends Observable<string> {
   private async everListed(): Promise<Hex[] | null> {
     if (!this.aclKey || !this.acl) return null
     const out = new Set<Hex>(updateAuthors(this.acl).map((a) => a.toLowerCase() as Hex))
+    // whatever the walk found before it stopped, for a reader that cannot do better
+    const stop = () => {
+      this.listedSoFar = [...out]
+      return null
+    }
     let version = await this.pastAclEntity()
+    if (version === undefined) return stop()
+    if (version && this.walked?.at === version.updatedAt) return this.walked.result
+    const at = version?.updatedAt
     let reads = 1
     while (version) {
-      // a history too long to walk within the read limit: keep every address found so far, and say so
+      // a history too long to walk within the read limit (an owner can renew the list once a block to
+      // make one): the caller falls back to reading every edit, and says if even that was cut short
       if (reads >= 2000) {
-        this.auditNarrowed = true
-        return [...out]
+        this.listWalkCut = true
+        return stop()
       }
-      if (version.updatedAt <= version.createdAt) return [...out]
+      if (version.updatedAt <= version.createdAt) break
       // every version, one block before the next change: a shortcut that trusted the list's own qs stamp
       // or payload bytes would let an owner who replays an old version skip the ones in between
       const before = await this.pastAclEntity(version.updatedAt - 1n)
       reads++
-      if (before === undefined) return null
-      if (before === null) return [...out]
+      if (before === undefined) return stop()
+      if (before === null) break
       // a store without history answers with today's version again: the walk cannot go back
-      if (before.updatedAt >= version.updatedAt) return null
+      if (before.updatedAt >= version.updatedAt) return stop()
       const acl = await this.openPastAcl(before)
-      if (!acl || acl.rosterHidden) return null
+      if (!acl || acl.rosterHidden) return stop()
       for (const a of updateAuthors(acl)) out.add(a.toLowerCase() as Hex)
       version = before
     }
-    return [...out]
+    const result = [...out]
+    if (at !== undefined) this.walked = { at, result }
+    return result
   }
+  /** The last complete walk, by the block today's member list last changed, so one session walks once. */
+  private walked?: { at: bigint; result: Hex[] }
+  /** Addresses a walk that stopped early had found. */
+  private listedSoFar: Hex[] = []
+  /** True if a walk hit its read limit: the member list has more versions than a reader will read. */
+  listWalkCut = false
 
   /**
    * Addresses an earlier version of the member list named that today's list leaves out entirely,
-   * neither members nor removals: people the owner erased. Empty if the list's history cannot be read.
+   * neither members nor removals: people the owner erased. If the walk stopped early (listWalkCut, or a
+   * read failed), only those it had found.
    */
   async erasedMembers(): Promise<Hex[]> {
     if (!this.acl) return []
     const today = new Set(updateAuthors(this.acl).map((a) => a.toLowerCase()))
-    return ((await this.everListed()) ?? []).filter((a) => !today.has(a))
+    return ((await this.everListed()) ?? this.listedSoFar).filter((a) => !today.has(a))
   }
 
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
@@ -360,6 +386,7 @@ export class ArkivProvider extends Observable<string> {
     this.now = options.now ?? Date.now
     this.autoCompact = options.autoCompact ?? true
     this.fullHistory = options.fullHistory ?? false
+    this.readPatienceMs = options.readPatienceMs ?? 0
     this.readOnly = options.readOnly ?? false
     this.membershipAtBlock = options.membershipAtBlock ?? true
     // each resync and each compaction costs one query from the keyless budget (about 100 per IP per window)
@@ -693,7 +720,17 @@ export class ArkivProvider extends Observable<string> {
     }
     if (!cursor) return { entities: out, block: first.block }
     this.auditNarrowed = true
-    return queryAll(this.store, filtered)
+    // too much to read unfiltered: at least read everyone the cut-short walk found, not only today's list
+    const extra = this.listedSoFar.filter((a) => !filtered.creators.some((c) => c.toLowerCase() === a))
+    if (!extra.length) return queryAll(this.store, filtered)
+    const entities: StoredEntity[] = [...(await queryAll(this.store, filtered)).entities]
+    let block = first.block
+    for (let i = 0; i < extra.length; i += 64) {
+      const page = await queryAll(this.store, { ...filtered, creators: extra.slice(i, i + 64), creatorBounds: undefined })
+      entities.push(...page.entities)
+      block = page.block
+    }
+    return { entities, block }
   }
 
   /**
@@ -899,12 +936,14 @@ export class ArkivProvider extends Observable<string> {
    * has proven edits elsewhere.
    */
   authorOfItem(client: number, clock: number, length = 1): Authorship | undefined {
-    const mine = client === this.doc.clientID && this.identity
     // Yjs merges adjacent items from one client, so check the item's whole clock range
-    const inRange = mine || this.coveredByProven(client, clock, clock + length)
+    const inRange = this.coveredByProven(client, clock, clock + length)
     const address = this.authors.get(client) ?? this.claimedAuthors.get(client)
     if (!address) return undefined
-    return inRange ? { address, proven: true } : { address, proven: false, via: this.carrierOf(client, clock) ?? this.claimedVia.get(client) }
+    if (inRange) return { address, proven: true }
+    // our own text that has not landed (or landed after we were removed) is pending, not proven
+    if (client === this.doc.clientID && this.identity) return { address, proven: false, pending: true }
+    return { address, proven: false, via: this.carrierOf(client, clock) ?? this.claimedVia.get(client) }
   }
 
   /**
@@ -1431,7 +1470,14 @@ export class ArkivProvider extends Observable<string> {
       this.stats.writes++
       const entity = result.created[0]!
       this.seen.add(entity)
-      if (this.identity) this.pushHistory({ block: result.block, author: this.identity.address.toLowerCase() as Hex, update: merged, entity })
+      // our own edit is proven like anyone's: only once it landed, and only if we were a member at its
+      // block (a removed member's tab can still write, but no reader accepts it)
+      if (this.identity && this.acl && !this.acl.rosterHidden && wroteAsMember(this.acl, this.identity.address, result.block)) {
+        this.pushHistory({ block: result.block, author: this.identity.address.toLowerCase() as Hex, update: merged, entity })
+        const ranges: [number, number, number][] = []
+        for (const st of Y.decodeUpdate(merged).structs) if (st instanceof Y.Item) ranges.push([st.id.client, st.id.clock, st.id.clock + st.length])
+        this.markProven(ranges, result.block, entity)
+      }
       this.updatesSinceSnapshot++
       this.bytesSinceSnapshot += merged.length
       const info: FlushInfo = { txHash: result.txHash, block: result.block, bytes: payload.length, entity }
@@ -1914,33 +1960,28 @@ export class ArkivProvider extends Observable<string> {
    * spend every reader's query budget. `outsidersTruncated` says when the page was full.
    */
   /**
-   * Edits and snapshots written before the member list in use, found with one query on `qs` (a valid
-   * entity's qs is at most its block, so anything stamped before the list could predate it) and checked
-   * by `createdAt`. Any at all means the owner deleted the list and made a new one under the same link;
-   * later writing cannot push them out of view, since they are the only entities stamped that early.
+   * Evidence that the owner deleted the member list and made a new one under the same link. First, an
+   * earlier list from the owner, read as the chain stood just before today's was made: one query that
+   * junk cannot crowd, since only the owner's lists match, and it still answers after the earlier
+   * document's edits expire. Then edits and snapshots stamped before today's list (a valid entity's qs is
+   * at most its block), one page of each, checked by `createdAt`, to name the earlier writers. Anyone can
+   * stamp junk that early, so a full page with nothing older sets predatingTruncated instead of paging on.
    */
   async predatingEntities(): Promise<StoredEntity[]> {
     if (this.aclCreatedAt === 0n) return []
-    // edits and snapshots only, page after page until one older than the list turns up: junk stamped
-    // early cannot push the evidence off a single page. Five pages at most, and predatingTruncated says so.
     this.predatingTruncated = false
+    const lists = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], atBlock: this.aclCreatedAt - 1n, limit: 1 })
+    const earlier = lists.entities.filter((e) => e.createdAt < this.aclCreatedAt)
     for (const kind of [KIND.update, KIND.snapshot]) {
-      let cursor: string | undefined
-      let block: bigint | undefined
-      for (let pages = 0; pages < 5; pages++) {
-        const page = await this.store.query({ doc: this.link.doc, kind, seqLte: this.aclCreatedAt - 1n, limit: 200, cursor, atBlock: block })
-        block ??= page.block
-        const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)
-        if (older.length) return older
-        cursor = page.cursor
-        if (!cursor) break
-        if (pages === 4) this.predatingTruncated = true
-      }
+      const page = await this.store.query({ doc: this.link.doc, kind, seqLte: this.aclCreatedAt - 1n, limit: 200 })
+      const older = page.entities.filter((e) => e.createdAt < this.aclCreatedAt)
+      if (older.length) return [...earlier, ...older]
+      if (page.cursor) this.predatingTruncated = true
     }
-    return []
+    return earlier
   }
 
-  /** predatingEntities read its five pages of one kind without finding an older entity, and there were more. */
+  /** A page of entities stamped before the member list held nothing older, and there were more. */
   predatingTruncated = false
 
   async outsiderEntities(): Promise<StoredEntity[]> {

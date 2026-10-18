@@ -94,7 +94,7 @@ export const AuthorshipBars = Extension.create<{ doc: Y.Doc; provider: () => Ark
                 Decoration.node(offset, offset + node.nodeSize, {
                   class: list.some((a) => !a.proven) ? "authored claimed" : "authored",
                   style: `--author-bar: linear-gradient(to bottom, ${stops.join(", ")})`,
-                  title: list.map((a) => `${a.address}${a.proven ? " (checked live)" : ` (claimed in a snapshot by ${a.via ?? "a member"})`}`).join("\n"),
+                  title: list.map((a) => `${a.address}${a.proven ? " (checked live)" : a.pending ? " (not on chain yet)" : ` (claimed in a snapshot by ${a.via ?? "a member"})`}`).join("\n"),
                 }),
               )
             })

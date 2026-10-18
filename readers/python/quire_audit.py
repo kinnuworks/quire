@@ -355,6 +355,8 @@ def check_flags(e: Entity) -> list[str]:
     elif e.kind == "a":
         if ro:
             problems.append("acl is readonly, so the owner could never update the member list")
+        if pe and e.created_at >= 722_300:
+            problems.append("acl created after member lists became owner-only (block 722,300) still lets anyone extend it")
     else:
         if pe:
             problems.append(f"{name} allows permissionless extension")

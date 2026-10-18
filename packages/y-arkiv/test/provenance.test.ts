@@ -1324,3 +1324,23 @@ describe("an owner who replays or recreates the member list", () => {
     reader.destroy()
   })
 })
+
+describe("member lists after the owner-only cutoff", () => {
+  it("a list anyone can extend, created after the cutoff block, does not count", async () => {
+    const chain = new MemoryChain()
+    chain.mine(722_400)
+    const owner = identity("owner")
+    const link: DocLink = { doc: `0x${bytesToHex(randomBytes(32))}`, secret: randomBytes(32), owner: owner.address }
+    const base = chain.store(owner.address)
+    // an old client's create: the member list allows permissionless extension
+    const open: ArkivStore = { ...base, batch: (spec) => base.batch({ ...spec, creates: spec.creates?.map((c) => (c.attributes.kind === KIND.acl ? { ...c, permissionlessExtension: true } : c)) }) }
+    await ArkivProvider.createDocument({ store: open, link, identity: owner })
+    chain.mine()
+    await expect(peer(chain, link, undefined)).rejects.toThrow(/document not found/)
+    // the same document made by a current client opens
+    const link2: DocLink = { ...link, doc: `0x${bytesToHex(randomBytes(32))}` }
+    await ArkivProvider.createDocument({ store: base, link: link2, identity: owner })
+    chain.mine()
+    expect((await peer(chain, link2, undefined)).provider.acl).not.toBeNull()
+  })
+})

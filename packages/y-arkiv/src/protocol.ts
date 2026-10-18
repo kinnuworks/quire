@@ -53,6 +53,13 @@ export const LIFETIME = {
   version: 365 * 24 * 3600,
 } as const
 
+/**
+ * Tiramisu block from which member lists are owner-only (no permissionless extension): the rule
+ * landed on 18 October 2026 at 03:07 UTC and this block is just after it was deployed. Readers ignore
+ * an ACL created at or after it that still lets anyone extend it.
+ */
+export const OWNER_ONLY_ACL_FROM_BLOCK = 722_300n
+
 /** How far before the snapshot's base we start reading updates, in blocks. Covers in-flight writes. */
 export const CATCH_UP_MARGIN_BLOCKS = 60n
 

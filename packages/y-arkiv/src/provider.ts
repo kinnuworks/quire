@@ -32,6 +32,7 @@ import { bytesToHex, fromBase64Url, hexToBytes, toBase64Url } from "./hex.js"
 import type { DocLink, VersionLink } from "./link.js"
 import {
   CATCH_UP_MARGIN_BLOCKS,
+  OWNER_ONLY_ACL_FROM_BLOCK,
   COMPACT_AFTER_BYTES,
   COMPACT_AFTER_UPDATES,
   FLUSH_INTERVAL_MS,
@@ -535,6 +536,8 @@ export class ArkivProvider extends Observable<string> {
 
   private async applyAclEntity(entity: StoredEntity): Promise<void> {
     if (entity.creator.toLowerCase() !== this.link.owner.toLowerCase()) return
+    // owner-only lists from the cutoff on: a newer list anyone can extend breaks the rule, so it does not count
+    if (entity.permissionlessExtension && entity.createdAt >= OWNER_ONLY_ACL_FROM_BLOCK) return
     const frame = await this.openEntity(entity, KIND.acl)
     if (!frame) return
     // unwrap the current epoch key first if this session is a member: it opens the sealed roster

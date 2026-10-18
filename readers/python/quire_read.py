@@ -37,6 +37,7 @@ from quire_audit import Entity
 
 SALT = b"quire/v1"
 SNAPSHOT_WINDOW = 60  # blocks, section 5 steps 3 and 4
+OWNER_ONLY_ACL_FROM_BLOCK = 722_300  # Tiramisu block from which an ACL with permissionless extension is ignored
 LEASE_BLOCKS = 30 * 24 * 3600 // 2  # a 30-day lease at 2-second blocks
 EXPIRY_SLACK_BLOCKS = 300  # ten minutes, for the gap between a writer's head and a reader's
 FRAME_FIXED = 48  # 'QF' | ver | kind | doc(32) | epoch | hlen | dlen
@@ -1365,6 +1366,9 @@ class Reader:
         for e in sorted(self.source.acl(self.link.doc, self.link.owner), key=lambda x: (x.created_at, x.key)):
             if e.creator != self.link.owner:  # never trust another creator
                 self._ignore(e, "ACL not created by the owner")
+                continue
+            if e.permissionless_extension and e.created_at >= OWNER_ONLY_ACL_FROM_BLOCK:
+                self._ignore(e, "ACL created after member lists became owner-only still lets anyone extend it")
                 continue
             try:
                 header = decrypt_frame(e, mkey, self.link.doc).header

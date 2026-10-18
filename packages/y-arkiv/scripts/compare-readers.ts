@@ -17,7 +17,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
-import { blame } from "../src/blame.js"
+import { blame, earlierWriters } from "../src/blame.js"
 import { parseDocLink } from "../src/link.js"
 import { ArkivProvider, atBlockStore } from "../src/provider.js"
 import { SdkStore } from "../src/sdk.js"
@@ -31,7 +31,10 @@ const demo = JSON.parse(readFileSync(`${root}arkiv/demo.json`, "utf8"))
 const vectorsPath = `${root}spec/vectors/document.json`
 const vectors = JSON.parse(readFileSync(vectorsPath, "utf8"))
 
-type Verdict = { text: string; applied: string[]; outsiders: string[]; proven: Record<string, number> }
+// copied: the "typed first by someone else" verdicts, compared on audits only
+type Verdict = { text: string; applied: string[]; outsiders: string[]; proven: Record<string, number>; copied?: string[] }
+const copyLine = (w: { address: string; first: string; block: string | bigint; from: string | bigint; to: string | bigint; text: string }) =>
+  `${w.address} at ${w.block} copied ${w.first} (${w.from} to ${w.to}): ${w.text.replace(/\s+/g, " ").trim()}`
 
 function plain(doc: Y.Doc): string {
   const walk = (n: unknown): string =>
@@ -55,14 +58,15 @@ async function typescript(store: ArkivStore, link: string, memberKey?: Hex, audi
   // characters proven per address, from blame: who wrote what, as each reader would testify
   const proven: Record<string, number> = {}
   for (const run of blame(doc, p).flat()) if (run.proven && run.address) proven[run.address] = (proven[run.address] ?? 0) + run.text.length
+  const copied = audit ? earlierWriters(doc, p).map(copyLine).sort() : undefined
   p.destroy()
-  return { text: plain(doc), applied: [...p.appliedKeys].sort(), outsiders: outsiders.sort(), proven: Object.fromEntries(Object.entries(proven).sort()) }
+  return { text: plain(doc), applied: [...p.appliedKeys].sort(), outsiders: outsiders.sort(), proven: Object.fromEntries(Object.entries(proven).sort()), copied }
 }
 
 function pythonReader(args: string[]): Verdict {
   const out = execFileSync(python, [`${root}readers/python/quire_read.py`, "--json", ...args], { encoding: "utf8", env: process.env })
-  const v = JSON.parse(out) as { text: string; applied: string[]; ignored: [string, string][]; proven: Record<string, number> }
-  return { text: v.text, applied: v.applied.sort(), outsiders: v.ignored.filter(([, r]) => r === "creator not in ACL").map(([k]) => k).sort(), proven: v.proven }
+  const v = JSON.parse(out) as { text: string; applied: string[]; ignored: [string, string][]; proven: Record<string, number>; copied?: Parameters<typeof copyLine>[0][] }
+  return { text: v.text, applied: v.applied.sort(), outsiders: v.ignored.filter(([, r]) => r === "creator not in ACL").map(([k]) => k).sort(), proven: v.proven, copied: v.copied?.map(copyLine).sort() }
 }
 
 const cases: { name: string; ts: () => Promise<Verdict>; py: () => Verdict }[] = [
@@ -105,6 +109,7 @@ for (const c of cases) {
   const [ts, py] = [await c.ts(), c.py()]
   const diffs: string[] = []
   if (ts.text !== py.text) diffs.push(`text\n    ts: ${JSON.stringify(ts.text)}\n    py: ${JSON.stringify(py.text)}`)
+  if (ts.copied && JSON.stringify(ts.copied) !== JSON.stringify(py.copied)) diffs.push(`typed first by someone else\n    ts: ${JSON.stringify(ts.copied)}\n    py: ${JSON.stringify(py.copied)}`)
   if (JSON.stringify(ts.proven) !== JSON.stringify(py.proven)) diffs.push(`proven characters per address\n    ts: ${JSON.stringify(ts.proven)}\n    py: ${JSON.stringify(py.proven)}`)
   for (const field of ["applied", "outsiders"] as const) {
     const only = (a: string[], b: string[]) => a.filter((k) => !b.includes(k))
@@ -112,7 +117,7 @@ for (const c of cases) {
     const pyOnly = only(py[field], ts[field])
     if (tsOnly.length || pyOnly.length) diffs.push(`${field}: only ts ${JSON.stringify(tsOnly)}, only py ${JSON.stringify(pyOnly)}`)
   }
-  console.log(`${diffs.length ? "DIFFER" : "agree "}  ${c.name}: ${ts.text.split("\n").filter(Boolean).length} lines, ${ts.applied.length} applied, ${ts.outsiders.length} outside writes rejected`)
+  console.log(`${diffs.length ? "DIFFER" : "agree "}  ${c.name}: ${ts.text.split("\n").filter(Boolean).length} lines, ${ts.applied.length} applied, ${ts.outsiders.length} outside writes rejected${ts.copied?.length ? `, ${ts.copied.length} typed first by someone else` : ""}`)
   for (const d of diffs) console.log(`    ${d}`)
   if (diffs.length) failed++
 }

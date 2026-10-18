@@ -70,7 +70,7 @@ answers 403 to Python's default one.
 .venv/bin/python quire_read.py --vectors ../../spec/vectors/document.json \
     --member-key 0x2222222222222222222222222222222222222222222222222222222222222222
 .venv/bin/python quire_read.py --link 'https://<app>/#/d/<doc>.<secret>.<owner>' \
-    [--member-key 0x<64 hex>] [--own-salt <32 hex>] [--rpc URL] [--verify] [--no-schema] [-v]
+    [--member-key 0x<64 hex>] [--own-salt <32 hex>] [--rpc URL] [--audit] [--at <block>] [--json] [--verify] [--no-schema] [-v]
 .venv/bin/python quire_read.py --version-link 'https://<app>/#/v/<key>.<version key>' \
     [--rpc URL] [--verify]
 ```
@@ -90,6 +90,15 @@ version key from the link, and checks the frame against the entity's own
 `qd`, since the link carries no document id. It carries no link secret either, so the reader cannot open
 the ACL and cannot say whether the version's creator is a member. The
 `--verify` report for a version says so.
+
+`--audit` reads every edit still on chain and checks each author against the
+member list as it stood at that edit's block. It also prints, to stderr, a
+`copied` line for each passage of 24 or more characters that a different
+member held first: it replays the verified edits block by block, notes which
+member's own contiguous text held each passage (whitespace collapsed), and
+flags a passage only if someone else held it before its own author ever did.
+With `--json` the same verdicts are in `copied`. `--at <block>` reads the
+document as it stood at that block.
 
 `-v` logs each ignored entity and the reason to stderr. Output is the
 XmlFragment `default`, one line per top-level element, with the text children

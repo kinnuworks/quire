@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from pycrdt import Doc, Text, XmlElement, XmlFragment, XmlText
+from pycrdt import Assoc, Doc, Text, XmlElement, XmlFragment, XmlText
 
 import quire_audit as qa
 from quire_audit import Entity
@@ -857,6 +857,252 @@ def text_ranges(state: bytes, verified: Verified, carriers: list[tuple[str, list
     return out
 
 
+# ---------------------------------------------------------------- earlier writers
+
+
+def _uint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def _text_root(client: int, clock: int) -> str:
+    return f"\x00text:{client}:{clock}"
+
+
+class _Placed:
+    """Which text node each clock range went into, so a later struct that only
+    names its neighbours (origin, right origin) or a deletion can be placed."""
+
+    def __init__(self) -> None:
+        self.ranges: dict[int, list[tuple[int, int, str]]] = defaultdict(list)
+
+    def add(self, client: int, start: int, end: int, name: str) -> None:
+        self.ranges[client].append((start, end, name))
+
+    def at(self, client: int, clock: int) -> str | None:
+        for start, end, name in self.ranges.get(client, ()):
+            if start <= clock < end:
+                return name
+        return None
+
+
+def relocate_text(update: bytes, placed: _Placed) -> tuple[bytes, set[str]]:
+    """A copy of a Yjs v1 update in which every string item whose written parent
+    is a type (an XmlText inside the Tiptap fragment) has that parent rewritten
+    as a root-level Text named after the XmlText's id. pycrdt can then report,
+    for each visible character, the client and clock of the item behind it
+    (Text.sticky_index), which XmlText does not offer. Returns the copy and the
+    names of the text nodes this update wrote to or deleted from."""
+    c = _Cursor(update)
+    out = bytearray()
+    touched: set[str] = set()
+    mark = 0
+
+    def flush(upto: int) -> None:
+        nonlocal mark
+        out.extend(update[mark:upto])
+        mark = upto
+
+    for _ in range(c.uint()):
+        n_structs, client, clock = c.uint(), c.uint(), c.uint()
+        for _ in range(n_structs):
+            info = c.u8()
+            ref = info & 0x1F
+            if ref in (0, 10):
+                clock += c.uint()
+                continue
+            origin = right = None
+            if info & 0x80:
+                origin = (c.uint(), c.uint())
+            if info & 0x40:
+                right = (c.uint(), c.uint())
+            name: str | None = None
+            if not info & 0xC0:
+                start = c.pos
+                if c.uint() == 1:
+                    name = c.string()
+                else:
+                    pc, pk = c.uint(), c.uint()
+                    # only text content moves; a type item keeps its place in the tree
+                    if info & 0x1F in (4, 5, 6):
+                        name = _text_root(pc, pk)
+                        flush(start)
+                        raw = name.encode("utf-8")
+                        out.extend(_uint(1) + _uint(len(raw)) + raw)
+                        mark = c.pos
+                if info & 0x20:
+                    c.string()
+            else:
+                name = (placed.at(*origin) if origin else None) or (placed.at(*right) if right else None)
+            length, _units, _text = _content(c, ref)
+            if name is not None:
+                placed.add(client, clock, clock + length, name)
+                touched.add(name)
+            clock += length
+    for _ in range(c.uint()):  # delete set
+        client = c.uint()
+        for _ in range(c.uint()):
+            start, length = c.uint(), c.uint()
+            for clk in range(start, start + length):
+                name = placed.at(client, clk)
+                if name is not None:
+                    touched.add(name)
+    flush(len(update))
+    return bytes(out), touched
+
+
+def _collapse(text: str) -> tuple[str, list[int]]:
+    """Whitespace runs collapsed to one space and trimmed, with where each kept character came from."""
+    kept: list[str] = []
+    index: list[int] = []
+    for i, ch in enumerate(text):
+        space = ch.isspace()
+        if space and (not kept or kept[-1] == " "):
+            continue
+        kept.append(" " if space else ch)
+        index.append(i)
+    if kept and kept[-1] == " ":
+        kept.pop()
+        index.pop()
+    return "".join(kept), index
+
+
+@dataclass
+class EarlierWriter:
+    """A passage whose words a different member held first (see earlier_writers)."""
+
+    text: str
+    address: str
+    block: int
+    first: str
+    from_block: int
+    to_block: int
+
+    def as_json(self) -> dict[str, Any]:
+        return {"text": self.text, "address": self.address, "block": str(self.block),
+                "first": self.first, "from": str(self.from_block), "to": str(self.to_block)}
+
+
+def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[EarlierWriter]:
+    """Passages whose words a different member held first, as the TypeScript
+    reader's earlierWriters finds them. A member can delete someone else's
+    paragraph and paste the same words back as their own edit; the copy is then
+    proven, correctly, as theirs. This replays the accepted updates in block
+    order and, after each block, notes which member's own contiguous text held
+    each passage, comparing with whitespace collapsed. A passage is flagged only
+    if someone else held it before its own author ever did, so a member who
+    pastes a copy and deletes it at once cannot make the real author look like
+    the copier. Passages under 24 characters are not checked."""
+    ordered = sorted(updates, key=lambda u: (u[0].created_at, u[0].key))
+    author_of: dict[int, str] = {}
+    where: dict[int, list[tuple[int, int, int, str]]] = defaultdict(list)
+    for e, _data, structs in ordered:
+        for st in structs:
+            if st.ref in (0, 10):
+                continue
+            author_of[st.client] = e.creator
+            where[st.client].append((st.clock, st.end, e.created_at, e.key))
+
+    def proof(client: int, clock: int) -> tuple[int, str] | None:
+        for start, end, block, key in where.get(client, ()):
+            if start <= clock < end:
+                return block, key
+        return None
+
+    placed = _Placed()
+    replay = Doc()
+    by_block: dict[int, list[bytes]] = defaultdict(list)
+    touched_at: dict[int, set[str]] = defaultdict(set)
+    for e, data, _structs in ordered:
+        moved, touched = relocate_text(data, placed)
+        by_block[e.created_at].append(moved)
+        # plain `t` text and the relocated text nodes; the fragment's own tree holds no characters now
+        touched_at[e.created_at] |= {n for n in touched if n == "t" or n.startswith("\x00text:")}
+
+    def segments(name: str) -> list[tuple[str, list[tuple[str, int, int]]]]:
+        """One text node's visible characters cut into runs of one member's, in order."""
+        text = replay.get(name, type=Text)
+        visible = str(text)
+        out: list[tuple[str, list[tuple[str, int, int]]]] = []
+        for i, ch in enumerate(visible):
+            item = text.sticky_index(i, Assoc.AFTER).to_json().get("item") or {}
+            client, clock = item.get("client"), item.get("clock")
+            author = author_of.get(client) if client is not None else None
+            if author is None:
+                out.append(("", []))
+                continue
+            if not out or out[-1][0] != author:
+                out.append((author, []))
+            out[-1][1].append((ch, client, clock))
+        return [(a, chars) for a, chars in out if a]
+
+    # first pass: replay to the end to find the passages to check, as the document reads now
+    current: dict[str, list[tuple[str, list[tuple[str, int, int]]]]] = {}
+    history: list[tuple[int, dict[str, list[tuple[str, list[tuple[str, int, int]]]]]]] = []
+    for block in sorted(by_block):
+        for moved in by_block[block]:
+            try:
+                replay.apply_update(moved)
+            except Exception:
+                continue
+        changed = {name: segments(name) for name in touched_at[block]}
+        current.update(changed)
+        history.append((block, changed))
+
+    targets: list[tuple[str, str, int, str]] = []  # (run text, author, block, key)
+    for name in sorted(current):
+        for author, chars in current[name]:
+            run: list[tuple[str, int, int]] = []
+            run_proof: tuple[int, str] | None = None
+            for ch, client, clock in chars + [("", -1, -1)]:
+                p = proof(client, clock) if client >= 0 else None
+                if run and (client < 0 or p != run_proof):
+                    text = "".join(x[0] for x in run)
+                    if run_proof is not None and len(_collapse(text)[0]) >= 24:
+                        targets.append((text, author, run_proof[0], text))
+                    run = []
+                if client >= 0:
+                    if not run:
+                        run_proof = p
+                    run.append((ch, client, clock))
+    if not targets:
+        return []
+    keys = [_collapse(t[0])[0] for t in targets]
+    held: list[dict[str, tuple[int, int]]] = [{} for _ in targets]
+    for block, changed in history:
+        for segs in changed.values():
+            for author, chars in segs:
+                text, index = _collapse("".join(ch for ch, _c, _k in chars))
+                for i, key in enumerate(keys):
+                    if author in held[i]:
+                        continue
+                    at = text.find(key)
+                    if at < 0:
+                        continue
+                    first = block
+                    for k in range(at, at + len(key)):
+                        _ch, client, clock = chars[index[k]]
+                        p = proof(client, clock)
+                        if p is not None and p[0] < first:
+                            first = p[0]
+                    held[i][author] = (block, first)
+    out: list[EarlierWriter] = []
+    for (text, author, block, _key), h in zip(targets, held):
+        own = h.get(author, (block, block))[0]
+        earlier = sorted((at, who, fr) for who, (at, fr) in h.items() if who != author and at < own)
+        if earlier:
+            at, who, fr = earlier[0]
+            out.append(EarlierWriter(text, author, block, who, fr, at))
+    return out
+
+
 # ---------------------------------------------------------------- sources
 
 
@@ -1303,6 +1549,7 @@ class Reader:
         self.listed_so_far: list[str] = []  # addresses a member-list walk found before it stopped early
         self.list_walk_cut = False  # the member list has more versions than a walk reads
         self.today: list[str] | None = None  # set once today's roster is open
+        self.accepted_updates: list[tuple[Entity, bytes, list[Struct]]] = []  # the verified edits, for earlier_writers
         # Section 5: a valid entity's qs is at most the block it landed in, so readers fetch qs <= head + 60;
         # far-future junk never enters a query, whoever wrote it
         self.qs_ceiling: int | None = None
@@ -2005,6 +2252,7 @@ class Reader:
                 break
             refused.update(more)
 
+        self.accepted_updates = updates
         # Report entities the member filter excluded (e.g. forged writes). An update this read accepted
         # (an audit accepts an erased member's edits) is not an outside write.
         accepted_keys = {u[0].key for u in updates}
@@ -2246,6 +2494,8 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
                 lines.append(f"erased       {', '.join(erased)}: named by an earlier version of the member list, missing"
                              f" from today's. Run with --audit to prove what they wrote while members")
         lines.extend(audit_warnings(reader))
+        if reader.audit:
+            lines.extend(copied_lines(reader))
         lines.append(f"acl flags    {qa.flags_text(ae)}  expected not readonly, extended by its owner:"
                      f" {_yes(not qa.check_flags(ae))}")
     lines.append(f"schemas      {reader.schemas.status}")
@@ -2397,7 +2647,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "applied": sorted(result.applied),
                 "ignored": sorted([k, r] for k, r in result.ignored),
                 "proven": dict(sorted((a, n) for a, n in proven.items() if n)),
-                **({"auditNarrowed": reader.audit_narrowed, "auditUnchecked": reader.audit_unchecked} if args.audit else {}),
+                **({"auditNarrowed": reader.audit_narrowed, "auditUnchecked": reader.audit_unchecked,
+                    "copied": [w.as_json() for w in earlier_writers(reader.accepted_updates)]} if args.audit else {}),
             }, indent=2))
             return 0
         if args.verify:
@@ -2411,7 +2662,21 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(result.text)
     for line in audit_warnings(reader):
         print(line, file=sys.stderr)
+    if args.audit:
+        for line in copied_lines(reader):
+            print(line, file=sys.stderr)
     return 0
+
+
+def copied_lines(reader: Reader) -> list[str]:
+    """A passage someone pasted back is theirs as written, but the same words may have been typed first by someone else."""
+    short = lambda a: f"{a[:8]}…{a[-4:]}"
+    out = []
+    for w in earlier_writers(reader.accepted_updates):
+        quoted = json.dumps(w.text if len(w.text) <= 60 else w.text[:57] + "...", ensure_ascii=False)
+        out.append(f"copied       {quoted} is {short(w.address)}'s edit at block {w.block};"
+                   f" {short(w.first)} typed the same words first, blocks {w.from_block} to {w.to_block}")
+    return out
 
 
 def audit_warnings(reader: Reader) -> list[str]:

@@ -1732,6 +1732,133 @@ class ReaderTests(unittest.TestCase):
 
 
 @unittest.skipIf(SCHEMA_SKIP, SCHEMA_SKIP)
+class _Peers:
+    """Two writers trading Yjs updates, one block per edit, recorded as accepted edits."""
+
+    ADDRESSES = {"asha": "0x" + "a1" * 20, "bea": "0x" + "b2" * 20}
+
+    def __init__(self, xml: bool = False) -> None:
+        self.docs = {"asha": Doc(client_id=1001), "bea": Doc(client_id=2002)}
+        self.xml = xml
+        self.block = 100
+        self.updates: list = []
+        if xml:  # a Tiptap-style paragraph made by Asha, as the app's documents hold text
+            self.edit("asha", lambda d: d.get("default", type=XmlFragment).children.append(XmlElement("paragraph", {}, [XmlText()])))
+
+    def text(self, who: str):
+        d = self.docs[who]
+        if self.xml:
+            return d.get("default", type=XmlFragment).children[0].children[0]
+        return d.get("t", type=quire_read.Text)
+
+    def edit(self, who: str, fn) -> None:
+        d = self.docs[who]
+        before = d.get_state()
+        fn(d)
+        data = d.get_update(before)
+        for other, od in self.docs.items():
+            if other != who:
+                od.apply_update(data)
+        self.block += 1
+        e = quire_audit.Entity(key=fake_key(self.block), creator=self.ADDRESSES[who], owner=self.ADDRESSES[who],
+                               created_at=self.block, expires_at=self.block + 10**6, readonly=True,
+                               permissionless_extension=False, attributes=[], payload=b"")
+        self.updates.append((e, data, quire_read.update_structs(data)))
+
+    def type_slowly(self, who: str, words: str, at: int | None = None) -> None:
+        pos = len(str(self.text(who))) if at is None else at
+        for k in range(0, len(words), 12):
+            chunk = words[k:k + 12]
+            self.edit(who, lambda d, p=pos, c=chunk: self.text(who).insert(p, c))
+            pos += len(chunk)
+
+    def replace_all(self, who: str, words: str) -> None:
+        def go(d):
+            t = self.text(who)
+            del t[0:len(str(t))]
+            t.insert(0, words)
+        self.edit(who, go)
+
+    def found(self) -> list[tuple[str, str]]:
+        names = {v: k for k, v in self.ADDRESSES.items()}
+        return [(names[w.address], names[w.first]) for w in quire_read.earlier_writers(self.updates)]
+
+
+@unittest.skipIf(READER_SKIP, READER_SKIP)
+class EarlierWritersTests(unittest.TestCase):
+    """The "typed first by someone else" note, matching the TypeScript reader's
+    cases in packages/y-arkiv/test/round17 (earlier-writers, false-copy, survivors)."""
+
+    FINDING = "Key finding: taps ran dry on eleven of thirty days."
+
+    def test_a_paste_back_of_words_bea_typed_names_her(self) -> None:
+        for xml in (False, True):
+            p = _Peers(xml)
+            p.type_slowly("bea", self.FINDING)
+            p.replace_all("asha", self.FINDING)
+            self.assertEqual(p.found(), [("asha", "bea")], f"xml={xml}")
+            w = quire_read.earlier_writers(p.updates)[0]
+            self.assertLess(w.from_block, w.to_block)
+            self.assertLess(w.to_block, w.block)
+
+    def test_a_typo_fixed_mid_sentence_still_counts(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING.replace("thirty", "thrity"))
+        i = str(p.text("bea")).index("thrity")
+        def fix(d):
+            t = p.text("bea")
+            del t[i + 2:i + 4]
+            t.insert(i + 2, "ir")
+        p.edit("bea", fix)
+        p.replace_all("asha", self.FINDING)
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_a_trailing_space_in_the_same_edit_still_counts(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING)
+        p.replace_all("asha", self.FINDING + " ")
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_sentences_written_out_of_order_still_count(self) -> None:
+        s1 = "Key finding: taps ran dry on eleven of thirty days. "
+        s2 = "Ward 14 was hit hardest, with nine dry days in a row."
+        p = _Peers()
+        p.type_slowly("bea", s2)
+        p.type_slowly("bea", s1, at=0)
+        p.replace_all("asha", s1 + s2)
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_a_line_break_where_she_had_a_space_still_counts(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", self.FINDING)
+        p.replace_all("asha", self.FINDING.replace(" taps ran", "\ntaps  ran"))
+        self.assertEqual(p.found(), [("asha", "bea")])
+
+    def test_a_copy_pasted_and_deleted_at_once_cannot_frame_the_real_author(self) -> None:
+        para = "Asha's own result: the pumps failed after the third storm."
+        p = _Peers()
+        p.type_slowly("asha", para)
+        # Bea pastes a copy as one edit and deletes it at once
+        p.edit("bea", lambda d: p.text("bea").insert(len(para), "\n" + para))
+        p.edit("bea", lambda d: p.text("bea").__delitem__(slice(len(para), 2 * len(para) + 1)))
+        # Asha moves her own paragraph below a heading
+        p.edit("asha", lambda d: p.text("asha").insert(len(para), "\nResults\n"))
+        def move(d):
+            t = p.text("asha")
+            del t[0:len(para)]
+            t.insert(len(str(t)), para)
+        p.edit("asha", move)
+        self.assertEqual(str(p.text("asha")), "\nResults\n" + para)
+        self.assertEqual(p.found(), [])
+
+    def test_short_passages_and_own_writing_are_not_flagged(self) -> None:
+        p = _Peers()
+        p.type_slowly("bea", "Short line.")
+        p.replace_all("asha", "Short line.")
+        p.type_slowly("asha", " And then Asha wrote a long paragraph of her own.")
+        self.assertEqual(p.found(), [])
+
+
 class SchemaTests(unittest.TestCase):
     def test_vector_entities_match_entity_schema(self) -> None:
         schemas = quire_read.Schemas()

@@ -7,7 +7,7 @@ import { knownDocuments, newIdentity, preferredName, saveIdentity, saveLink, set
 import { TryIt } from "../TryIt"
 
 /** The open demo document from arkiv/demo.json: read-only for visitors. */
-const DEMO = "#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283"
+const DEMO = "#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546"
 
 const REPO = "https://github.com/kinnuworks/quire"
 

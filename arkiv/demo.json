@@ -1,33 +1,33 @@
 {
-  "createdAt": "2026-10-17T18:40:29.829Z",
+  "createdAt": "2026-10-18T00:32:04.745Z",
   "funder": "0x7ad475ff24a9d6d06b69f460005300fa914d8e11",
   "open": {
-    "link": "#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283",
-    "doc": "0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578",
-    "owner": "0xa3ed39176d6e55cd4b58134c7894b42615e16283",
+    "link": "#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546",
+    "doc": "0x7066382f176eef205ab54ef9b784f1a328873493adc950379e9088d567072f67",
+    "owner": "0xa7da7e4e17101ad0b4832c7cce0f87bf6e84b546",
     "members": {
-      "Asha": "0xa3ed39176d6e55cd4b58134c7894b42615e16283",
-      "Bea": "0xe03ca1f7480b05da8928270fc5a79413025ef6be",
-      "Ravi": "0xba964589a3bd9363c102dc9eabdd8863a90f109d"
+      "Asha": "0xa7da7e4e17101ad0b4832c7cce0f87bf6e84b546",
+      "Bea": "0xd947e727fe2dbb93a1b5c966090e9463565c00a4",
+      "Ravi": "0x2a776803c552eebdc8bbbcf86fe10991bdce4b8b"
     },
     "revoked": [],
     "forgery": {
-      "by": "0x42885193a50ab941ea8ea6fd180397c46a59041d",
-      "entity": "0xddf75be1f359945ed49ce996fe2aa4309b1b9653c589a4f9b4c777830b4d4715",
-      "tx": "0xde278f79a973f7f25ea0740f10a91fb162e77a1cfcb12c2138c993c15b0373db"
+      "by": "0x443ac73b7ca5af51f8171770c42324d4c3c589a9",
+      "entity": "0x323856e2f3c9a9d792bc925a0f8ba9d97ec77edd616ed4e0ca80adf3286b67fd",
+      "tx": "0xbcd2151326144acf037b823b49450c509d3a79061c244d01c1b635f5f411c053"
     }
   },
   "revoked": {
-    "link": "#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada",
-    "doc": "0x60567bef1262ba3a45e570aa02ac713c1f4f2a78b6c4de80ba5542bb3771975d",
-    "owner": "0x0ea55b2eeecddc4e701417001460b596c12a2ada",
+    "link": "#/d/38iji_av5iFTQ384cAD2XqqzcgABk9QtpxkDFgC-9sQ.bMlwm5r4BfQ6t00oSjyzBKvXC0BaaaTl2rTr_bYkbW8.17ef1625ee116713e75c7877bbf639297b1acffa",
+    "doc": "0xdfc8a38bf6afe62153437f387000f65eaab372000193d42da719031600bef6c4",
+    "owner": "0x17ef1625ee116713e75c7877bbf639297b1acffa",
     "members": {
-      "Asha": "0x0ea55b2eeecddc4e701417001460b596c12a2ada",
-      "Bea": "0xbc9375026f9818a3ad5216509a8cd111527cee1a",
-      "Ravi": "0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375"
+      "Asha": "0x17ef1625ee116713e75c7877bbf639297b1acffa",
+      "Bea": "0xf7ffae901984c2c05807cbc4542080e2339ba466",
+      "Ravi": "0x8dc3011f5a1ac8dd68ab3980c072436862b11feb"
     },
     "revoked": [
-      "0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375"
+      "0x8dc3011f5a1ac8dd68ab3980c072436862b11feb"
     ]
   }
 }

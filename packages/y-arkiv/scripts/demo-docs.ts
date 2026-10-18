@@ -27,10 +27,18 @@ async function burner(name: string): Promise<Identity> {
   return { address, privateKey, name }
 }
 
-async function until(cond: () => boolean, ms = 60_000) {
+// sessions to nudge while waiting: the gateway rate-limits WebSocket handshakes per IP, so a fresh
+// socket can miss events; a resync every few seconds catches up by query instead
+const live: ArkivProvider[] = []
+async function until(cond: () => boolean, ms = 120_000) {
   const end = Date.now() + ms
+  let last = Date.now()
   while (!cond()) {
     if (Date.now() > end) throw new Error("timed out")
+    if (Date.now() - last > 5000) {
+      last = Date.now()
+      await Promise.all(live.map((p) => p.resync({ joins: true }).catch(() => 0)))
+    }
     await new Promise((r) => setTimeout(r, 300))
   }
 }
@@ -46,10 +54,30 @@ async function session(id: Identity, link: ReturnType<typeof newDocLink>) {
   const doc = new Y.Doc()
   const p = new ArkivProvider(doc, { store: new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY, privateKey: id.privateKey }), link, identity: id, flushIntervalMs: 0, autoCompact: false })
   await p.connect()
+  live.push(p)
   return { doc, p }
 }
 
-async function makeDoc(title: string, lines: [string, string][], revoke: boolean) {
+type Session = { doc: Y.Doc; p: ArkivProvider }
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** The XmlText inside paragraph `i` (0 is the heading). */
+const textOf = (s: Session, i: number) => (s.doc.getXmlFragment("default").get(i) as Y.XmlElement).get(0) as Y.XmlText
+const plain = (s: Session) => s.doc.getXmlFragment("default").toArray().map((x) => ((x as Y.XmlElement).get(0) as Y.XmlText)?.toString() ?? "").join("\n")
+
+/** Types `words` into paragraph `i` a few words at a time, flushing each burst, the way a person writes. */
+async function typeBursts(s: Session, i: number, words: string, perBurst = 3) {
+  const parts = words.split(" ")
+  for (let k = 0; k < parts.length; k += perBurst) {
+    const t = textOf(s, i)
+    t.insert(t.length, (t.length ? " " : "") + parts.slice(k, k + perBurst).join(" "))
+    await s.p.flush()
+    await pause(3500 + Math.random() * 3000)
+  }
+}
+
+async function makeDoc(title: string, script: (s: Record<"Asha" | "Bea" | "Ravi", Session>) => Promise<void>, revoke: boolean) {
+  live.length = 0
   const owner = await burner("Asha")
   const bea = await burner("Bea")
   const ravi = await burner("Ravi")
@@ -64,38 +92,61 @@ async function makeDoc(title: string, lines: [string, string][], revoke: boolean
   }
   para(sessions.Asha.doc, title, true)
   await sessions.Asha.p.flush()
-  for (const [who, text] of lines) {
-    const s = sessions[who as keyof typeof sessions]
-    await until(() => s.doc.getXmlFragment("default").length >= 1)
-    para(s.doc, text)
-    await s.p.flush()
-    await new Promise((r) => setTimeout(r, 3000))
-  }
+  await script(sessions)
+  await pause(6000)
   await sessions.Asha.p.compact()
   if (revoke) {
-    await sessions.Asha.p.revoke(ravi.address)
-    para(sessions.Asha.doc, "Written after Ravi was removed. The old link cannot read this line.")
-    await sessions.Asha.p.flush()
+    // the app's default: rotate, and delete the owner's own earlier entities so the old link cannot open them
+    await sessions.Asha.p.revoke(ravi.address, { shredOldEpoch: true })
+    para(sessions.Asha.doc, "")
+    await typeBursts(sessions.Asha, sessions.Asha.doc.getXmlFragment("default").length - 1, "Written after Ravi was removed. The old link cannot read this line.")
+    await pause(4000)
   }
   for (const s of Object.values(sessions)) s.p.destroy()
   return { link: `#${formatDocLink(link)}`, doc: link.doc, owner: owner.address, members: { Asha: owner.address, Bea: bea.address, Ravi: ravi.address }, revoked: revoke ? [ravi.address] : [] }
 }
 
+/** Waits until every session shows paragraph count `n`. */
+const synced = (all: Session[], n: number) => until(() => all.every((x) => x.doc.getXmlFragment("default").length >= n), 90_000)
+
 const open = await makeDoc(
   "Ward 14 water log (synthetic demo)",
-  [
-    ["Asha", "The pump house was locked again on Tuesday. Water came on at 6:40 and stopped before 8."],
-    ["Bea", "Residents counted four dry days this month. Two of them are missing from the official roster."],
-    ["Ravi", "Next: ask the ward office for the supply schedule in writing, and photograph the notice board."],
-  ],
+  async ({ Asha, Bea, Ravi }) => {
+    const all = [Asha, Bea, Ravi]
+    para(Asha.doc, "")
+    await typeBursts(Asha, 1, "The pump house was locked again on Tuesday. Water came on at 6:40 and stopped before 8.")
+    await synced(all, 2)
+    para(Bea.doc, "")
+    await typeBursts(Bea, 2, "Residents counted four dry days this month. Two of them are missing from the official roster.")
+    await synced(all, 3)
+    await until(() => plain(Ravi).includes("before 8."), 90_000)
+    // Ravi corrects Asha's sentence in place, so one paragraph has two authors
+    const t = textOf(Ravi, 1)
+    const at = t.toString().indexOf(" on Tuesday")
+    t.insert(at, " (by the ward office)")
+    await Ravi.p.flush()
+    await pause(4000)
+    para(Ravi.doc, "")
+    await typeBursts(Ravi, 3, "Next: ask the ward office for the supply schedule in writing, and photograph the notice board.")
+    await synced(all, 4)
+    await until(() => plain(Bea).includes("notice board."), 90_000)
+    // Bea tightens Ravi's line
+    const r = textOf(Bea, 3)
+    const w = r.toString().indexOf("photograph")
+    r.insert(w, "date and ")
+    await Bea.p.flush()
+  },
   false,
 )
 const revoked = await makeDoc(
   "Source notes (synthetic demo)",
-  [
-    ["Asha", "Background only. Nothing here is attributable."],
-    ["Bea", "Second source confirms the dates. Ask about the procurement file."],
-  ],
+  async ({ Asha, Bea }) => {
+    para(Asha.doc, "")
+    await typeBursts(Asha, 1, "Background only. Nothing here is attributable.")
+    await synced([Asha, Bea], 2)
+    para(Bea.doc, "")
+    await typeBursts(Bea, 2, "Second source confirms the dates. Ask about the procurement file.")
+  },
   true,
 )
 const out = { createdAt: new Date().toISOString(), funder: funder.account.address.toLowerCase(), open, revoked }

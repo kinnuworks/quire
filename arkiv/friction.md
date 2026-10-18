@@ -21,7 +21,9 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 9 | RPC gateway | Python's default user agent gets HTTP 403 | Low |
 | 10 | `arkiv-encryption` | No associated data; plaintext cap below the payload cap; key-in-URL guidance | Low |
 | 11 | Docs | `atBlock` retention range is not stated | Low |
-| 12 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
+| 12 | WebSocket gateway | Handshakes are rate-limited per IP in bursts, and a refused handshake reaches the client as a bare error with no status | Medium: live push silently stopped |
+| 13 | Entity metadata | A patch keeps `createdAt`, and `updatedAt` moves on extensions too, so a reader cannot tell rewritten content from a renewed lease | High for us: authorship could be backdated |
+| 14 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
 ## 1. Keyless query budget: the SDK hangs on 429 without saying so
 
@@ -206,6 +208,32 @@ The docs say `atBlock` must be "within the node's retained range" without giving
 Quire's History tab rebuilds a document as of any past block with `atBlock` reads, so this matters to us.
 
 **Suggested fix.** State the retention policy, and say whether it will shrink on mainnet.
+
+## 12. WebSocket handshakes share a burst limit, and a refusal says nothing
+
+**What happened.** After a busy hour from one IP (a few sessions plus test runs), new sessions stopped receiving live events. The provider's socket reported an `ErrorEvent` with no message and close code 1006, and nothing else.
+
+**Measured** ([probe](probes/websocket-handshake-2026-10-18.json)): a raw WebSocket upgrade without a key got HTTP 429; the same request with an `x-api-key` header got 101 at the same moment; a minute later the keyless upgrade got 101 again. An HTTP/2 upgrade gets 405 ("only POST JSON-RPC is supported"), so clients must use HTTP/1.1 for the socket.
+
+**Expected.** The limit documented next to the query budget, a close frame or error that carries the status, and a way for browsers to authenticate the socket (they cannot set headers on a WebSocket).
+
+**Steps to reproduce.** Open several WebSockets from one IP in quick succession, then `curl --http1.1 -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://rpc.tiramisu.db-chain.testnet.arkiv.network/`.
+
+**Suggested fix.** Document the handshake limit, send the 429 reason in the close frame, and accept a key in the WebSocket subprotocol or a query parameter for browser clients.
+
+**What we did.** While its socket is failing, the provider catches up by query every 20 seconds and stops as soon as a live event arrives again ([provider.ts](../packages/y-arkiv/src/provider.ts) `socketFailed`).
+
+## 13. Nothing in an entity's metadata says its content changed
+
+**What happened.** A blind review pointed out that a writer owns their own edits, so they can patch one later. The patched edit keeps its original `createdAt`, so blame would show rewritten text as proven at the original block.
+
+**Measured** ([probe](probes/patch-vs-extend-2026-10-18.json)): on a plain entity, an extension moved `updatedAt` from 0xaebe0 to 0xaebe5, and a later patch moved it again, to 0xaebe9; `createdAt` never changed. So `updatedAt != createdAt` cannot separate a content change from a renewed lease. A `readonly` entity refuses the patch with a clear message and still accepts extension and deletion.
+
+**Expected.** A separate content-change marker (a `patchedAt`, or a content hash in the metadata), or docs that point apps which care about provenance to `readonly`.
+
+**Suggested fix.** Expose when the payload last changed, separately from expiry changes, and mention `readonly` in the patch docs as the way to make content immutable.
+
+**What we did.** Every update, snapshot, chunk and join request is created `readonly`, and both readers ignore those kinds unless they are readonly ([PROTOCOL.md](../PROTOCOL.md) section 1, edge case `update-not-readonly`).
 
 ## Paths we tested that worked well
 

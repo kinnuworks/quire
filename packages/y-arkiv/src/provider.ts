@@ -332,8 +332,15 @@ export class ArkivProvider extends Observable<string> {
     }
     try {
       this.unwatch = this.store.watch(
-        (e) => this.enqueue(() => this.onChainEvent(e)),
-        (err) => this.emit("error", [err]),
+        (e) => {
+          this.socketHealthy()
+          this.enqueue(() => this.onChainEvent(e))
+        },
+        (err) => {
+          // the gateway rate-limits WebSocket handshakes per IP; while the socket is down, poll instead
+          this.socketFailed()
+          this.emit("error", [err])
+        },
       )
       await this.loadAcl()
       await this.loadState()
@@ -494,6 +501,20 @@ export class ArkivProvider extends Observable<string> {
 
   private enqueue(fn: () => Promise<void>): void {
     this.work = this.work.then(fn).catch((e) => this.emit("error", [e]))
+  }
+
+  private pollTimer: ReturnType<typeof setInterval> | null = null
+
+  /** The socket errored: catch up by polling (one query each time) until a live event arrives again. */
+  private socketFailed(): void {
+    if (this.pollTimer || this.resyncInterval === 0) return
+    this.pollTimer = setInterval(() => void this.resync({ joins: true }).catch((e) => this.emit("error", [e])), POLL_WHILE_SOCKET_DOWN_MS)
+  }
+
+  private socketHealthy(): void {
+    if (!this.pollTimer) return
+    clearInterval(this.pollTimer)
+    this.pollTimer = null
   }
 
   /** Resolves once every queued event and write has been processed. */
@@ -1580,6 +1601,7 @@ export class ArkivProvider extends Observable<string> {
     this.doc.off("update", this.onDocUpdate)
     if (this.timer) clearTimeout(this.timer)
     if (this.resyncTimer) clearInterval(this.resyncTimer)
+    if (this.pollTimer) clearInterval(this.pollTimer)
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.unwatch?.()
     this.unwatch = null
@@ -1672,6 +1694,8 @@ export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, id
 // ------------------------------------------------------------------ helpers
 
 const BLOCK_SECONDS = 2
+/** How often a session catches up by query while its WebSocket is failing (one query each time). */
+const POLL_WHILE_SOCKET_DOWN_MS = 20_000
 
 /** Seconds to whole blocks, rounding up. */
 function blocks(seconds: number): bigint {

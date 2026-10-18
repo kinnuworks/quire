@@ -11,11 +11,11 @@ Under the editor is `y-arkiv`, a Yjs provider. A Yjs app (Tiptap, BlockNote, Cod
 
 Built for Arkiv: Global Tour Stop, in the Privacy, Open Source and Security tracks. Testnet only; all demo data is synthetic.
 
-**Check it in a minute.** Open the [live demo document](https://quire-five.vercel.app/#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283): it is read straight from Arkiv in three queries, plus one that lists the writes kept out. Turn on **Who wrote what** to color each paragraph by the key that wrote it, and open **Explorer** to see the public entity next to what your browser decrypts. Then, without our app:
+**Check it in a minute.** Open the [live demo document](https://quire-five.vercel.app/#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546): it is read straight from Arkiv in three queries, plus one that lists the writes kept out. Turn on **Who wrote what** to color each paragraph by the key that wrote it, and open **Explorer** to see the public entity next to what your browser decrypts. Then, without our app:
 
 ```bash
 pnpm install
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
 ```
 
 That prints every paragraph with the address, block and entity that prove who wrote it. [Submission evidence](#submission-evidence) has the rest.
@@ -89,9 +89,9 @@ pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '<document link>'
 python3 readers/python/quire_audit.py --doc <0x document id>
 ```
 
-The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 97 tests of its own, covering forged writes, forged snapshots, swapped authorship and malformed headers. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library. `pnpm --dir packages/y-arkiv compare-readers` runs both readers on the two live demos and on the vectors (as a member and as a link holder) and diffs their verdicts: the text, every entity applied, every outside write rejected. They also run every edge case in `spec/vectors/cases` (14 so far: JSON number forms, a byte-order mark, trailing newlines, malformed attributes, a wrong snapshot size, tied snapshots, a backdated `qs`, one writer's conflicting edits), each a document with one crafted entity and the text a correct reader must produce. They agree on all of them.
+The Python reader was written against PROTOCOL.md and the vectors, as a separate implementation rather than a port. Writing it found ten places where the spec and the TypeScript disagreed, and each was settled in the spec. It has 98 tests of its own, covering forged writes, forged snapshots, swapped authorship and malformed headers. Its full reader needs `cryptography` and `pycrdt` (`pip install -r readers/python/requirements.txt`); without them most of its tests skip. The audit needs only the standard library. `pnpm --dir packages/y-arkiv compare-readers` runs both readers on the two live demos and on the vectors (as a member and as a link holder) and diffs their verdicts: the text, every entity applied, every outside write rejected. They also run every edge case in `spec/vectors/cases` (18 so far: JSON number forms, a byte-order mark, trailing newlines, malformed attributes, a wrong snapshot size, tied snapshots, a backdated `qs`, one writer's conflicting edits, a snapshot that clashes with an applied edit, a number encoded two ways, an edit that is not readonly, history across two rotations), each a document with one crafted entity and the text a correct reader must produce. They agree on all of them.
 
-The TypeScript suite has 116 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 40 security rules in turn and shows that a test fails every time.
+The TypeScript suite has 124 tests (plus 2 that run only against Tiramisu), including a property-based convergence check, forged writes and forged snapshots, and a check that the committed vectors say what the reference reads. `python3 packages/y-arkiv/scripts/mutants.py` removes each of 46 security rules in turn and shows that a test fails every time.
 
 ## How it uses Arkiv
 
@@ -140,28 +140,28 @@ Measured on Tiramisu at its 1 gwei gas price ([probe](arkiv/probes/cost-2026-10-
 Two public demo documents live on Tiramisu. Their content is synthetic, and their keys were made for this demo only.
 
 **Open demo**: three members, readable by anyone with the link.
-https://quire-five.vercel.app/#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283
+https://quire-five.vercel.app/#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546
 
-**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you can open the member list, but it is sealed under the new key, so you learn only that there are two members, and nothing written after the removal. Text written before it stays readable to anyone with the original link while those entities live (30 days), because they were encrypted under the key the link carries; this demo was made before the owner's old-epoch cleanup existed. In the app, removing someone (or rotating the key) offers to delete the owner's own earlier entities right after the rotation; other members' earlier entities stay until they expire or those members shred them. The addresses that wrote entities are still public on chain, as for any document.
-https://quire-five.vercel.app/#/d/YFZ77xJiujpF5XCqAqxxPB9PKni2xN6AulVCuzdxl10.aGbgHFjUlo6olDeJ4SHcJo8YKTssnwZzuBLB7UBSQUo.0ea55b2eeecddc4e701417001460b596c12a2ada
+**Revocation demo**: Ravi was removed, so the key rotated. With the link alone you can open the member list, but it is sealed under the new key, so you learn only that there are two members, and nothing written after the removal. When removing Ravi, the owner also deleted their own earlier entities, so the original link no longer opens the owner's line from Arkiv's state. Bea's earlier line, encrypted under the key the link carries, stays readable to that link until it expires (30 days) or she shreds it, and block history keeps every old payload. The addresses that wrote entities are still public on chain, as for any document.
+https://quire-five.vercel.app/#/d/38iji_av5iFTQ384cAD2XqqzcgABk9QtpxkDFgC-9sQ.bMlwm5r4BfQ6t00oSjyzBKvXC0BaaaTl2rTr_bYkbW8.17ef1625ee116713e75c7877bbf639297b1acffa
 
 Addresses behind the demos:
 
 | Address | Role |
 |---|---|
 | `0x7ad475ff24a9d6d06b69f460005300fa914d8e11` | gas drip sponsor; funded every key below with a plain transfer. As the development key it also created the friction probes' entities (`qp = probe-…`) and funded the live-test keys |
-| `0xa3ed39176d6e55cd4b58134c7894b42615e16283` | open demo: owner (Asha); created the ACL, snapshots and edits |
-| `0xe03ca1f7480b05da8928270fc5a79413025ef6be` | open demo: writer (Bea); join request and edits |
-| `0xba964589a3bd9363c102dc9eabdd8863a90f109d` | open demo: writer (Ravi); join request and edits |
-| `0x0ea55b2eeecddc4e701417001460b596c12a2ada` | revocation demo: owner; created the ACL, rotated the key |
-| `0xbc9375026f9818a3ad5216509a8cd111527cee1a` | revocation demo: writer who stayed; wrote a snapshot under the new key |
-| `0x64e51df3dd1ef6cddccfe1b0ba7cad1fbbccb375` | revocation demo: removed member; his join request has since expired (1 hour), its transaction remains in block history |
-| `0x42885193a50ab941ea8ea6fd180397c46a59041d` | open demo: planted forgery. Holds the link, wrote one valid encrypted edit, is not a member, so no reader applies it (`scripts/plant-forgery.ts`) |
+| `0xa7da7e4e17101ad0b4832c7cce0f87bf6e84b546` | open demo: owner (Asha); created the ACL, snapshots and edits |
+| `0xd947e727fe2dbb93a1b5c966090e9463565c00a4` | open demo: writer (Bea); join request and edits |
+| `0x2a776803c552eebdc8bbbcf86fe10991bdce4b8b` | open demo: writer (Ravi); join request and edits |
+| `0x17ef1625ee116713e75c7877bbf639297b1acffa` | revocation demo: owner; created the ACL, rotated the key |
+| `0xf7ffae901984c2c05807cbc4542080e2339ba466` | revocation demo: writer who stayed; wrote a snapshot under the new key |
+| `0x8dc3011f5a1ac8dd68ab3980c072436862b11feb` | revocation demo: removed member; his join request has since expired (1 hour), its transaction remains in block history |
+| `0x443ac73b7ca5af51f8171770c42324d4c3c589a9` | open demo: planted forgery. Holds the link, wrote one valid encrypted edit, is not a member, so no reader applies it (`scripts/plant-forgery.ts`) |
 
-Document ids: open demo `0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578`, revocation demo `0x60567bef1262ba3a45e570aa02ac713c1f4f2a78b6c4de80ba5542bb3771975d`. Every entity carries `qd` equal to its document id, so this query lists them all:
+Document ids: open demo `0x7066382f176eef205ab54ef9b784f1a328873493adc950379e9088d567072f67`, revocation demo `0xdfc8a38bf6afe62153437f387000f65eaab372000193d42da719031600bef6c4`. Every entity carries `qd` equal to its document id, so this query lists them all:
 
 ```
-qp = str('quire1') AND qd = bytes32(0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578)
+qp = str('quire1') AND qd = bytes32(0x7066382f176eef205ab54ef9b784f1a328873493adc950379e9088d567072f67)
 ```
 
 Paste it into the [Data Explorer](https://data.arkiv.network), or look up any address above in the [block explorer](https://tiramisu.explorer.arkiv.network) to see the creating transactions.
@@ -170,15 +170,16 @@ To reproduce what the app shows, without the app:
 
 ```bash
 pnpm install
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/YPp1ObuyhC5aL5SstUY3bLPHWx2B8CZMCuT0ry_AdXg.hRKbkuO9SOb9g_T_JRhTMdrbK-k8eeKWwipQIZ1gw_Q.a3ed39176d6e55cd4b58134c7894b42615e16283'
-python3 readers/python/quire_audit.py --doc 0x60fa7539bbb2842e5a2f94acb546376cb3c75b1d81f0264c0ae4f4af2fc07578 --owner 0xa3ed39176d6e55cd4b58134c7894b42615e16283
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+pnpm --dir packages/y-arkiv exec tsx src/cli.ts timeline '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+python3 readers/python/quire_audit.py --doc 0x7066382f176eef205ab54ef9b784f1a328873493adc950379e9088d567072f67 --owner 0xa7da7e4e17101ad0b4832c7cce0f87bf6e84b546
 ```
 
 The public endpoint gives each IP address about 100 free queries per window; if a run stops with a budget message, wait the minutes it names or set `ARKIV_ACCESS_KEY`. `quire_read.py --link '<link>' --verify` prints the Python reader's own trust report, including the same outside write.
 
-Expected: `verify` reports the owner found by `$creator`, epoch 0, three members, 1 snapshot and 4 updates applied, 0 ignored, and 3 queries, then one more query listing the planted forgery: one entity by `0x42885193a50ab941ea8ea6fd180397c46a59041d`, never fetched or applied. `read` prints the four lines of the Ward 14 log. `blame` attributes all four paragraphs, every character proven, to Asha, Bea and Ravi, each with the block and entity of the edit. The audit ends with `RESULT: PASS`. For the revocation demo, `verify` reports epoch 1 with the roster sealed ("this link sees only a count (2)"), and `read` prints nothing.
+Expected: `verify` reports the owner found by `$creator`, epoch 0, three members, 1 snapshot and 10 updates applied (the edits since the snapshot's catch-up window; `blame` and `timeline` read all of them), 0 ignored, and 3 queries, then one more query listing the planted forgery: one entity by `0x443ac73b7ca5af51f8171770c42324d4c3c589a9`, never fetched or applied. `read` prints the four lines of the Ward 14 log. `blame` proves every character, run by run: Ravi's correction sits inside Asha's paragraph and Bea's edit inside Ravi's, each with the block and entity of the edit. `timeline` lists 21 edits from three writers over three and a half minutes, a few words at a time. The audit ends with `RESULT: PASS`. For the revocation demo, `verify` reports epoch 1 with the roster sealed ("this link sees only a count (2)"), and `read` prints nothing.
 
 The full live suite (`pnpm --dir packages/y-arkiv test:live`) passed on Tiramisu. It covers two keys collaborating, a cold reader opening the document in exactly 3 queries, a 250 KB paste written as chunks, a revocation and a published version.
 

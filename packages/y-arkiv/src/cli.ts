@@ -165,7 +165,7 @@ async function main() {
     console.log("")
     for (const [a, s] of by) {
       const mins = (Number(s.to - s.from) * 2) / 60
-      console.log(`${a}  ${s.edits} ${s.edits === 1 ? "edit" : "edits"}, ${s.added} characters added, over ${mins < 1 ? "under a minute" : `${mins.toFixed(0)} minutes`} (blocks ${s.from} to ${s.to})`)
+      console.log(`${a}  ${s.edits} ${s.edits === 1 ? "edit" : "edits"}, ${s.added} characters added, over ${mins < 1 ? "under a minute" : Math.round(mins) === 1 ? "about a minute" : `${mins.toFixed(0)} minutes`} (blocks ${s.from} to ${s.to})`)
     }
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)

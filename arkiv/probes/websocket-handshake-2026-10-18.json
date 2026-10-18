@@ -1,0 +1,12 @@
+{
+  "probe": "WebSocket handshakes against wss://rpc.tiramisu.db-chain.testnet.arkiv.network from one IP after a busy hour (several sessions and test runs)",
+  "method": "curl --http1.1 with Connection: Upgrade / Upgrade: websocket / Sec-WebSocket-Version: 13, repeated; then the same with an x-api-key header",
+  "results": [
+    { "request": "no key, during the burst", "status": 429 },
+    { "request": "x-api-key header, same moment", "status": 101 },
+    { "request": "no key, a minute later", "status": 101 },
+    { "request": "HTTP/2 upgrade attempt", "status": 405, "body": "{\"error\":\"METHOD_NOT_ALLOWED\",\"message\":\"only POST JSON-RPC is supported\"}" }
+  ],
+  "client_view": "in Node and browsers the failed handshake surfaces as a bare ErrorEvent with no message and close code 1006, so the 429 is invisible to the application",
+  "measuredAt": "2026-10-18T00:20:00Z"
+}

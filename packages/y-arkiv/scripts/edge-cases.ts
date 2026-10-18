@@ -305,6 +305,19 @@ const header = (t: string) => (salt: Uint8Array, sig: string) => `{"t":${t},"sal
   await write("update-not-readonly", "An update created without the readonly flag could be patched later under its original block, so it is ignored.", exportCase(chain, link))
 }
 {
+  // Bea compacts, then extends her snapshot (which holds the whole text) for three years, though the
+  // owner never chose to keep the document. Readers ignore it; the text still comes from the edits.
+  const { chain, link, b, settle } = await setup()
+  para(b.doc, "Bea, in a snapshot she kept too long.")
+  await b.p.flush()
+  await settle()
+  await b.p.compact()
+  await settle()
+  await chain.store(bea.address).batch({ extensions: [{ key: b.p.snapshot!.key, lifetimeSeconds: 3 * 365 * 86400 }] })
+  chain.mine()
+  await write("snapshot-past-owner-lifetime", "A snapshot extended past the larger of the owner's keepUntil and a fresh 30-day lease is ignored: no member can keep a readable copy past the owner's ceiling.", exportCase(chain, link))
+}
+{
   // two rotations: Bea writes under epoch 1, then a second removal moves the key to epoch 2. A fresh
   // session of Bea's opens epoch 2 from her wrap and epoch 1 from the roster's prior keys, so her
   // epoch 1 edit is applied (and proven), not just carried by a snapshot.

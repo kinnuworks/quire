@@ -36,6 +36,8 @@ from quire_audit import Entity
 
 SALT = b"quire/v1"
 SNAPSHOT_WINDOW = 60  # blocks, section 5 steps 3 and 4
+LEASE_BLOCKS = 30 * 24 * 3600 // 2  # a 30-day lease at 2-second blocks
+EXPIRY_SLACK_BLOCKS = 300  # ten minutes, for the gap between a writer's head and a reader's
 FRAME_FIXED = 48  # 'QF' | ver | kind | doc(32) | epoch | hlen | dlen
 EPHEMERAL = 65  # uncompressed secp256k1 public key in a sealed box
 SCHEMA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "spec", "schema")
@@ -898,6 +900,10 @@ class Source:
     def acl(self, doc: str, owner: str) -> list[Entity]:
         raise NotImplementedError
 
+    def head(self) -> int:
+        """The newest block, for the expiry ceiling (section 5)."""
+        raise NotImplementedError
+
     def by_kind(
         self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0
     ) -> list[Entity]:
@@ -917,8 +923,13 @@ class Source:
 class VectorSource(Source):
     """Applies the section 5 query filters to a vectors file in memory."""
 
-    def __init__(self, entities: list[Entity]) -> None:
+    def __init__(self, entities: list[Entity], head: int | None = None) -> None:
         self.entities = [e for e in entities if well_formed(e)]
+        # a vectors file is frozen at its head block; without one, the newest createdAt stands in
+        self._head = head if head is not None else max((e.created_at for e in self.entities), default=0)
+
+    def head(self) -> int:
+        return self._head
 
     def _match(self, e: Entity, doc: str, kind: str) -> bool:
         return (
@@ -981,6 +992,9 @@ class RpcSource(Source):
             query += " AND (" + " OR ".join(f"$creator = addr({c})" for c in creators) + ")"
         # join requests from anyone: one page only, so junk requests cannot drain the budget
         return self._run(query, max_pages=1 if kind == "j" and creators is None else None)
+
+    def head(self) -> int:
+        return qa._int(qa.rpc_call(self.url, "eth_blockNumber", []))
 
     def entity(self, key: str) -> Entity | None:
         raw = qa.get_entity(self.url, key)
@@ -1193,6 +1207,8 @@ class Reader:
         self.dropped_authors: list[str] = []
         self.revoked_at: dict[str, list[tuple[int, int]]] = {}  # removed member -> membership intervals that ended
         self.added_at: dict[str, int] = {}  # member -> block they were added, from the roster
+        self.head_block = 0  # newest block, for the expiry ceiling
+        self.keep_until: Any = None  # the owner's keepUntil, from the ACL
         self.acl_entity: Entity | None = None
         # Section 5: a writing session's own client id. Snapshots carrying
         # structs under it beyond what this session's updates wrote are
@@ -1322,7 +1338,7 @@ class Reader:
 
     # Step 3: snapshots and their chunks.
     def _snapshot_data(self, head: Entity, frame: Frame) -> bytes:
-        return assemble(head, frame, self.source, self._content_frame, self.schemas, self._note)
+        return assemble(head, frame, self.source, self._content_frame, self.schemas, self._note, self.expiry_ok)
 
     def _decode_snapshot(self, e: Entity) -> Frame:
         """Decrypt a snapshot head and apply the header and block rules."""
@@ -1330,6 +1346,8 @@ class Reader:
         # the original block. Chunks carry their head's flags, so they are readonly too.
         if not e.readonly:
             raise Rejected("snapshot entity is not readonly")
+        if not self.expiry_ok(e):
+            raise Rejected("snapshot expires after the owner's lifetime for the document")
         qs = e.attr("qs")
         if not _is_int(qs):
             raise Rejected(f"qs {qs!r} is not u64")
@@ -1433,6 +1451,8 @@ class Reader:
     def _check_update(self, e: Entity) -> tuple[Frame, list[Struct], str, list[int]]:
         if not e.readonly:
             raise Rejected("update entity is not readonly")
+        if not self.expiry_ok(e):
+            raise Rejected("update expires after the owner's lifetime for the document")
         qs = e.attr("qs")
         if not _is_int(qs):
             raise Rejected(f"qs {qs!r} is not u64")
@@ -1465,6 +1485,15 @@ class Reader:
             ids = ", ".join(str(cid) for cid in foreign)
             raise Rejected(f"Yjs client id {ids} is not clientIdFor(creator, salt) = {own}")
         return frame, structs, str(salt), clients
+
+    def expiry_ok(self, e: Entity) -> bool:
+        """Section 5: an edit, snapshot or chunk may not expire after the larger
+        of the owner's keepUntil and a fresh 30-day lease from now (plus ten
+        minutes), or a member could keep a readable copy past the owner's
+        ceiling."""
+        lease = self.head_block + LEASE_BLOCKS
+        keep = int(self.keep_until) if isinstance(self.keep_until, str) and self.keep_until.isdigit() else 0
+        return e.expires_at <= max(lease, keep) + EXPIRY_SLACK_BLOCKS
 
     def member_at(self, e: Entity) -> bool:
         """A current member, and the entity landed at or after the block they
@@ -1585,6 +1614,8 @@ class Reader:
 
     def read(self) -> ReadResult:
         acl = self.load_acl()
+        self.keep_until = acl.get("keepUntil")
+        self.head_block = self.source.head()
         roster = self.roster(acl)  # also checks that epoch is an integer
         epoch = acl.get("epoch", 0)
         doc = Doc()
@@ -1665,6 +1696,7 @@ def assemble(
     open_frame: Callable[[Entity], Frame],
     schemas: Schemas,
     note: Callable[[Entity], None] = lambda _e: None,
+    expiry_ok: Callable[[Entity], bool] | None = None,
 ) -> bytes:
     """Join a snapshot or version head with its chunks (sections 1, 4, 5).
 
@@ -1682,6 +1714,8 @@ def assemble(
             raise Rejected(f"chunk {ckey} missing")
         if chunk.creator != head.creator or chunk.kind != "c":
             raise Rejected(f"chunk {ckey} has wrong creator or kind")
+        if expiry_ok is not None and not expiry_ok(chunk):
+            raise Rejected(f"chunk {ckey} expires after the owner's lifetime for the document")
         if outer_epoch(chunk) != frame.epoch:
             raise Rejected(f"chunk {ckey} epoch {outer_epoch(chunk)} differs from its head's {frame.epoch}")
         if (chunk.readonly, chunk.permissionless_extension) != (head.readonly, head.permissionless_extension):
@@ -1965,7 +1999,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         if args.vectors:
             data, entities = qa.load_vectors(args.vectors)
-            source: Source = VectorSource(entities)
+            head = data.get("head")
+            source: Source = VectorSource(entities, int(head) if isinstance(head, str) and head.isdigit() else None)
         else:
             data, source = {}, RpcSource(args.rpc)
         schemas = Schemas(enabled=not args.no_schema)

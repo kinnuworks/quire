@@ -48,6 +48,7 @@ MUTANTS = [
     (A, "member entries checked by hand", "  if (h.epoch === 0) checkRoster(h.members, h.revoked)\n", ""),
     (P, "earlier epoch keys carried forward", "    for (const [n, k] of Object.entries(acl.prior ?? {})) if (!this.epochKeys.has(Number(n))) this.epochKeys.set(Number(n), hexToBytes(k))\n", ""),
     (P, "delete removes all but versions", "e.attributes.kind !== KIND.version && !(e.attributes.kind === KIND.chunk && e.permissionlessExtension)", "!e.readonly"),
+    (P, "owner's expiry ceiling enforced", "&& this.acl && entity.expiresAt > this.expiryCeiling()) {", "&& false) {"),
     (A, "members only from their added block", "createdAt >= BigInt(m.addedAtBlock)", "true"),
     (P, "author claim id", "clientIdFor(entry.address, hexToBytes(entry.salt)) === Number(client) &&", "true &&"),
     (P, "author claim signature", "(await signedBy(this.link.doc, entry.salt, entry.sig, entry.address as Hex))", "true"),

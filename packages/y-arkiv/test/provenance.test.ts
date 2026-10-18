@@ -717,3 +717,30 @@ describe("membership intervals", () => {
     a.provider.destroy()
   })
 })
+
+describe("expiry ceiling", () => {
+  it("a member who extends their own snapshot past the owner's lifetime gets it ignored by readers", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "kept too long")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await bea.provider.compact()
+    await settle(chain, [a, bea])
+    const snap = bea.provider.snapshot!
+    // another client could do this: three years, though the owner never chose to keep the document
+    await chain.store(bea.id!.address).batch({ extensions: [{ key: snap.key, lifetimeSeconds: 3 * 365 * 86400 }] })
+    chain.mine()
+    const fresh = await peer(chain, link, undefined)
+    expect(fresh.provider.appliedKeys.has(snap.key)).toBe(false)
+    // once the owner keeps the document that long, the same snapshot counts
+    await a.provider.keepFor(3 * 365 * 86400 + 86400)
+    await settle(chain, [a, bea])
+    const later = await peer(chain, link, undefined)
+    expect(later.provider.appliedKeys.has(snap.key) || later.provider.snapshot!.creator !== bea.id!.address).toBe(true)
+    a.provider.destroy()
+  })
+})

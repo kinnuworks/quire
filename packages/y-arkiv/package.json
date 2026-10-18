@@ -63,5 +63,8 @@
     "url": "git+https://github.com/kinnuworks/quire.git",
     "directory": "packages/y-arkiv"
   },
-  "homepage": "https://github.com/kinnuworks/quire#readme"
+  "homepage": "https://github.com/kinnuworks/quire#readme",
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -371,6 +371,7 @@ export class ArkivProvider extends Observable<string> {
 
   private async loadAcl(): Promise<void> {
     const page = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], limit: 20 })
+    this.sawHead(page.block)
     // the first entity that is really the owner's ACL; an RPC that ignores the creator filter cannot slip in another
     for (const entity of page.entities) {
       try {
@@ -418,6 +419,7 @@ export class ArkivProvider extends Observable<string> {
     if (!this.acl || this.acl.rosterHidden) return
     const writers = memberAddresses(this.acl)
     const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers })
+    this.sawHead(snaps.block)
     // order by the writer's block height (qs), newest first; Arkiv does not promise any order.
     // Apply every snapshot close to the newest base, which covers concurrent compactions.
     // ties broken by creation block, then key, both descending, so every reader picks the same one
@@ -504,6 +506,19 @@ export class ArkivProvider extends Observable<string> {
   }
 
   private pollTimer: ReturnType<typeof setInterval> | null = null
+  /** The newest block this session has seen, from query results and live events. */
+  private headSeen = 0n
+
+  private sawHead(block: bigint): void {
+    if (block > this.headSeen) this.headSeen = block
+  }
+
+  /** The latest expiry any content entity may have: keepUntil, or a fresh lease from now, plus ten minutes. */
+  private expiryCeiling(): bigint {
+    const lease = this.headSeen + blocks(LIFETIME.snapshot)
+    const keep = this.acl?.keepUntil ? BigInt(this.acl.keepUntil) : 0n
+    return (keep > lease ? keep : lease) + EXPIRY_SLACK_BLOCKS
+  }
 
   /** The socket errored: catch up by polling (one query each time) until a live event arrives again. */
   private socketFailed(): void {
@@ -554,6 +569,7 @@ export class ArkivProvider extends Observable<string> {
       this.emit("lease", [this.snapshot])
       return
     }
+    this.sawHead(e.block)
     if (e.type !== "created" || this.seen.has(e.key)) return
     // dedupe by entity key, not by creator: two tabs with the same key must still see each other
     const creator = e.owner.toLowerCase() as Hex
@@ -989,6 +1005,11 @@ export class ArkivProvider extends Observable<string> {
     // edits, snapshots, chunks and join requests MUST be readonly: a patchable one could be rewritten
     // after the fact while keeping its original creation block
     if (kind !== KIND.acl && !entity.readonly) throw new MalformedHeader(`${kind} entity is not readonly`)
+    // and no edit, snapshot or chunk may outlive what the owner chose: the larger of keepUntil and a fresh
+    // 30-day lease from now. Otherwise any member could keep a readable copy alive past the owner's ceiling.
+    if ((kind === KIND.update || kind === KIND.snapshot || kind === KIND.chunk) && this.acl && entity.expiresAt > this.expiryCeiling()) {
+      throw new MalformedHeader(`${kind} entity expires after the owner's lifetime for the document`)
+    }
     const frame = await this.decryptEntity(entity, kind, epochHint)
     // a frame that decrypts but breaks its header schema is ignored for good (callers count it as rejected)
     const problem = frame && headerProblem(kind, frame.header)
@@ -1484,7 +1505,7 @@ export class ArkivProvider extends Observable<string> {
       const secret = randomBytes(32)
       const head = await this.store.head()
       const state = Y.encodeStateAsUpdate(this.doc)
-      const w = await writeSnapshotEntities(this.store, this.link.doc, 0, secret, state, head, this.now(), KIND.version, {}, LIFETIME.version, {}, true)
+      const w = await writeSnapshotEntities(this.store, this.link.doc, 0, secret, state, head, this.now(), KIND.version, {}, LIFETIME.version, {})
       this.stats.writes += w.transactions
       return { key: w.headKey, secret }
     })
@@ -1696,6 +1717,8 @@ export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, id
 // ------------------------------------------------------------------ helpers
 
 const BLOCK_SECONDS = 2
+/** Slack on the expiry ceiling, for the gap between a writer's head and a reader's (ten minutes of blocks). */
+const EXPIRY_SLACK_BLOCKS = 300n
 /** How often a session catches up by query while its WebSocket is failing (one query each time). */
 const POLL_WHILE_SOCKET_DOWN_MS = 20_000
 
@@ -1732,7 +1755,6 @@ async function writeSnapshotEntities(
   authors: Record<string, { address: Hex; salt: string; sig: Hex }>,
   lifetime: number,
   extra: BatchSpec,
-  readonly = false,
 ): Promise<{ result: BatchResult; headKey: Hex; chunks: Hex[]; bytes: number; transactions: number }> {
   const size = MAX_CHUNK_PLAINTEXT - 1024
   // the head carries the header (authors table, chunk keys) as well as data, so its data part is
@@ -1746,7 +1768,6 @@ async function writeSnapshotEntities(
   const docBytes = hexToBytes(doc)
   // every snapshot, version and chunk is readonly: its creator could otherwise patch the content later
   // and keep the original block. Only published versions may be kept alive by anyone.
-  void readonly
   const flags = { readonly: true, permissionlessExtension: kind === KIND.version }
   const spec = async (frame: Frame, k: Kind): Promise<CreateSpec> => ({
     payload: encodeOuter(epoch, await seal(key, encodeFrame(frame, randomBytes))),

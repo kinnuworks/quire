@@ -134,7 +134,7 @@ function HeroVisual() {
           <div className="pub">
             <dl>
               <dt>$creator</dt>
-              <dd>0x9e1c…41a7</dd>
+              <dd>0xd947…00a4</dd>
               <dt>qp</dt>
               <dd>"quire1"</dd>
               <dt>qd</dt>
@@ -255,7 +255,7 @@ export function Home() {
             <div className="card card--chosen reveal" style={{ "--i": 1 } as React.CSSProperties}>
               <p className="t-title">With Quire</p>
               <p className="t-small" style={{ marginTop: 14 }}>
-                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that reads, stores or relays your writing, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. What still stands in the way: this page is served by Vercel, today's network has one public endpoint, and new keys get gas from our sponsor. The readers in the repository work without the page, and any Arkiv node can serve the data.
+                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that can read your writing: the optional relay passes along encrypted query results only, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. What still stands in the way: this page is served by Vercel, today's network has one public endpoint, and new keys get gas from our sponsor. The readers in the repository work without the page, and any Arkiv node can serve the data.
               </p>
               <div className="flow">
                 <span>Your browser</span>
@@ -349,9 +349,9 @@ export function Home() {
                 </div>
                 <div className="mini__body" style={{ borderTop: "1px solid var(--line)" }}>
                   <div className="row wrap" style={{ gap: 14 }}>
-                    <span className="addr"><span className="dot" style={{ background: "var(--author-a)" }} />Asha · 0x41c0…8e2d</span>
-                    <span className="addr"><span className="dot" style={{ background: "var(--author-c)" }} />Ravi · 0xb7f2…01aa</span>
-                    <span className="addr"><span className="dot" style={{ background: "var(--author-b)" }} />Bea · 0x9e1c…41a7</span>
+                    <span className="addr"><span className="dot" style={{ background: "var(--author-a)" }} />Asha · 0xa7da…b546</span>
+                    <span className="addr"><span className="dot" style={{ background: "var(--author-c)" }} />Ravi · 0x2a77…4b8b</span>
+                    <span className="addr"><span className="dot" style={{ background: "var(--author-b)" }} />Bea · 0xd947…00a4</span>
                   </div>
                 </div>
               </div>
@@ -416,9 +416,9 @@ export function Home() {
                 </div>
                 <div className="mini__body" style={{ gap: 0 }}>
                   {[
-                    { n: "Asha", a: "0x41c0…8e2d", c: "var(--author-a)", r: "owner" },
-                    { n: "Bea", a: "0x9e1c…41a7", c: "var(--author-b)", r: "writer" },
-                    { n: "Ravi", a: "0xb7f2…01aa", c: "var(--author-c)", r: "removed", gone: true },
+                    { n: "Asha", a: "0xa7da…b546", c: "var(--author-a)", r: "owner" },
+                    { n: "Bea", a: "0xd947…00a4", c: "var(--author-b)", r: "writer" },
+                    { n: "Ravi", a: "0x2a77…4b8b", c: "var(--author-c)", r: "removed", gone: true },
                   ].map((m) => (
                     <div className={`member ${m.gone ? "gone" : ""}`} key={m.n}>
                       <span className="dot" style={{ background: m.c }} />

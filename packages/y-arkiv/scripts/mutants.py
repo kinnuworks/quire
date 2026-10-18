@@ -20,7 +20,7 @@ MUTANTS = [
     (P, "own client id in snapshots", "if (this.identity && ours !== undefined && ours >", "if (false && ours !== undefined && ours >"),
     (P, "whole-item provenance", "this.coveredByProven(client, clock, clock + length)", "this.coveredByProven(client, clock, clock + 1)"),
     (P, "verified clocks checked on load", "const verified = this.history.slice(historyBefore).map((h) => h.update)", "const verified: Uint8Array[] = []"),
-    (P, "override detector", "if (unitKey(doc, found, struct.id.clock + i - found.id.clock) !== unitKey(doc, struct, i)) return true", "if (false) return true"),
+    (P, "override detector", "        if (found instanceof Y.Item && !found.deleted && rangesDiffer(doc, found, struct, c, stop)) return true", "        if (false) return true"),
     (P, "override: map key", "k === 0 ? (item.parentSub ?? \"\") : \"\"", "\"\""),
     (P, "override: format value", "id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? \"\") : \"\", unit(item.content, k)]", "id(item.rightOrigin), parent, k === 0 ? (item.parentSub ?? \"\") : \"\", item.content.getContent()[k] ?? null]"),
     (P, "refused snapshot never commits", "Y.applyUpdate(trial, st.state)\n      if (snapshotConflicts(this.doc, st.state, verified) || overridesVerified(trial, verified)) {\n        this.reject()\n        this.refusedSnapshots.add(st.key)\n        continue", "Y.applyUpdate(trial, st.state)\n      if (snapshotConflicts(this.doc, st.state, verified) || overridesVerified(trial, verified)) {\n        this.reject()\n        st.commit(false)\n        continue"),

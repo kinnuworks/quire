@@ -178,7 +178,7 @@ export function ActivityPanel({ session }: { session: DocumentSession }) {
         </div>
       </section>
       <ul className="feed">
-        {session.activity.length === 0 && <li className="muted">Nothing yet. Type something, or open the invite link in a private window.</li>}
+        {session.activity.length === 0 && <li className="muted">{session.provider?.role === "owner" || session.provider?.role === "writer" ? "Nothing yet. Type something, or open the invite link in a private window." : "Nothing yet. New edits appear here a few seconds after a member types."}</li>}
         {session.activity.map((a) => (
           <li key={a.id} className={`feed-${a.kind}`}>
             <span className="time">{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>

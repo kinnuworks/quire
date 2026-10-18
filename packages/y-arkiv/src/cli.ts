@@ -90,6 +90,12 @@ async function main() {
   const identity = key ? { address: privateKeyToAccount(key).address.toLowerCase() as `0x${string}`, privateKey: key, name: "reader" } : undefined
   // blame reads every update still on chain, not only those after the newest snapshot
   const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: cmd === "blame" || cmd === "timeline" })
+  // a refused WebSocket (the gateway rate-limits handshakes) only matters to watch; say so once, quietly
+  let warned = false
+  provider.on("error", () => {
+    if (!warned && cmd === "watch") console.error("--- live updates unavailable for now; checking by query every 20 seconds")
+    warned = true
+  })
   await provider.connect()
 
   if (cmd === "read") {

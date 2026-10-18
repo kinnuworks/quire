@@ -40,6 +40,14 @@ This proves which key wrote the text, not which person: an address is a key made
 
 ## Why Arkiv, and what stays off it
 
+Take Arkiv away and three things Quire promises are gone, whoever the replacement host is:
+
+1. **Nobody can take the document away.** It lives in network state that no single operator holds. No provider can delete it, lock an account or shut down and take the only copy with it. The one person who can end a document is its owner, by deleting the member list.
+2. **Anyone can check who wrote what.** Every edit is its own entity, created `readonly`, whose `$creator` nobody can forge, stamped with the block it landed in. A reviewer rebuilds the document and its authorship from the chain with either of two independent readers, without trusting us or any server. A hosted editor's history, encrypted or not, is only as good as the host's word.
+3. **Expiry is enforced, not promised.** Every entity carries the lifetime the owner chose, and the network drops it when that runs out. Readers ignore any copy someone tried to keep past it.
+
+Why not the alternatives:
+
 | Option | What breaks for Quire |
 |---|---|
 | y-websocket, Hocuspocus, Liveblocks | An operator stores every update. It can be compelled, can read unencrypted documents, and can delete or lock them |
@@ -48,9 +56,9 @@ This proves which key wrote the text, not which person: an address is a key made
 | Nostr relays | Signed events and live push, but each relay decides what to keep and returns what it has. A document assembled from relays depends on which relays kept which events, nothing makes two writes land together (key rotation needs the new member list and the new snapshot at once), and there is no lease: data lives until a relay drops it |
 | Ciphertext in EVM contract logs | Contracts are not available on Tiramisu, logs cannot be queried by typed range or expire, and reading them back needs an indexer, which is an operator again |
 | Postgres behind our API | Every problem in the first row, and we become the party a court order goes to |
-| CryptPad, Proton Docs | Hosted end-to-end encrypted editors: a court order to the host gets ciphertext too, and they are faster and have presence. But the host still decides whether your document exists: it can delete it, lock your account or shut down, and nobody outside can check who wrote what without trusting its servers. On Arkiv no host holds the only copy, every edit is a public entity whose creator nobody can forge, and anyone can rebuild and audit a document from the chain |
+| CryptPad, Proton Docs | Hosted end-to-end encrypted editors keep content from the host, and they are faster and have presence. They fail points 1 and 2: the host decides whether your document exists, and its edit history is unverifiable from outside |
 
-What Arkiv gives us that the product depends on:
+The Arkiv features each of those rests on:
 
 - Storage we do not run: the network keeps every entity, stamped by the block it landed in, until it expires. Today that network is Tiramisu, a testnet the Arkiv team operates.
 - `$creator` that nobody can forge. The member list is trusted only from the owner's address, and edits only from members.

@@ -170,7 +170,7 @@ export class ArkivProvider extends Observable<string> {
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
-  private readonly verifiedUnits = new Map<string, string>()
+  private readonly verifiedUnits = new StructIndex()
   /** Base block of every snapshot this session applied, so a reload knows them without re-reading. */
   private readonly snapshotBases = new Map<Hex, bigint>()
   /** Snapshots refused by a rule (not merely unreadable): their creator gets no fallback on load. */
@@ -647,24 +647,14 @@ export class ArkivProvider extends Observable<string> {
     // struct against struct, as each applied update wrote it: whether that item was deleted since does
     // not matter, or a writer could delete their text and reuse its clocks for something else
     for (const st of Y.decodeUpdate(update).structs) {
-      if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
-      for (let k = 0; k < st.length; k++) {
-        const want = this.verifiedUnits.get(`${st.id.client}:${st.id.clock + k}`)
-        if (want !== undefined && want !== unitKey(this.doc, st, k)) return true
-      }
+      if (st instanceof Y.Item && !(st.content instanceof Y.ContentDeleted) && this.verifiedUnits.conflicts(this.doc, st)) return true
     }
     return false
   }
 
-  /** Records what an applied update wrote at each clock (see conflictsWithProven). */
+  /** Records what an applied update wrote (see conflictsWithProven). */
   private recordUnits(update: Uint8Array): void {
-    for (const st of Y.decodeUpdate(update).structs) {
-      if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
-      for (let k = 0; k < st.length; k++) {
-        const key = `${st.id.client}:${st.id.clock + k}`
-        if (!this.verifiedUnits.has(key)) this.verifiedUnits.set(key, unitKey(this.doc, st, k))
-      }
-    }
+    this.verifiedUnits.add(update)
   }
 
   private coveredByProven(client: number, from: number, to: number): boolean {
@@ -1832,20 +1822,77 @@ export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
   for (const u of updates) {
     for (const struct of Y.decodeUpdate(u).structs) {
       if (!(struct instanceof Y.Item)) continue
-      // clock by clock: later edits split items, so one struct may now span several items
-      for (let i = 0; i < struct.length; i++) {
+      // run by run: later edits split items, so one struct may now span several integrated items
+      const end = struct.id.clock + struct.length
+      for (let c = struct.id.clock; c < end; ) {
         let found: Y.Item | Y.GC
         try {
-          found = Y.getItem(doc.store, Y.createID(struct.id.client, struct.id.clock + i)) as Y.Item | Y.GC
+          found = Y.getItem(doc.store, Y.createID(struct.id.client, c)) as Y.Item | Y.GC
         } catch {
           break // still pending: nothing has replaced it
         }
-        if (!(found instanceof Y.Item) || found.deleted) continue
-        if (unitKey(doc, found, struct.id.clock + i - found.id.clock) !== unitKey(doc, struct, i)) return true
+        const stop = Math.min(found.id.clock + found.length, end)
+        if (found instanceof Y.Item && !found.deleted && rangesDiffer(doc, found, struct, c, stop)) return true
+        c = stop
       }
     }
   }
   return false
+}
+
+/**
+ * True if items `x` and `y` differ anywhere in the clocks [a, b) they both cover. The full key is compared
+ * at `a`; past it, origins are implied by the clock and right origins, parent and kind were just compared,
+ * so only the content can differ, and a run of text is compared as one slice instead of clock by clock.
+ */
+function rangesDiffer(doc: Y.Doc, x: Y.Item, y: Y.Item, a: number, b: number): boolean {
+  if (unitKey(doc, x, a - x.id.clock) !== unitKey(doc, y, a - y.id.clock)) return true
+  if (b - a <= 1) return false
+  if (x.content instanceof Y.ContentString && y.content instanceof Y.ContentString) {
+    return x.content.str.slice(a + 1 - x.id.clock, b - x.id.clock) !== y.content.str.slice(a + 1 - y.id.clock, b - y.id.clock)
+  }
+  for (let c = a + 1; c < b; c++) if (unitKey(doc, x, c - x.id.clock) !== unitKey(doc, y, c - y.id.clock)) return true
+  return false
+}
+
+/** Decoded items by client, sorted by clock, for finding the ones that overlap a clock range. */
+class StructIndex {
+  private readonly byClient = new Map<number, Y.Item[]>()
+
+  add(update: Uint8Array): void {
+    for (const st of Y.decodeUpdate(update).structs) {
+      if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
+      const list = this.byClient.get(st.id.client) ?? []
+      // keep clock order; structs of one client arrive almost always in order, so this is usually a push
+      let i = list.length
+      while (i > 0 && list[i - 1]!.id.clock > st.id.clock) i--
+      list.splice(i, 0, st)
+      this.byClient.set(st.id.client, list)
+    }
+  }
+
+  /** True if `st` differs from any indexed item at a clock both cover. */
+  conflicts(doc: Y.Doc, st: Y.Item): boolean {
+    const list = this.byClient.get(st.id.client)
+    if (!list) return false
+    const from = st.id.clock
+    const to = st.id.clock + st.length
+    // first item that ends after `from`
+    let lo = 0
+    let hi = list.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (list[mid]!.id.clock + list[mid]!.length <= from) lo = mid + 1
+      else hi = mid
+    }
+    for (let i = lo; i < list.length && list[i]!.id.clock < to; i++) {
+      const v = list[i]!
+      const a = Math.max(from, v.id.clock)
+      const b = Math.min(to, v.id.clock + v.length)
+      if (a < b && rangesDiffer(doc, v, st, a, b)) return true
+    }
+    return false
+  }
 }
 
 /**
@@ -1854,19 +1901,10 @@ export function overridesVerified(doc: Y.Doc, updates: Uint8Array[]): boolean {
  * update is already integrated, because Yjs then drops the snapshot's struct and applies the rest.
  */
 export function snapshotConflicts(doc: Y.Doc, state: Uint8Array, updates: Uint8Array[]): boolean {
-  const verified = new Map<string, string>()
-  for (const u of updates) {
-    for (const st of Y.decodeUpdate(u).structs) {
-      if (!(st instanceof Y.Item)) continue
-      for (let k = 0; k < st.length; k++) verified.set(`${st.id.client}:${st.id.clock + k}`, unitKey(doc, st, k))
-    }
-  }
+  const verified = new StructIndex()
+  for (const u of updates) verified.add(u)
   for (const st of Y.decodeUpdate(state).structs) {
-    if (!(st instanceof Y.Item) || st.content instanceof Y.ContentDeleted) continue
-    for (let k = 0; k < st.length; k++) {
-      const want = verified.get(`${st.id.client}:${st.id.clock + k}`)
-      if (want !== undefined && want !== unitKey(doc, st, k)) return true
-    }
+    if (st instanceof Y.Item && !(st.content instanceof Y.ContentDeleted) && verified.conflicts(doc, st)) return true
   }
   return false
 }

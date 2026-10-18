@@ -19,6 +19,7 @@ import os
 import re
 import struct
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -908,9 +909,9 @@ class Source:
         raise NotImplementedError
 
     def by_kind(
-        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0
+        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None
     ) -> list[Entity]:
-        """Entities of one kind; `creators=None` means any creator."""
+        """Entities of one kind; `creators=None` means any creator; `qs` within [min_qs, max_qs]."""
         raise NotImplementedError
 
     def entity(self, key: str) -> Entity | None:
@@ -923,10 +924,12 @@ class Source:
         """The entity as it stood at `block` (arkiv_getEntity with a block), or None if it did not exist then."""
         return None
 
+    max_qs: int | None = None  # set by the reader: the qs ceiling for audits
+
     def all_updates(self, doc: str, max_pages: int) -> tuple[list[Entity], bool]:
         """Every update entity for `doc` whoever wrote it, for an audit; at most
         `max_pages` pages of 200. The bool says whether that was all of them."""
-        es = self.by_kind(doc, "u", None)
+        es = self.by_kind(doc, "u", None, 0, self.max_qs)
         return es, True
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
@@ -958,7 +961,7 @@ class VectorSource(Source):
         return [e for e in self.entities if self._match(e, doc, "a") and e.creator == owner]
 
     def by_kind(
-        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0
+        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None
     ) -> list[Entity]:
         qs: Callable[[Entity], int] = lambda e: e.attr("qs") if isinstance(e.attr("qs"), int) else -1
         return [
@@ -967,6 +970,7 @@ class VectorSource(Source):
             if self._match(e, doc, kind)
             and (creators is None or e.creator in creators)
             and qs(e) >= min_qs
+            and (max_qs is None or qs(e) <= max_qs)
         ]
 
     def entity(self, key: str) -> Entity | None:
@@ -999,11 +1003,13 @@ class RpcSource(Source):
         return self._run(self._base(doc, "a") + f" AND $creator = addr({owner})")
 
     def by_kind(
-        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0
+        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None
     ) -> list[Entity]:
         query = self._base(doc, kind)
         if min_qs:
             query += f" AND qs >= u64({min_qs})"
+        if max_qs is not None:
+            query += f" AND qs <= u64({max_qs})"
         if creators is not None:
             if not creators:
                 return []
@@ -1020,7 +1026,7 @@ class RpcSource(Source):
         return e if e is not None and well_formed(e) else None
 
     def all_updates(self, doc: str, max_pages: int) -> tuple[list[Entity], bool]:
-        es = self._run(self._base(doc, "u"), max_pages=max_pages)
+        es = self._run(self._base(doc, "u") + (f" AND qs <= u64({self.max_qs})" if self.max_qs is not None else ""), max_pages=max_pages)
         return es, len(es) < max_pages * 200
 
     def entity(self, key: str) -> Entity | None:
@@ -1261,6 +1267,10 @@ class Reader:
         # later patch of the list can change
         self.audit = audit
         self.audit_narrowed = False
+        self.audit_unchecked = 0  # edits whose past member list could not be read, so today's list decided
+        # Section 5: a valid entity's qs is at most the block it landed in, so readers fetch qs <= head + 60;
+        # far-future junk never enters a query, whoever wrote it
+        self.qs_ceiling: int | None = None
         self._acl_at: dict[int, Membership | None | bool] = {}
         # one more query on a live node; the trust report wants it, plain reading does not
         self.scan_outsiders = scan_outsiders
@@ -1278,7 +1288,6 @@ class Reader:
         self.dropped_authors: list[str] = []
         self.revoked_at: dict[str, list[tuple[int, int]]] = {}  # removed member -> membership intervals that ended
         self.added_at: dict[str, int] = {}  # member -> block they were added, from the roster
-        self.head_block = 0  # newest block, for the expiry ceiling
         self.keep_until: Any = None  # the owner's keepUntil, from the ACL
         self.acl_entity: Entity | None = None
         # Section 5: a writing session's own client id. Snapshots carrying
@@ -1333,7 +1342,8 @@ class Reader:
 
     def load_acl(self) -> dict[str, Any]:
         mkey = meta_key(self.link.secret)
-        for e in self.source.acl(self.link.doc, self.link.owner):
+        # the earliest valid one, by createdAt then key: Arkiv promises no order, so readers agree this way
+        for e in sorted(self.source.acl(self.link.doc, self.link.owner), key=lambda x: (x.created_at, x.key)):
             if e.creator != self.link.owner:  # never trust another creator
                 self._ignore(e, "ACL not created by the owner")
                 continue
@@ -1474,7 +1484,7 @@ class Reader:
         them, and the base that step 4 reads updates from."""
         refused = refused or {}
         decoded: list[tuple[Entity, Frame]] = []
-        for e in self.source.by_kind(self.link.doc, "s", members):
+        for e in self.source.by_kind(self.link.doc, "s", members, 0, self.qs_ceiling):
             if e.creator not in members:
                 self._ignore(e, "creator not in ACL")
                 continue
@@ -1590,12 +1600,32 @@ class Reader:
 
     def expiry_ok(self, e: Entity) -> bool:
         """Section 5: an edit, snapshot or chunk may not expire after the larger
-        of the owner's keepUntil and a fresh 30-day lease from now (plus ten
-        minutes), or a member could keep a readable copy past the owner's
-        ceiling."""
-        lease = self.head_block + LEASE_BLOCKS
-        keep = int(self.keep_until) if isinstance(self.keep_until, str) and self.keep_until.isdigit() else 0
-        return e.expires_at <= max(lease, keep) + EXPIRY_SLACK_BLOCKS
+        of the owner's keepUntil and a 30-day lease from the block the entity
+        last changed (updatedAt: its creation or latest extension), plus ten
+        minutes, or a member could keep a readable copy past the owner's
+        ceiling. Anchored to the entity, so every reader agrees whenever it
+        reads. An audit takes keepUntil as it stood at that block, so lowering
+        it afterwards cannot take back a member's kept proof."""
+        changed = e.updated_at if e.updated_at is not None else e.created_at
+
+        def ceiling(keep_until: Any) -> int:
+            keep = int(keep_until) if isinstance(keep_until, str) and keep_until.isdigit() else 0
+            return max(changed + LEASE_BLOCKS, keep) + EXPIRY_SLACK_BLOCKS
+
+        if e.expires_at <= ceiling(self.keep_until):
+            return True
+        if not (self.audit and self.source.has_history and self.acl_entity is not None):
+            return False
+        past = self.past_acl(changed)
+        if past is False:
+            self.audit_unchecked += 1
+            return False
+        if past is None or past.creator != self.link.owner:
+            return False
+        try:
+            return e.expires_at <= ceiling(self.parse_acl(past).get("keepUntil"))
+        except Exception:
+            return False
 
     def member_at(self, e: Entity) -> bool:
         """A current member, and the entity landed at or after the block they
@@ -1613,7 +1643,11 @@ class Reader:
         block = e.created_at
         if block not in self._acl_at:
             then: Membership | None | bool = None  # None: no valid list from the owner at that block
-            past = self.source.entity_at(self.acl_entity.key, block)
+            past = self.past_acl(block)
+            if past is False:
+                # the RPC kept failing: today's list decides, and the edit is counted as unchecked
+                self.audit_unchecked += 1
+                return self.wrote_as_member(e, members)
             if past is not None and past.creator == self.link.owner:
                 try:
                     roster = self.roster(self.parse_acl(past))
@@ -1625,6 +1659,17 @@ class Reader:
         if then is True:
             return self.wrote_as_member(e, members)
         return isinstance(then, tuple) and wrote_as(e, then)
+
+    def past_acl(self, block: int) -> Entity | None | bool:
+        """The ACL entity as it stood at `block`, None if there was none, or False if
+        the read failed three times (a 429 from the free-read limit, a dropped connection)."""
+        for attempt in range(3):
+            try:
+                return self.source.entity_at(self.acl_entity.key, block) if self.acl_entity else None
+            except (OSError, qa.RpcError, ValueError):
+                if attempt < 2:
+                    time.sleep(0.5 * 2 ** attempt)
+        return False
 
     def wrote_as_member(self, e: Entity, members: list[str]) -> bool:
         """Section 5: written by a member, or by a removed member at or before
@@ -1647,9 +1692,9 @@ class Reader:
             found, complete = self.source.all_updates(self.link.doc, AUDIT_PAGES)
             if not complete:
                 self.audit_narrowed = True
-            candidates = found if complete else self.source.by_kind(self.link.doc, "u", authors, 0)
+            candidates = found if complete else self.source.by_kind(self.link.doc, "u", authors, 0, self.qs_ceiling)
         else:
-            candidates = self.source.by_kind(self.link.doc, "u", authors, min_qs)
+            candidates = self.source.by_kind(self.link.doc, "u", authors, min_qs, self.qs_ceiling)
         for e in candidates:
             if not self.member_then(e, members):
                 self._ignore(e, "created before its creator was added" if e.creator in members else "creator not in ACL")
@@ -1779,7 +1824,9 @@ class Reader:
     def read(self) -> ReadResult:
         acl = self.load_acl()
         self.keep_until = acl.get("keepUntil")
-        self.head_block = self.source.head()
+        head = self.source.head()
+        self.qs_ceiling = head + SNAPSHOT_WINDOW if head > 0 else None
+        self.source.max_qs = self.qs_ceiling
         roster = self.roster(acl)  # also checks that epoch is an integer
         epoch = acl.get("epoch", 0)
         doc = Doc()
@@ -2178,7 +2225,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "applied": sorted(result.applied),
                 "ignored": sorted([k, r] for k, r in result.ignored),
                 "proven": dict(sorted((a, n) for a, n in proven.items() if n)),
-                **({"auditNarrowed": reader.audit_narrowed} if args.audit else {}),
+                **({"auditNarrowed": reader.audit_narrowed, "auditUnchecked": reader.audit_unchecked} if args.audit else {}),
             }, indent=2))
             return 0
         if args.verify:

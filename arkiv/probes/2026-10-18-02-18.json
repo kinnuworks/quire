@@ -1,0 +1,37 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-18T02:18:09.177Z",
+  "tag": "probe-mvd74hax",
+  "patchVsExtend": {
+    "expected": "a field that says when content changed, separate from expiry changes",
+    "plain_entity": {
+      "created": {
+        "createdAt": "0xafcc0",
+        "updatedAt": "0xafcc0",
+        "expiresAt": "0xb0ad0"
+      },
+      "after_extend": {
+        "createdAt": "0xafcc0",
+        "updatedAt": "0xafcc3",
+        "expiresAt": "0xb18e3"
+      },
+      "after_patch": {
+        "createdAt": "0xafcc0",
+        "updatedAt": "0xafcc7",
+        "expiresAt": "0xb18e3"
+      }
+    },
+    "readonly_entity": {
+      "patch": "refused: Transaction failed: entity 0x3a19f02c…a2878a was created readonly, so its contents can never change. Its expiry can still be extended, and it can be transferred or deleted",
+      "extend": "ok",
+      "delete": "ok"
+    }
+  },
+  "wsHandshake": {
+    "expected": "the handshake limit documented, and a refusal that says why",
+    "keyless": 101,
+    "withAccessKey": 101,
+    "postWithGet": 405
+  }
+}

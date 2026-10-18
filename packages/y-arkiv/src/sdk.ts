@@ -19,7 +19,7 @@ import {
 } from "@arkiv-network/sdk"
 import { addr, bytes32, str, u64 } from "@arkiv-network/sdk/attr"
 import { tiramisu } from "@arkiv-network/sdk/chains"
-import { and, eq, type Expression, gte, or } from "@arkiv-network/sdk/query"
+import { and, eq, type Expression, gte, lte, or } from "@arkiv-network/sdk/query"
 import { type Account, type Chain, type EIP1193Provider, custom, http, type Transport, webSocket } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { hexToBytes } from "./hex.js"
@@ -82,6 +82,7 @@ export type RpcEntity = {
   owner: Hex
   creator: Hex
   createdAt: Hex
+  updatedAt?: Hex
   expiresAt: Hex
   creationFlags?: { readonly?: boolean; permissionlessExtension?: boolean } | number
   payload?: Hex
@@ -219,6 +220,7 @@ export function toExpression(spec: QuerySpec): Expression {
   const parts: Expression[] = [eq("qp", str(PROTOCOL_TAG)), eq("qd", bytes32(spec.doc))]
   if (spec.kind) parts.push(eq("qk", str(spec.kind)))
   if (spec.seqGte !== undefined) parts.push(gte("qs", u64(spec.seqGte)))
+  if (spec.seqLte !== undefined) parts.push(lte("qs", u64(spec.seqLte)))
   if (spec.creators?.length) {
     const byCreator = spec.creators.map((c) => eq("$creator", addr(c)))
     parts.push(byCreator.length === 1 ? byCreator[0]! : or(byCreator))
@@ -239,6 +241,7 @@ function fromSdkEntity(e: Entity): StoredEntity | null {
     creator: lower(e.creator),
     owner: lower(e.owner),
     createdAt: e.createdAt ?? 0n,
+    updatedAt: e.updatedAt ?? e.createdAt ?? 0n,
     expiresAt: e.expiresAt ?? 0n,
     attributes: { doc: lower(qd), kind: qk as Kind, seq: qs },
     payload: e.payload ?? new Uint8Array(),
@@ -263,6 +266,8 @@ export function fromRpcEntity(e: RpcEntity): StoredEntity | null {
     creator: lower(e.creator),
     owner: lower(e.owner),
     createdAt: BigInt(e.createdAt),
+    // older vectors files have no updatedAt: the entity then counts as unchanged since creation
+    updatedAt: BigInt(e.updatedAt ?? e.createdAt),
     expiresAt: BigInt(e.expiresAt),
     attributes: { doc: lower(qd), kind: qk as Kind, seq: BigInt(qs) },
     payload: e.payload ? hexToBytes(e.payload) : new Uint8Array(),

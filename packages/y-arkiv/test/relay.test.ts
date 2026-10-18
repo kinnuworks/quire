@@ -46,4 +46,13 @@ describe("relay", () => {
     }
     expect(sent).toEqual([{ jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [query, { select: "*", limit: "0xc8", cursor: "abc", atBlock: "0x10" }] }])
   })
+
+  it("accepts every query shape the provider sends, bounds on qs included, and nothing appended", async () => {
+    const { QUIRE_QUERY } = (await import(new URL("../../../api/rpc.ts", import.meta.url).href)) as { QUIRE_QUERY: RegExp }
+    const doc = `qp = str('quire1') AND qd = bytes32(0x${"ab".repeat(32)})`
+    const two = `($creator = addr(0x${"cd".repeat(20)}) OR $creator = addr(0x${"ef".repeat(20)}))`
+    expect(QUIRE_QUERY.test(`${doc} AND qk = str('u') AND qs >= u64(5) AND qs <= u64(9) AND ${two}`)).toBe(true)
+    expect(QUIRE_QUERY.test(`${doc} AND qk = str('s') AND qs <= u64(9) AND $creator = addr(0x${"cd".repeat(20)})`)).toBe(true)
+    expect(QUIRE_QUERY.test(`${doc} AND qk = str('u') AND qs <= u64(9) OR qk = str('a')`)).toBe(false)
+  })
 })

@@ -20,6 +20,8 @@ export type StoredEntity = {
   creator: Hex
   owner: Hex
   createdAt: bigint
+  /** the block of the last change: creation, extension or patch (Arkiv's updatedAt) */
+  updatedAt: bigint
   expiresAt: bigint
   attributes: QuireAttributes
   payload: Uint8Array
@@ -52,6 +54,8 @@ export type QuerySpec = {
   kind?: Kind
   /** Inclusive lower bound on the `qs` attribute. */
   seqGte?: bigint
+  /** Inclusive upper bound on the `qs` attribute. */
+  seqLte?: bigint
   /** Only entities whose on-chain `$creator` is one of these. */
   creators?: Hex[]
   atBlock?: bigint

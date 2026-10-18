@@ -438,6 +438,18 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(audited.text, plain.text)
         self.assertEqual(sorted(audited.applied), sorted(plain.applied))
 
+    def test_audit_that_cannot_read_the_past_list_counts_the_edit_as_unchecked(self) -> None:
+        def failing(src, key, block):
+            raise OSError("429")
+        quire_read.time.sleep, sleep = (lambda _s: None), quire_read.time.sleep
+        try:
+            _plain_reader, plain = self._member_result()
+            reader, audited = self._audit(failing)
+        finally:
+            quire_read.time.sleep = sleep
+        self.assertEqual(audited.text, plain.text)
+        self.assertGreater(reader.audit_unchecked, 0)
+
     def test_audit_counts_no_edit_from_a_block_where_the_owner_had_no_member_list(self) -> None:
         reader, audited = self._audit(lambda src, key, block: None)
         self.assertFalse([k for k in audited.applied if reader.kinds.get(k) == "u"])

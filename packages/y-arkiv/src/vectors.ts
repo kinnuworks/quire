@@ -22,6 +22,7 @@ export function vectorStore(vectors: { head: string; entities: RpcEntity[] }): A
           e.attributes.doc === spec.doc.toLowerCase() &&
           (!spec.kind || e.attributes.kind === spec.kind) &&
           (spec.seqGte === undefined || e.attributes.seq >= spec.seqGte) &&
+          (spec.seqLte === undefined || e.attributes.seq <= spec.seqLte) &&
           (!spec.creators || spec.creators.some((c) => c.toLowerCase() === e.creator)),
       ),
       block: head,

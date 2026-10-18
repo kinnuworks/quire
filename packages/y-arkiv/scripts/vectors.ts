@@ -153,6 +153,7 @@ for (const kind of Object.values(KIND)) {
       creator: e.creator,
       owner: e.owner,
       createdAt: `0x${e.createdAt.toString(16)}`,
+      updatedAt: `0x${e.updatedAt.toString(16)}`,
       expiresAt: `0x${e.expiresAt.toString(16)}`,
       creationFlags: { readonly: e.readonly, permissionlessExtension: e.permissionlessExtension, raw: (e.readonly ? 1 : 0) | (e.permissionlessExtension ? 2 : 0) },
       attributes: [

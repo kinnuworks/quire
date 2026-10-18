@@ -214,7 +214,7 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **What happened.** After a busy hour from one IP (a few sessions plus test runs), new sessions stopped receiving live events. The provider's socket reported an `ErrorEvent` with no message and close code 1006, and nothing else.
 
-**Measured** ([probe](probes/websocket-handshake-2026-10-18.json)): a raw WebSocket upgrade without a key got HTTP 429; the same request with an `x-api-key` header got 101 at the same moment; a minute later the keyless upgrade got 101 again. An HTTP/2 upgrade gets 405 ("only POST JSON-RPC is supported"), so clients must use HTTP/1.1 for the socket.
+**Measured** ([notes](probes/websocket-handshake-2026-10-18.json), typed up from the `curl` session at the time): a raw WebSocket upgrade without a key got HTTP 429; the same request with an `x-api-key` header got 101 at the same moment; a minute later the keyless upgrade got 101 again. The probe `wsHandshake` in `scripts/friction-probes.ts` repeats the check on demand; on a quiet IP it gets 101 both ways ([run](probes/2026-10-18-02-18.json)), which is the point: the limit only shows after a burst, and nothing tells the client. An HTTP/2 upgrade gets 405 ("only POST JSON-RPC is supported"), so clients must use HTTP/1.1 for the socket.
 
 **Expected.** The limit documented next to the query budget, a close frame or error that carries the status, and a way for browsers to authenticate the socket (they cannot set headers on a WebSocket).
 
@@ -228,7 +228,7 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **What happened.** A blind review pointed out that a writer owns their own edits, so they can patch one later. The patched edit keeps its original `createdAt`, so blame would show rewritten text as proven at the original block.
 
-**Measured** ([probe](probes/patch-vs-extend-2026-10-18.json)): on a plain entity, an extension moved `updatedAt` from 0xaebe0 to 0xaebe5, and a later patch moved it again, to 0xaebe9; `createdAt` never changed. So `updatedAt != createdAt` cannot separate a content change from a renewed lease. A `readonly` entity refuses the patch with a clear message and still accepts extension and deletion.
+**Measured** ([probe](probes/2026-10-18-02-18.json), from `npx tsx scripts/friction-probes.ts patchVsExtend`): on a plain entity created at block 0xafcc0, an extension moved `updatedAt` to 0xafcc3 and a later patch moved it again, to 0xafcc7; `createdAt` never changed. So `updatedAt != createdAt` cannot separate a content change from a renewed lease. A `readonly` entity refuses the patch ("created readonly, so its contents can never change. Its expiry can still be extended, and it can be transferred or deleted") and accepts extension and deletion.
 
 **Expected.** A separate content-change marker (a `patchedAt`, or a content hash in the metadata), or docs that point apps which care about provenance to `readonly`.
 
@@ -244,7 +244,7 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **Suggested fix.** Accept an absolute `expiresAtBlock` alongside `expiresIn` in `createEntity`, `extendEntity` and `executeBatch`, and say in the docs which block a relative lifetime counts from.
 
-**What we did.** Every snapshot's lifetime is computed afresh from the owner's `keepUntil`, never from an earlier expiry, so the overshoot is the one or two blocks of landing delay and never grows ([provider.ts](../packages/y-arkiv/src/provider.ts) `writeSnapshot`, test "does not creep past the owner's ceiling").
+**What we did.** Every snapshot's lifetime is computed afresh from the owner's `keepUntil`, never from an earlier expiry, so the overshoot is the one or two blocks of landing delay and never grows ([provider.ts](../packages/y-arkiv/src/provider.ts) `writeSnapshot`, test "does not creep past the owner's ceiling"). Readers in turn measure the 30-day part of the ceiling from each entity's own `updatedAt` rather than from their own head, which item 13's probe shows moves on every extension. A live tab and a reader opening a week later then reach the same verdict.
 
 ## Paths we tested that worked well
 

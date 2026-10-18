@@ -235,6 +235,62 @@ const probes: Record<string, () => Promise<unknown>> = {
     return { expected: "untyped 7 compared to u64 7 either matches or errors", typedCount: typed.entities.length, untyped: untyped.body.slice(0, 160) }
   },
 
+  /** What a patch and an extension do to an entity's timestamps, and what readonly allows (friction item 13). */
+  async patchVsExtend() {
+    const stamps = async (k: `0x${string}`) => {
+      const res = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "arkiv_getEntity", params: [k] }) })
+      const raw = ((await res.json()) as { result: { createdAt: string; updatedAt: string; expiresAt: string } }).result
+      return { createdAt: raw.createdAt, updatedAt: raw.updatedAt, expiresAt: raw.expiresAt }
+    }
+    const create = async (readonly: boolean) =>
+      (await wallet.executeBatch({ creates: [{ payload: payload(32), contentType: "application/octet-stream", attributes: attrs, expires: ExpirationTime.fromHours(2), flags: { readonly, permissionlessExtension: false } }] })).createdEntities[0]!
+    const plain = await create(false)
+    const created = await stamps(plain)
+    await wallet.extendEntity({ entityKey: plain, expires: ExpirationTime.fromHours(4) })
+    const afterExtend = await stamps(plain)
+    await wallet.executeBatch({ patches: [{ entityKey: plain, payload: payload(32), contentType: "application/octet-stream", set: attrs }] })
+    const afterPatch = await stamps(plain)
+    const sealed = await create(true)
+    const attempt = async (label: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn()
+        return "ok"
+      } catch (e) {
+        return `refused: ${(e as Error).message.split("\n")[0]!.slice(0, 200)}`
+      }
+    }
+    return {
+      expected: "a field that says when content changed, separate from expiry changes",
+      plain_entity: { created, after_extend: afterExtend, after_patch: afterPatch },
+      readonly_entity: {
+        patch: await attempt("patch", () => wallet.executeBatch({ patches: [{ entityKey: sealed, payload: payload(32), contentType: "application/octet-stream", set: attrs }] })),
+        extend: await attempt("extend", () => wallet.extendEntity({ entityKey: sealed, expires: ExpirationTime.fromHours(4) })),
+        delete: await attempt("delete", () => wallet.executeBatch({ deletes: [{ entityKey: sealed }] })),
+      },
+    }
+  },
+
+  /** A raw WebSocket upgrade with and without an access key, and over HTTP/2 (friction item 12). */
+  async wsHandshake() {
+    const { request } = await import("node:https")
+    const upgrade = (headers: Record<string, string>) =>
+      new Promise<number>((resolve) => {
+        const req = request(RPC, { method: "GET", headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", ...headers } })
+        req.on("upgrade", (res, socket) => (socket.destroy(), resolve(res.statusCode ?? 101)))
+        req.on("response", (res) => (res.resume(), resolve(res.statusCode ?? 0)))
+        req.on("error", () => resolve(-1))
+        req.end()
+      })
+    const access = process.env.ARKIV_ACCESS_KEY
+    return {
+      expected: "the handshake limit documented, and a refusal that says why",
+      keyless: await upgrade({}),
+      withAccessKey: access ? await upgrade({ "x-api-key": access }) : "no ARKIV_ACCESS_KEY set",
+      // HTTP/2 cannot carry an Upgrade handshake; fetch negotiates it where the server offers it
+      postWithGet: (await fetch(RPC, { method: "GET" })).status,
+    }
+  },
+
   /** Funding a burner with a plain transfer, as Quire's drip does. */
   async burnerFunding() {
     const burner = privateKeyToAccount(generatePrivateKey())

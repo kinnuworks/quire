@@ -104,6 +104,21 @@ describe("robustness", () => {
     expect(ownerAgain.provider.status).toBe("synced")
   })
 
+  it("a qs a few blocks past its own block is refused by live and cold readers alike", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const c = await peer(chain, link, identity("cal"))
+    await admit(chain, a, c)
+    const salt = randomBytes(16)
+    // inside every reader's query bound (head + 60), so only the reader-side rule can refuse it
+    await writeUpdate(chain, link, c.id!, salt, appendAs(new Y.Doc(), clientIdFor(c.id!.address, salt), "ahead "), chain.block + 10n)
+    await settle(chain, [a, c])
+    const late = await peer(chain, link, undefined)
+    expect(text(late)).toBe("")
+    expect(text(a)).toBe("")
+  })
+
   it("a far-future qs is refused, so it cannot hide newer edits from late joiners", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)

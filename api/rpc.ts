@@ -15,12 +15,13 @@
 
 const RPC = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 // exactly the query shapes Quire sends (toExpression in y-arkiv), matched whole: one document, an
-// optional kind, an optional qs bound, an optional set of creators. Nothing can be appended.
+// optional kind, optional qs bounds, an optional set of creators. Nothing can be appended.
 const ADDR = "addr\\(0x[0-9a-fA-F]{40}\\)"
 export const QUIRE_QUERY = new RegExp(
   "^qp = str\\('quire1'\\) AND qd = bytes32\\(0x[0-9a-fA-F]{64}\\)" +
     "( AND qk = str\\('[ausjcv]'\\))?" +
     "( AND qs >= u64\\([0-9]{1,20}\\))?" +
+    "( AND qs <= u64\\([0-9]{1,20}\\))?" +
     `( AND (\\$creator = ${ADDR}|\\(\\$creator = ${ADDR}( OR \\$creator = ${ADDR}){1,63}\\)))?$`,
 )
 const MAX_BODY = 8_192

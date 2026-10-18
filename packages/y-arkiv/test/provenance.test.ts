@@ -779,9 +779,9 @@ describe("membership at each edit's block", () => {
       return {}
     })
     await settle(chain, [a, bea, mal])
-    const read = async (membershipAtBlock: boolean) => {
+    const read = async (membershipAtBlock: boolean, fullHistory = true) => {
       const doc = new Y.Doc()
-      const p = new ArkivProvider(doc, { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: true, membershipAtBlock })
+      const p = new ArkivProvider(doc, { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory, membershipAtBlock })
       await p.connect()
       const proven = blame(doc, p).flat().filter((r) => r.proven)
       return { bea: proven.filter((r) => r.address === bea.id!.address).map((r) => r.text).join(""), mal: proven.filter((r) => r.address === mal.id!.address).map((r) => r.text).join("") }
@@ -790,6 +790,8 @@ describe("membership at each edit's block", () => {
     expect(await read(false)).toEqual({ bea: "", mal: "EARLY " })
     // against the list as it stood at each edit's block, it does not
     expect(await read(true)).toEqual({ bea: "Bea wrote this. ", mal: "" })
+    // a normal session, as the app opens one: the backdated newcomer still proves nothing
+    expect((await read(true, false)).mal).toBe("")
     a.provider.destroy()
   })
 })
@@ -906,5 +908,126 @@ describe("a member's own snapshot speaks for their client id", () => {
     // on load: Bea's words, not Mal's, though Mal's snapshot is the newest
     const cold = await peer(chain, link, undefined)
     expect(text(cold)).toBe("Bea: I approve a budget of 100.")
+  })
+})
+
+describe("far-future qs", () => {
+  it("a removed member's junk with a qs far past the head never enters a reader's queries", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const mal = identity("mal")
+    const m = await peer(chain, link, mal)
+    await admit(chain, a, m)
+    await a.provider.revoke(mal.address)
+    await settle(chain, [a, m])
+    m.provider.destroy()
+    a.doc.getText("t").insert(0, "Owner wrote this.")
+    await a.provider.flush()
+    await settle(chain, [a])
+    // valid-looking update entities from a removed member, parked in every future window
+    for (let i = 0; i < 5; i++) {
+      await chain.store(mal.address).batch({
+        creates: Array.from({ length: 200 }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.update, seq: 1n << 62n }, lifetimeSeconds: 3600, readonly: true })),
+      })
+      chain.mine()
+    }
+    const base = chain.store(owner.address)
+    let queries = 0
+    const counting: ArkivStore = { ...base, query: (spec) => (queries++, base.query(spec)) }
+    const doc = new Y.Doc()
+    const reader = new ArkivProvider(doc, { store: counting, link, identity: owner, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true })
+    await reader.connect()
+    expect(doc.getText("t").toString()).toBe("Owner wrote this.")
+    expect(queries).toBeLessThanOrEqual(4)
+    reader.destroy()
+  })
+})
+
+describe("audit with a failing RPC", () => {
+  it("an edit whose past member list cannot be read is counted as unchecked and judged by today's list, not dropped", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    a.doc.getText("t").insert(0, "Owner wrote this.")
+    await a.provider.flush()
+    await settle(chain, [a])
+    const base = chain.store(undefined)
+    // every read at a past block fails, as a 429 from the free-read limit would
+    const failing: ArkivStore = { ...base, get: (key, block) => (block === undefined ? base.get(key) : Promise.reject(new Error("429"))) }
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: failing, link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true, membershipAtBlock: true })
+    await audit.connect()
+    expect(blame(doc, audit).flat().filter((r) => r.proven).map((r) => r.text).join("")).toBe("Owner wrote this.")
+    expect(audit.auditUnchecked).toBeGreaterThan(0)
+    audit.destroy()
+  })
+})
+
+describe("expiry ceiling, anchored to each entity", () => {
+  const updateAcl = (p: ArkivProvider, f: (acl: { keepUntil: string | null }) => void) =>
+    (p as unknown as { updateAcl: (g: (acl: { keepUntil: string | null }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => (f(acl), {}))
+
+  it("an edit kept a little past the lease reads the same in a live tab and in a reader that opens later", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "HELLO")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // Bea's own entity, pushed five blocks past a fresh lease plus the slack, from another client
+    const mine = (await chain.store(undefined).query({ doc: link.doc, kind: KIND.update, creators: [bea.id!.address] })).entities[0]!
+    await chain.store(bea.id!.address).batch({ extensions: [{ key: mine.key, lifetimeSeconds: LIFETIME.snapshot + 300 * 2 + 5 * 2 }] })
+    await settle(chain, [a, bea])
+    const live = await peer(chain, link, owner)
+    chain.mine(10)
+    const later = await peer(chain, link, undefined)
+    expect(text(later)).toBe(text(live))
+  })
+
+  it("an owner who lowers keepUntil drops kept edits for normal readers, but the audit still proves them", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "my own essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await a.provider.keepFor(2 * 365 * 86400)
+    await settle(chain, [a, bea])
+    await bea.provider.keepMyProof(365 * 86400)
+    await settle(chain, [a, bea])
+    await updateAcl(a.provider, (acl) => {
+      acl.keepUntil = null
+    })
+    await settle(chain, [a, bea])
+    const proven = async (audit: boolean) => {
+      const doc = new Y.Doc()
+      const p = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: audit, membershipAtBlock: audit })
+      await p.connect()
+      const out = blame(doc, p).flat().filter((r) => r.proven && r.address === bea.id!.address).map((r) => r.text).join("")
+      p.destroy()
+      return out
+    }
+    expect(await proven(false)).toBe("")
+    expect(await proven(true)).toBe("my own essay")
+  })
+})
+
+describe("two member lists from the owner", () => {
+  it("every reader uses the earliest, whatever order the node returns them in", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    // a second, later ACL from the owner that does not list Bea
+    await ArkivProvider.createDocument({ store: chain.store(owner.address), link, identity: owner })
+    chain.mine()
+    const reader = await peer(chain, link, undefined)
+    expect(reader.provider.acl!.members.map((m) => m.address)).toContain(bea.id!.address)
   })
 })

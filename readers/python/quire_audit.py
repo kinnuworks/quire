@@ -84,6 +84,7 @@ class Entity:
     attributes: list[Attribute]
     payload: bytes
     flags_raw: int | None = None  # creationFlags.raw when the source gives it
+    updated_at: int | None = None  # block of the last change (creation, extension, patch); None: unchanged since creation
 
     def attr(self, name: str) -> Any:
         """Value of the first attribute called `name`, or None."""
@@ -177,6 +178,7 @@ def parse_entity(raw: dict[str, Any]) -> Entity:
         owner=str(raw.get("owner", "")).lower(),
         created_at=_int(raw.get("createdAt", 0)),
         expires_at=_int(raw.get("expiresAt", 0)),
+        updated_at=_int(raw["updatedAt"]) if raw.get("updatedAt") is not None else None,
         readonly=readonly,
         permissionless_extension=permissionless,
         attributes=_parse_attributes(raw.get("attributes")),

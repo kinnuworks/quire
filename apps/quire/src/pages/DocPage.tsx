@@ -138,7 +138,9 @@ export function DocPage({ link }: { link: DocLink }) {
 
   const statusClass = provider?.status === "synced" ? "synced" : provider?.status === "error" ? "error" : ""
   const sealed = !!provider?.acl?.rosterHidden
-  const statusText = synced
+  const statusText = synced && provider?.livePaused
+    ? "Synced · live paused"
+    : synced
     ? sealed
       ? "Sealed · no key"
       : role === "owner"

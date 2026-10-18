@@ -183,6 +183,8 @@ export class ArkivProvider extends Observable<string> {
   outsidersTruncated = false
   /** An audit found more update entities than AUDIT_PAGES pages and read only those from today's list (see queryUpdates). */
   auditNarrowed = false
+  /** Edits whose member list (or keepUntil) at their block could not be read after retries, so today's list decided. */
+  auditUnchecked = 0
   /** Every entity this session applied (member list, updates, snapshots), for audits and reader comparisons. */
   readonly appliedKeys = new Set<Hex>()
   /**
@@ -192,11 +194,37 @@ export class ArkivProvider extends Observable<string> {
    */
   private async memberAtBlock(entity: StoredEntity): Promise<boolean | undefined> {
     if (!this.aclKey) return undefined
-    const block = entity.createdAt
+    const acl = await this.aclAtBlock(entity.createdAt)
+    // the past list could not be read (the RPC kept failing): today's list decides, and the edit is
+    // counted as unchecked rather than silently refused
+    if (acl === "unknown") {
+      this.auditUnchecked++
+      return undefined
+    }
+    if (!acl) return false
+    if (acl.rosterHidden) return undefined
+    // the whole section 5 rule against that list: a patch in the edit's own block may already show
+    // the removal, and the removal interval still covers the edit
+    return wroteAsMember(acl, entity.creator, entity.createdAt)
+  }
+
+  /** The owner's member list as it stood at `block`, read by key with atBlock (free); null if there was none then. */
+  private async aclAtBlock(block: bigint): Promise<Acl | null | "unknown"> {
+    if (!this.aclKey) return null
     if (!this.aclAt.has(block)) {
+      // a read that fails (a 429 from the free-read limit, a dropped connection) is retried, then
+      // reported as unknown; only an answer from the chain says whether the list existed then
+      let past: StoredEntity | null | undefined
+      for (let attempt = 0; past === undefined && attempt < 3; attempt++) {
+        try {
+          past = await this.store.get(this.aclKey, block)
+        } catch {
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
+        }
+      }
+      if (past === undefined) return "unknown"
       let acl: Acl | null = null
       try {
-        const past = await this.store.get(this.aclKey, block)
         const frame = past && past.creator.toLowerCase() === this.link.owner.toLowerCase() ? await this.decryptEntity(past, KIND.acl) : null
         acl = frame ? await fromHeader(frame.header, this.link.owner, (n) => this.epochKeys.get(n), this.link.doc) : null
       } catch {
@@ -204,12 +232,7 @@ export class ArkivProvider extends Observable<string> {
       }
       this.aclAt.set(block, acl)
     }
-    const acl = this.aclAt.get(block)
-    if (!acl) return false
-    if (acl.rosterHidden) return undefined
-    // the whole section 5 rule against that list: a patch in the edit's own block may already show
-    // the removal, and the removal interval still covers the edit
-    return wroteAsMember(acl, entity.creator, entity.createdAt)
+    return this.aclAt.get(block) ?? null
   }
 
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
@@ -423,8 +446,10 @@ export class ArkivProvider extends Observable<string> {
   private async loadAcl(): Promise<void> {
     const page = await this.store.query({ doc: this.link.doc, kind: KIND.acl, creators: [this.link.owner], limit: 20 })
     this.sawHead(page.block)
-    // the first entity that is really the owner's ACL; an RPC that ignores the creator filter cannot slip in another
-    for (const entity of page.entities) {
+    // the earliest entity that is really the owner's ACL (by creation block, then key, so every reader picks
+    // the same one whatever order the RPC returns); an RPC that ignores the creator filter cannot slip in another
+    const earliest = [...page.entities].sort((x, y) => (x.createdAt !== y.createdAt ? (x.createdAt < y.createdAt ? -1 : 1) : x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+    for (const entity of earliest) {
       try {
         await this.applyAclEntity(entity)
       } catch {
@@ -469,7 +494,7 @@ export class ArkivProvider extends Observable<string> {
     // without the roster we do not know whose entities to trust, and could not decrypt them anyway
     if (!this.acl || this.acl.rosterHidden) return
     const writers = memberAddresses(this.acl)
-    const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers })
+    const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers, seqLte: this.qsCeiling() })
     this.sawHead(snaps.block)
     // order by the writer's block height (qs), newest first; Arkiv does not promise any order.
     // Apply every snapshot close to the newest base, which covers concurrent compactions.
@@ -551,9 +576,10 @@ export class ArkivProvider extends Observable<string> {
    * falls back to the filter, and `auditNarrowed` says so.
    */
   private async queryUpdates(from: bigint): Promise<{ entities: StoredEntity[]; block: bigint }> {
-    const filtered = { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl!), seqGte: from }
-    if (!this.membershipAtBlock) return queryAll(this.store, filtered)
-    const spec = { doc: this.link.doc, kind: KIND.update, seqGte: from }
+    const filtered = { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl!), seqGte: from, seqLte: this.qsCeiling() }
+    // the unfiltered read is for full audits only; a normal session still checks each fetched edit at its block
+    if (!this.membershipAtBlock || !this.fullHistory) return queryAll(this.store, filtered)
+    const spec = { doc: this.link.doc, kind: KIND.update, seqGte: from, seqLte: this.qsCeiling() }
     const first = await this.store.query(spec)
     const out = [...first.entities]
     let cursor = first.cursor
@@ -591,31 +617,68 @@ export class ArkivProvider extends Observable<string> {
     this.work = this.work.then(fn).catch((e) => this.emit("error", [e]))
   }
 
-  private pollTimer: ReturnType<typeof setInterval> | null = null
+  private pollTimer: ReturnType<typeof setTimeout> | null = null
   /** The newest block this session has seen, from query results and live events. */
   private headSeen = 0n
+
+  /**
+   * The largest `qs` worth fetching: a valid entity's qs is at most the block it landed in, so anything
+   * above the head (plus the catch-up margin, for writes landing while this load runs) is junk, and
+   * leaving it out of the query stops anyone, a removed member included, from parking far-future
+   * entities in every reader's window.
+   */
+  private qsCeiling(): bigint | undefined {
+    return this.headSeen > 0n ? this.headSeen + CATCH_UP_MARGIN_BLOCKS : undefined
+  }
 
   private sawHead(block: bigint): void {
     if (block > this.headSeen) this.headSeen = block
   }
 
-  /** The latest expiry any content entity may have: keepUntil, or a fresh lease from now, plus ten minutes. */
-  private expiryCeiling(): bigint {
-    const lease = this.headSeen + blocks(LIFETIME.snapshot)
-    const keep = this.acl?.keepUntil ? BigInt(this.acl.keepUntil) : 0n
+  /**
+   * The latest expiry a content entity may have: the owner's keepUntil, or a 30-day lease from the block
+   * the entity last changed (its creation or its latest extension, Arkiv's updatedAt), plus ten minutes.
+   * Anchored to the entity, not to this reader's head, so a live tab and a later cold reader agree.
+   */
+  private expiryCeiling(entity: StoredEntity, keepUntil: string | null | undefined): bigint {
+    const lease = entity.updatedAt + blocks(LIFETIME.snapshot)
+    const keep = keepUntil ? BigInt(keepUntil) : 0n
     return (keep > lease ? keep : lease) + EXPIRY_SLACK_BLOCKS
   }
 
-  /** The socket errored: catch up by polling (one query each time) until a live event arrives again. */
+  /** True while the live socket is down and this session catches up by polling instead. */
+  get livePaused(): boolean {
+    return this.pollTimer !== null
+  }
+
+  /**
+   * The socket errored: catch up by polling until a live event arrives again. The first check comes
+   * after 20 seconds and each later one waits twice as long, up to five minutes, so a tab left open
+   * with a refused socket does not spend its whole query budget. Emits `live` (false, then true).
+   */
   private socketFailed(): void {
     if (this.pollTimer || this.resyncInterval === 0) return
-    this.pollTimer = setInterval(() => void this.resync({ joins: true }).catch((e) => this.emit("error", [e])), POLL_WHILE_SOCKET_DOWN_MS)
+    let delay = POLL_WHILE_SOCKET_DOWN_MS
+    const next = () => {
+      this.pollTimer = setTimeout(() => {
+        void this.resync({ joins: true })
+          .catch((e) => this.emit("error", [e]))
+          .finally(() => {
+            if (this.pollTimer === null || this.status === "destroyed") return
+            delay = Math.min(delay * 2, POLL_MAX_MS)
+            next()
+          })
+      }, delay)
+    }
+    next()
+    this.emit("live", [false])
   }
 
   private socketHealthy(): void {
     if (!this.pollTimer) return
-    clearInterval(this.pollTimer)
+    clearTimeout(this.pollTimer)
     this.pollTimer = null
+    this.emit("live", [true])
   }
 
   /** Resolves once every queued event and write has been processed. */
@@ -1120,8 +1183,14 @@ export class ArkivProvider extends Observable<string> {
     if (kind !== KIND.acl && !entity.readonly) throw new MalformedHeader(`${kind} entity is not readonly`)
     // and no edit, snapshot or chunk may outlive what the owner chose: the larger of keepUntil and a fresh
     // 30-day lease from now. Otherwise any member could keep a readable copy alive past the owner's ceiling.
-    if ((kind === KIND.update || kind === KIND.snapshot || kind === KIND.chunk) && this.acl && entity.expiresAt > this.expiryCeiling()) {
-      throw new MalformedHeader(`${kind} entity expires after the owner's lifetime for the document`)
+    if ((kind === KIND.update || kind === KIND.snapshot || kind === KIND.chunk) && this.acl && entity.expiresAt > this.expiryCeiling(entity, this.acl.keepUntil)) {
+      // an audit asks what the owner had chosen when the entity was last extended: lowering keepUntil
+      // afterwards cannot take back a member's kept proof
+      const then = this.membershipAtBlock ? await this.aclAtBlock(entity.updatedAt) : null
+      if (then === "unknown") this.auditUnchecked++
+      if (!then || then === "unknown" || entity.expiresAt > this.expiryCeiling(entity, then.keepUntil)) {
+        throw new MalformedHeader(`${kind} entity expires after the owner's lifetime for the document`)
+      }
     }
     const frame = await this.decryptEntity(entity, kind, epochHint)
     // a frame that decrypts but breaks its header schema is ignored for good (callers count it as rejected)
@@ -1757,7 +1826,8 @@ export class ArkivProvider extends Observable<string> {
     this.doc.off("update", this.onDocUpdate)
     if (this.timer) clearTimeout(this.timer)
     if (this.resyncTimer) clearInterval(this.resyncTimer)
-    if (this.pollTimer) clearInterval(this.pollTimer)
+    if (this.pollTimer) clearTimeout(this.pollTimer)
+    this.pollTimer = null
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.unwatch?.()
     this.unwatch = null
@@ -1856,6 +1926,7 @@ const EXPIRY_SLACK_BLOCKS = 300n
 const AUDIT_PAGES = 5
 /** How often a session catches up by query while its WebSocket is failing (one query each time). */
 const POLL_WHILE_SOCKET_DOWN_MS = 20_000
+const POLL_MAX_MS = 300_000
 
 /** Seconds to whole blocks, rounding up. */
 function blocks(seconds: number): bigint {

@@ -111,6 +111,7 @@ export class MemoryChain {
         creator: sender,
         owner: sender,
         createdAt: now,
+        updatedAt: now,
         expiresAt: now + blocksOf(c.lifetimeSeconds),
         attributes: { ...c.attributes },
         payload: c.payload.slice(),
@@ -122,13 +123,13 @@ export class MemoryChain {
     }
     for (const p of spec.patches ?? []) {
       const e = this.live(p.key, now)!
-      this.put(p.key, { ...e, payload: p.payload.slice(), attributes: { ...p.attributes } })
+      this.put(p.key, { ...e, updatedAt: now, payload: p.payload.slice(), attributes: { ...p.attributes } })
       this.pending.push({ type: "patched", key: p.key, owner: e.owner, block: now })
     }
     for (const x of spec.extensions ?? []) {
       const e = this.live(x.key, now)!
       const expiresAt = now + blocksOf(x.lifetimeSeconds)
-      this.put(x.key, { ...e, expiresAt })
+      this.put(x.key, { ...e, updatedAt: now, expiresAt })
       this.pending.push({ type: "extended", key: x.key, owner: e.owner, block: now, expiresAt })
     }
     for (const k of spec.deletes ?? []) {
@@ -155,6 +156,7 @@ export class MemoryChain {
       if (e.attributes.doc !== spec.doc) continue
       if (spec.kind && e.attributes.kind !== spec.kind) continue
       if (spec.seqGte !== undefined && e.attributes.seq < spec.seqGte) continue
+      if (spec.seqLte !== undefined && e.attributes.seq > spec.seqLte) continue
       if (creators && !creators.includes(e.creator.toLowerCase())) continue
       all.push(e)
     }

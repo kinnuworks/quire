@@ -174,7 +174,7 @@ export function ActivityPanel({ session }: { session: DocumentSession }) {
         </div>
         <div>
           <span className="big">{session.store?.calls.query ?? 0}</span>
-          <span className="muted small">queries; live edits use none</span>
+          <span className="muted small">{session.provider?.livePaused ? "queries; live edits are paused, so the page checks by query, less often each time" : "queries; live edits use none"}</span>
         </div>
       </section>
       <ul className="feed">
@@ -593,7 +593,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
                   p.acl?.keepUntil && head !== null && BigInt(p.acl.keepUntil) > head
                     ? `by block ${p.acl.keepUntil}, about ${Math.ceil(Number(BigInt(p.acl.keepUntil) - head) / 43200)} days from now, because you chose to keep it`
                     : "within 30 days"
-                } (members who kept proof extended theirs to the same date, never later). Until then anyone holding the link could still decrypt them, though without the member list no reader can check them. And block history keeps every payload for good: deleting removes entities from Arkiv's state, not from the chain's past.`,
+                } (Quire never extends them past that date, though another client could keep renewing its own pieces a month at a time). Until then anyone holding the link could still decrypt them, though without the member list no reader can check them. And block history keeps every payload for good: deleting removes entities from Arkiv's state, not from the chain's past.`,
               ) &&
               run("deleting", async () => `Deleted ${await p.deleteDocument()} entities. The document no longer opens.`)
             }

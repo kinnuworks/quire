@@ -25,6 +25,7 @@ import { blame, compositionTimeline } from "./blame.js"
 import { ArkivProvider, extendVersion } from "./provider.js"
 import { parseDocLink, parseVersionLink } from "./link.js"
 import { SdkStore } from "./sdk.js"
+import type { ArkivStore } from "./store.js"
 
 function text(doc: Y.Doc): string {
   const walk = (n: unknown): string => {
@@ -92,7 +93,13 @@ async function main() {
   // blame and timeline read every update still on chain, and check each author against the member list
   // as it stood at that edit's block (atBlock), which the owner cannot rewrite
   const audit = cmd === "blame" || cmd === "timeline"
-  const provider = new ArkivProvider(doc, { store, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: audit, membershipAtBlock: audit })
+  // only watch needs live events: the one-shot commands never open a WebSocket, so they spend none of
+  // this IP's handshake allowance and print no socket noise
+  const reads: ArkivStore =
+    cmd === "watch"
+      ? store
+      : { address: undefined, head: () => store.head(), batch: (b) => store.batch(b), predictKeys: (n) => store.predictKeys(n), query: (q) => store.query(q), get: (k, b) => store.get(k, b), watch: () => () => undefined }
+  const provider = new ArkivProvider(doc, { store: reads, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit, membershipAtBlock: audit })
   // a refused WebSocket (the gateway rate-limits handshakes) only matters to watch; say so once, quietly
   let warned = false
   provider.on("error", () => {
@@ -196,9 +203,13 @@ async function main() {
 
 /** How the audit checked membership, for blame and timeline. */
 function audited(provider: ArkivProvider): string {
-  return provider.auditNarrowed
+  const read = provider.auditNarrowed
     ? "members    checked at each edit's block, but over 1000 update entities exist (anyone can write junk under the document id), so only today's members and removed members were read"
     : "members    every update read, each author checked against the member list as it stood at that edit's block"
+  const unchecked = provider.auditUnchecked
+    ? `\nunchecked  ${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit" : "edits"}: the member list at that block could not be read after three tries, so today's list decided; run it again later`
+    : ""
+  return read + unchecked
 }
 
 main().catch((e: Error) => fail(e.message))

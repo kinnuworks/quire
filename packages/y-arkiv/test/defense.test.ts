@@ -49,6 +49,21 @@ describe("a lying RPC", () => {
     expect(r.doc.getText("t").toString()).toBe("real")
   })
 
+  it("cannot reopen a deleted document with a copy of its ACL replayed from another address", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const c = await peer(chain, link, identity("cal"))
+    await admit(chain, a, c)
+    const copy = (await chain.store(undefined).query({ doc: link.doc, kind: KIND.acl })).entities[0]!
+    await a.provider.deleteDocument()
+    await settle(chain, [a, c])
+    // the owner's list is gone, so the replay is the only ACL there is, and the lying RPC returns it
+    await chain.store(c.id!.address).batch({ creates: [{ payload: copy.payload, attributes: { doc: link.doc, kind: KIND.acl, seq: chain.block }, lifetimeSeconds: LIFETIME.acl }] })
+    chain.mine()
+    await expect(readerOn(lying(chain.store(undefined)), link)).rejects.toThrow(/document not found/)
+  })
+
   it("cannot replay the owner's old ACL from another address to undo a revocation", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -144,7 +159,7 @@ describe("frame binding", () => {
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
     const open = (e: StoredEntity, kind: string, hint?: number) => (a.provider as unknown as { openEntity: (e: StoredEntity, k: string, h?: number) => Promise<unknown> }).openEntity(e, kind, hint)
-    const entity = (payload: Uint8Array, kind: string): StoredEntity => ({ key: `0x${"11".repeat(32)}`, creator: owner.address, owner: owner.address, createdAt: 1n, expiresAt: 999n, attributes: { doc: link.doc, kind: kind as never, seq: 1n }, payload, readonly: true, permissionlessExtension: false })
+    const entity = (payload: Uint8Array, kind: string): StoredEntity => ({ key: `0x${"11".repeat(32)}`, creator: owner.address, owner: owner.address, createdAt: 1n, updatedAt: 1n, expiresAt: 999n, attributes: { doc: link.doc, kind: kind as never, seq: 1n }, payload, readonly: true, permissionlessExtension: false })
     const good = await framePayload(link, KIND.update, { t: 0, salt: "00".repeat(16), sig: `0x${"11".repeat(65)}` }, new Uint8Array([1]))
     expect(await open(entity(good, KIND.update), KIND.update)).not.toBeNull()
     // kind: an update frame relabelled as a snapshot

@@ -85,7 +85,9 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
   useEffect(() => {
     if (!link) return
     const s = new SdkStore({ ...(identity ? { privateKey: identity.privateKey } : {}), ...(relay ? { relayUrl: "/api/rpc" } : {}) })
-    const p = new ArkivProvider(doc, { store: s, link, identity, salt, fullHistory })
+    // "who wrote what" checks each edit's author against the member list as it stood at that edit's
+    // block (one free read by key per block), so an owner who rewrites the list cannot forge authorship
+    const p = new ArkivProvider(doc, { store: s, link, identity, salt, fullHistory, membershipAtBlock: true })
     const log = (a: Omit<Activity, "id" | "at">) => {
       activity.current = [{ id: nextId++, at: Date.now(), ...a }, ...activity.current].slice(0, 200)
       bump()
@@ -125,6 +127,10 @@ export function useDocument(link: DocLink | null, identity: Identity | undefined
     })
     p.on("history", () => bump())
     p.on("status", () => bump())
+    p.on("live", (on: boolean) => {
+      log({ kind: "error", text: on ? "Live edits are back" : "Live edits paused: Arkiv refused the socket for now. Checking by query, less often each time" })
+      bump()
+    })
     p.on("error", (e: Error) => {
       const d = describeError(e)
       log({ kind: "error", text: d.kind === "budget" ? "Free read budget used up; retrying later" : d.message })

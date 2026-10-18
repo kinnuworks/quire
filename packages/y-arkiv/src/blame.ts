@@ -96,3 +96,55 @@ export function compositionTimeline(provider: ArkivProvider): TimelineEntry[] {
       return { block: h.block, author: h.author, entity: h.entity, added, removed }
     })
 }
+
+export type EarlierWriter = {
+  /** the passage as it reads now, and who proves it, from which block */
+  text: string
+  address: Hex
+  block: bigint
+  /** someone else who typed exactly these words earlier, and over which blocks */
+  first: Hex
+  from: bigint
+  to: bigint
+}
+
+/**
+ * Passages whose exact words a different member typed first. A member can delete someone else's
+ * paragraph and paste the same words back as their own edit; blame then proves the copy, correctly,
+ * as theirs. This looks through every applied edit (open the provider with `fullHistory`) for an earlier
+ * writer: each member's inserted text, in clock order per client, is searched for the passage. Only
+ * passages of 24 characters or more are checked, so common short phrases do not match.
+ */
+export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWriter[] {
+  // every insert, per client, with the author and block of the edit that carried it
+  const inserts = new Map<number, { clock: number; str: string; block: bigint; author: Hex }[]>()
+  for (const h of provider.history) {
+    for (const st of Y.decodeUpdate(h.update).structs) {
+      if (!(st instanceof Y.Item) || !(st.content instanceof Y.ContentString)) continue
+      const list = inserts.get(st.id.client) ?? []
+      list.push({ clock: st.id.clock, str: st.content.str, block: h.block, author: h.author })
+      inserts.set(st.id.client, list)
+    }
+  }
+  const out: EarlierWriter[] = []
+  for (const run of blame(doc, provider).flat()) {
+    if (!run.proven || !run.address || run.block === undefined || run.text.trim().length < 24) continue
+    for (const list of inserts.values()) {
+      const earlier = list.filter((i) => i.author !== run.address && i.block < run.block!).sort((x, y) => x.clock - y.clock)
+      if (!earlier.length) continue
+      const typed = earlier.map((i) => i.str).join("")
+      const at = typed.indexOf(run.text)
+      if (at < 0) continue
+      // the edits that carried the matching characters
+      let pos = 0
+      const used = earlier.filter((i) => {
+        const start = pos
+        pos += i.str.length
+        return start < at + run.text.length && pos > at
+      })
+      out.push({ text: run.text, address: run.address, block: run.block, first: used[0]!.author, from: used[0]!.block, to: used[used.length - 1]!.block })
+      break
+    }
+  }
+  return out
+}

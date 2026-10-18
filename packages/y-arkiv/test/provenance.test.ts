@@ -1,7 +1,7 @@
 import { privateKeyToAccount } from "viem/accounts"
 import { describe, expect, it } from "vitest"
 import * as Y from "yjs"
-import { blame } from "../src/blame.js"
+import { blame, earlierWriters } from "../src/blame.js"
 import { MemoryChain } from "../src/memory.js"
 import { KIND, LIFETIME } from "../src/protocol.js"
 import { ArkivProvider, atBlockStore } from "../src/provider.js"
@@ -1415,5 +1415,42 @@ describe("a session whose socket never works", () => {
     await reader.resync()
     expect(doc.getText("t").toString()).toBe("written later")
     reader.destroy()
+  })
+})
+
+describe("a passage pasted back by someone else", () => {
+  it("names the member who typed the same words first", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    const finding = "Key finding: taps ran dry on eleven of thirty days."
+    for (const words of finding.match(/.{1,12}/g)!) {
+      bea.doc.getText("t").insert(bea.doc.getText("t").length, words)
+      await bea.provider.flush()
+      await settle(chain, [a, bea])
+    }
+    // the owner erases Bea, deletes her words and pastes them back as one edit of her own
+    await (a.provider as unknown as { updateAcl: (f: (acl: { members: { address: string }[]; revoked: unknown[] }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => {
+      acl.members = acl.members.filter((m) => m.address !== bea.id!.address)
+      acl.revoked = []
+      return {}
+    })
+    await settle(chain, [a, bea])
+    const t = a.doc.getText("t")
+    t.delete(0, t.length)
+    t.insert(0, finding)
+    await a.provider.flush()
+    await settle(chain, [a, bea])
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await audit.connect()
+    const found = earlierWriters(doc, audit)
+    expect(found.length).toBe(1)
+    expect(found[0]!.address).toBe(owner.address)
+    expect(found[0]!.first).toBe(bea.id!.address)
+    expect(found[0]!.from).toBeLessThan(found[0]!.block)
+    audit.destroy()
   })
 })

@@ -3,7 +3,7 @@ import Placeholder from "@tiptap/extension-placeholder"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import { useEffect, useRef, useState } from "react"
-import type { DocLink, Identity } from "y-arkiv"
+import { type DocLink, earlierWriters, type Identity } from "y-arkiv"
 import { AuthorshipBars, blockAuthors, setMembers } from "../authorship"
 import { rotatedNow, rotationDue } from "../autorotate"
 import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
@@ -95,6 +95,12 @@ export function DocPage({ link }: { link: DocLink }) {
     // redraw the authorship bars when they are toggled or authorship changes
     if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta("authorship", true))
   }, [editor, blame, session.tick])
+
+  // "who wrote what" checks every edit still on chain, so it can also say who typed a passage first
+  useEffect(() => {
+    if (blame && !session.fullHistory) session.loadFullHistory()
+  }, [blame, session.fullHistory])
+  const copies = blame && session.fullHistory && provider?.status === "synced" ? earlierWriters(doc, provider) : []
 
   // scheduled rotation: the owner turned it on and a full period has passed since the last one
   const rotating = useRef(false)
@@ -232,6 +238,14 @@ export function DocPage({ link }: { link: DocLink }) {
           to prove it from the edits themselves.
         </div>
       )}
+
+      {copies.map((c) => (
+        <div className="ws-banner accent" key={`${c.block}-${c.first}`}>
+          <span>
+            <b>Typed first by someone else.</b> “{c.text.length > 80 ? `${c.text.slice(0, 77)}…` : c.text}” is a single edit by {c.address.slice(0, 8)}…{c.address.slice(-4)} at block {String(c.block)}, but {c.first.slice(0, 8)}…{c.first.slice(-4)} typed the same words earlier, at blocks {String(c.from)} to {String(c.to)}. Run <code>y-arkiv blame --at {String(c.to + 5n)}</code> to see them proven as theirs.
+          </span>
+        </div>
+      ))}
 
       <main className="ws-main">
         <article className={`sheet ${blame ? "blame" : ""}`}>

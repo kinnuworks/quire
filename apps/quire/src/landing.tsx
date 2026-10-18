@@ -266,7 +266,7 @@ export function ProofStrip() {
   const items = [
     { n: "3", t: "live documents on Tiramisu, readable right now" },
     { n: "31/31", t: "runs where two independent readers agree" },
-    { n: "196", t: "tests, and 86 of 86 broken security rules caught" },
+    { n: "196", t: "tests, and 88 of 88 broken security rules caught" },
     { n: "MIT", t: "spec, JSON Schema, vectors, two readers" },
   ]
   return (

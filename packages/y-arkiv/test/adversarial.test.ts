@@ -74,7 +74,7 @@ describe("a removed member learns nothing new", () => {
 })
 
 describe("expiry belongs to the document's people", () => {
-  it("strangers cannot extend the document's snapshots; the member list alone keeps nothing readable", async () => {
+  it("strangers can extend neither the document's snapshots nor its member list", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
@@ -82,16 +82,12 @@ describe("expiry belongs to the document's people", () => {
     await a.provider.close()
     const stranger = chain.store(identity("x").address)
     await expect(stranger.batch({ extensions: [{ key: a.provider.snapshot!.key, lifetimeSeconds: 10 * 365 * 86400 }] })).rejects.toThrow(/not permitted/)
-    // the member list may be renewed by anyone (so writers keep a document open), but it holds no text:
-    // once the snapshots and edits expire, a reader finds an empty document
-    await stranger.batch({ extensions: [{ key: a.provider.aclKey!, lifetimeSeconds: 10 * 365 * 86400 }] })
+    // the member list is owner-only too, so nobody outside it can keep names and public keys alive
+    await expect(stranger.batch({ extensions: [{ key: a.provider.aclKey!, lifetimeSeconds: 10 * 365 * 86400 }] })).rejects.toThrow(/not permitted/)
     a.provider.destroy()
-    chain.mine((40 * 86400) / 2)
-    const later = await peer(chain, link, undefined)
-    expect(text(later)).toBe("")
   })
 
-  it("a writer renews the member list while the owner is away", async () => {
+  it("only the owner renews the member list; a writer's renewal leaves it alone and still renews the lease", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
     const a = await peer(chain, link, owner)
@@ -101,7 +97,10 @@ describe("expiry belongs to the document's people", () => {
     const before = b.provider.aclExpiresAt!
     chain.mine(Number((before - chain.block) / 2n) + 20)
     await b.provider.renewLeaseIfDue()
-    expect(b.provider.aclExpiresAt!).toBeGreaterThan(before)
+    expect(b.provider.aclExpiresAt!).toBe(before)
+    const back = await peer(chain, link, owner)
+    await back.provider.renewLeaseIfDue()
+    expect(back.provider.aclExpiresAt!).toBeGreaterThan(before)
   })
 
   it("a member renews the lease by writing their own snapshot when someone else wrote the current one", async () => {

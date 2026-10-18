@@ -325,9 +325,10 @@ def check_payload(e: Entity) -> list[str]:
 def check_flags(e: Entity) -> list[str]:
     """Problems with creation flags against the section 1 table.
 
-    A version is readonly with permissionless extension. The ACL has
-    permissionless extension and nothing else, so any member's session can
-    keep it alive. Every other kind (update, snapshot, join) is readonly and
+    A version is readonly with permissionless extension. The ACL is not
+    readonly, since the owner patches it, and only its owner can extend it, so
+    no stranger can keep member names alive; documents made before 18 Oct 2026
+    carry permissionless extension on the ACL, which is still accepted. Every other kind (update, snapshot, join) is readonly and
     nothing else, so its creator can never patch it later. A chunk takes its
     head's flags, and the head is not visible without decrypting, so a chunk
     may carry either set: readonly (a snapshot chunk) or both (a version
@@ -349,10 +350,8 @@ def check_flags(e: Entity) -> list[str]:
         if not ro:
             problems.append(f"chunk flags ({flags_text(e)}) match neither a snapshot nor a version head")
     elif e.kind == "a":
-        if not pe:
-            problems.append("acl does not allow permissionless extension")
         if ro:
-            problems.append("acl is readonly, expected permissionless extension only")
+            problems.append("acl is readonly, so the owner could never update the member list")
     else:
         if pe:
             problems.append(f"{name} allows permissionless extension")

@@ -10,14 +10,14 @@ A document is a set of Arkiv entities that share a random 32-byte document id. T
 
 | Kind | `qk` | Created by | Purpose | Lifetime | Flags |
 |---|---|---|---|---|---|
-| ACL | `a` | owner | member list and wrapped epoch keys | 30 days, extended by any member's session | permissionless extension |
+| ACL | `a` | owner | member list and wrapped epoch keys | 90 days from the owner's last visit, or the owner's `keepUntil` | none (owner-only extension) |
 | update | `u` | any member | one writer's edits from about one block, merged | same as a new snapshot (30 days, or the owner's `keepUntil`) | readonly |
 | snapshot | `s` | any member | the full document state | 30 days, or until the owner's `keepUntil` | readonly |
 | chunk | `c` | the snapshot's creator | continuation of a snapshot or version | same as its head | same as its head |
 | join request | `j` | anyone with the link | asks the owner to add a public key | 1 hour | readonly |
 | version | `v` | any member | frozen copy with its own key | 1 year | readonly, permissionless extension |
 
-Updates, snapshots, their chunks and join requests MUST be created `readonly`, so their creator can never patch them: a patch keeps the original `createdAt`, so a patchable edit could be rewritten later and still look as old as it was (Arkiv does let a readonly entity be extended and deleted, which keep-proof, renewal and shred need). Readers MUST ignore an entity of those kinds that is not readonly. Readers MUST also ignore an update, snapshot or chunk whose `expiresAt` is later than the larger of the ACL's `keepUntil` and the entity's own `updatedAt` (the block of its creation or latest extension) plus a 30-day lease, with ten minutes of slack: the owner's lifetime is the ceiling for every readable copy, whatever client wrote it. The ceiling depends only on the entity and the ACL, never on the reader's head, so live and cold readers agree. Auditors SHOULD take `keepUntil` from the ACL as it stood at the entity's `updatedAt` (read by key with `atBlock`), so an owner who lowers `keepUntil` later cannot take back a member's kept proof. Readers fetch only `qs <= head + 60`: a valid entity's `qs` is at most its `createdAt`, so this keeps far-future junk out of every query. Versions and their chunks are readonly with permissionless extension. The ACL has permissionless extension, so it can be kept alive by anyone, in practice any member's session while the owner is away. It holds member names and public keys but no text, so extending it keeps no document text readable (before the first rotation link holders can read the names), and the owner can still delete it. Every other entity (updates, snapshots and their chunks, join requests) is readonly with no permissionless extension, so only its own creator can extend it, and nobody outside the member list can keep a document's content alive.
+Updates, snapshots, their chunks and join requests MUST be created `readonly`, so their creator can never patch them: a patch keeps the original `createdAt`, so a patchable edit could be rewritten later and still look as old as it was (Arkiv does let a readonly entity be extended and deleted, which keep-proof, renewal and shred need). Readers MUST ignore an entity of those kinds that is not readonly. Readers MUST also ignore an update, snapshot or chunk whose `expiresAt` is later than the larger of the ACL's `keepUntil` and the entity's own `updatedAt` (the block of its creation or latest extension) plus a 30-day lease, with ten minutes of slack: the owner's lifetime is the ceiling for every readable copy, whatever client wrote it. The ceiling depends only on the entity and the ACL, never on the reader's head, so live and cold readers agree. Auditors SHOULD take `keepUntil` from the ACL as it stood at the entity's `updatedAt` (read by key with `atBlock`), so an owner who lowers `keepUntil` later cannot take back a member's kept proof. Readers fetch only `qs <= head + 60`: a valid entity's `qs` is at most its `createdAt`, so this keeps far-future junk out of every query. Versions and their chunks are readonly with permissionless extension. The ACL is not readonly (the owner patches it) and has no permissionless extension, so only the owner can extend it and no stranger can keep member names and public keys alive; readers MUST accept an ACL with or without permissionless extension, since documents made before 18 Oct 2026 carry it, and MUST ignore a readonly one. Every other entity (updates, snapshots and their chunks, join requests) is readonly with no permissionless extension, so only its own creator can extend it, and nobody outside the member list can keep a document's content alive.
 
 The link a person shares carries three values in the URL fragment: the document id, a 32-byte link secret, and the owner's address. The fragment is never sent to any server.
 
@@ -152,8 +152,8 @@ Both methods return entities in this shape. Numbers are hex quantities, and the 
 ```json
 {
   "key": "0x…", "owner": "0x…", "creator": "0x…",
-  "createdAt": "0x1a2b", "expiresAt": "0x3c4d",
-  "creationFlags": { "readonly": false, "permissionlessExtension": true, "raw": 2 },
+  "createdAt": "0x1a2b", "updatedAt": "0x1a2b", "expiresAt": "0x3c4d",
+  "creationFlags": { "readonly": true, "permissionlessExtension": false, "raw": 1 },
   "payload": "0x5101…",
   "attributes": [
     { "name": "qp", "type": "str", "value": "quire1" },
@@ -164,7 +164,7 @@ Both methods return entities in this shape. Numbers are hex quantities, and the 
 }
 ```
 
-In `creationFlags.raw`, bit 0 is readonly and bit 1 is permissionless extension. The conformance vectors in `spec/vectors/document.json` use the same shape, including `creationFlags`.
+In `creationFlags.raw`, bit 0 is readonly and bit 1 is permissionless extension. `updatedAt` is the block of the entity's last change (creation, extension or patch); a vectors file without it means unchanged since creation. The conformance vectors in `spec/vectors/document.json` use the same shape, including `creationFlags`.
 
 ## 6. Writing
 

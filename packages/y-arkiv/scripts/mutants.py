@@ -39,6 +39,8 @@ MUTANTS = [
     (P, "audit reads keepUntil at the entity's block", "if (!then || then === \"unknown\" || entity.expiresAt > this.expiryCeiling(entity, then.keepUntil)) {", "if (true) {"),
     (P, "failed past read is unchecked, not refused", "    if (acl === \"unknown\") {\n      this.auditUnchecked++\n      return undefined\n    }", "    if (acl === \"unknown\") return false"),
     (P, "earliest owner ACL chosen", "    for (const entity of earliest) {", "    for (const entity of [...earliest].reverse()) {"),
+    (P, "member list owner-only extension", "lifetimeSeconds: LIFETIME.acl, permissionlessExtension: false }", "lifetimeSeconds: LIFETIME.acl, permissionlessExtension: true }"),
+    (P, "only the owner renews the member list", "    const mayExtendAcl = this.role === \"owner\" || this.aclOpenToAll\n    if (mayExtendAcl && due(", "    const mayExtendAcl = true\n    if (mayExtendAcl && due("),
     (R, "relay page size checked", "(hex(o.limit, 2) && Number(o.limit) >= 1 && Number(o.limit) <= 200)", "true"),
     (P, "read-only sessions never write", "batch: (spec) => (readOnly ? Promise.reject(new Error(\"this session was opened read-only\")) : inner.batch(spec)),", "batch: (spec) => inner.batch(spec),"),
     (A, "ACL field set checked", "if (fields.some((f) => !keys.includes(f)) || keys.some((k) => !fields.includes(k))) throw", "if (false) throw"),

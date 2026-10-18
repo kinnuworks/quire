@@ -261,27 +261,24 @@ class AuditTests(unittest.TestCase):
             report = quire_audit.audit(entities, VEC["doc"], VEC["owner"])
             self.assertIn(f"flags {quire_audit.KIND_NAMES[kind]} {e.key}", report.failures, kind)
 
-    def test_acl_flags_are_permissionless_extension_only(self) -> None:
-        # Section 1: the ACL has permissionless extension, so any member's
-        # session can extend it, and no other flag.
+    def test_acl_flags_owner_only_extension(self) -> None:
+        # Section 1: the ACL is not readonly (the owner patches it) and only its
+        # owner can extend it. Documents made before 18 Oct 2026 carry
+        # permissionless extension on it, which is still accepted.
         entities = quire_audit.load_vectors(DOCUMENT)[1]
         acl = next(e for e in entities if e.kind == "a")
-        self.assertEqual((acl.readonly, acl.permissionless_extension, acl.flags_raw), (False, True, 2))
+        self.assertEqual((acl.readonly, acl.permissionless_extension, acl.flags_raw), (False, False, 0))
         self.assertEqual(quire_audit.check_flags(acl), [])
-        cases = {
-            (False, False): ["acl does not allow permissionless extension"],
-            (True, True): ["acl is readonly, expected permissionless extension only"],
-            (True, False): ["acl does not allow permissionless extension",
-                            "acl is readonly, expected permissionless extension only"],
-        }
-        for (ro, pe), want in cases.items():
+        acl.permissionless_extension, acl.flags_raw = True, 2
+        self.assertEqual(quire_audit.check_flags(acl), [])
+        for ro, pe in ((True, False), (True, True)):
             acl.readonly, acl.permissionless_extension = ro, pe
             acl.flags_raw = quire_audit.raw_flags(ro, pe)
-            self.assertEqual(quire_audit.check_flags(acl), want, (ro, pe))
+            self.assertEqual(quire_audit.check_flags(acl), ["acl is readonly, so the owner could never update the member list"], (ro, pe))
             report = quire_audit.audit(entities, VEC["doc"], VEC["owner"])
             self.assertIn(f"flags acl {acl.key}", report.failures)
-        # Booleans right, raw wrong: the old rule's raw 0 on a correct ACL.
-        acl.readonly, acl.permissionless_extension, acl.flags_raw = False, True, 0
+        # Booleans right, raw wrong
+        acl.readonly, acl.permissionless_extension, acl.flags_raw = False, False, 2
         self.assertIn("bit 1 disagrees", " ".join(quire_audit.check_flags(acl)))
 
     def test_version_must_be_readonly(self) -> None:
@@ -315,10 +312,10 @@ class AuditTests(unittest.TestCase):
         for raw in VEC["entities"]:
             acl = quire_audit.parse_entity(raw).kind == "a"
             self.assertEqual(
-                raw["creationFlags"], {"readonly": not acl, "permissionlessExtension": acl, "raw": 2 if acl else 1}
+                raw["creationFlags"], {"readonly": not acl, "permissionlessExtension": False, "raw": 0 if acl else 1}
             )
         for e in quire_audit.load_vectors(DOCUMENT)[1]:
-            self.assertEqual(e.flags_raw, 2 if e.kind == "a" else 1)
+            self.assertEqual(e.flags_raw, 0 if e.kind == "a" else 1)
 
     def test_unknown_raw_flag_fails(self) -> None:
         e = next(x for x in quire_audit.load_vectors(DOCUMENT)[1] if x.kind == "u")
@@ -1599,7 +1596,7 @@ class ReaderTests(unittest.TestCase):
         self.assertRegex(out, rf"{CAL_CLIENT}\s+0\.\.\d+ proven\s+{VEC['members']['cal']}")
         self.assertIn("129 of 129 clocks proven", out)
         self.assertRegex(out, rf"{OWNER_CLIENT}\s+0\.\.\d+ proven ")
-        self.assertIn("acl flags    permissionless extension (raw 2)  expected permissionless extension only: yes", out)
+        self.assertIn("acl flags    none (raw 0)  expected not readonly, extended by its owner: yes", out)
         self.assertNotIn("dropped:", out)
         self.assertNotIn(": NO", out)
 

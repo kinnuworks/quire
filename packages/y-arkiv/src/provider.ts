@@ -182,6 +182,8 @@ export class ArkivProvider extends Observable<string> {
   /** True if the last outsider scan read one full page and stopped (there may be more). */
   outsidersTruncated = false
   /** An audit found more update entities than AUDIT_PAGES pages and read only those from today's list (see queryUpdates). */
+  /** Whether anyone may extend the member list: true only for documents made before owner-only lists. */
+  private aclOpenToAll = false
   auditNarrowed = false
   /** Edits whose member list (or keepUntil) at their block could not be read after retries, so today's list decided. */
   auditUnchecked = 0
@@ -486,6 +488,7 @@ export class ArkivProvider extends Observable<string> {
     this.appliedKeys.add(entity.key)
     this.aclSeq = entity.attributes.seq
     this.aclExpiresAt = entity.expiresAt
+    this.aclOpenToAll = entity.permissionlessExtension
     this.joinRequests = this.joinRequests.filter((j) => !isMember(acl, j.address))
     this.emit("acl", [acl])
   }
@@ -1413,7 +1416,7 @@ export class ArkivProvider extends Observable<string> {
    * active member renews it: by extending it if they created it, or by writing
    * a fresh snapshot of their own if someone else did. Only a snapshot's own
    * creator can extend it, so nobody outside the member list can keep the text
-   * alive. The member list allows anyone to extend it, so members renew it too.
+   * alive. Only the owner renews the member list (90 days from each visit).
    * A document nobody opens for a month expires.
    */
   async renewLeaseIfDue(): Promise<boolean> {
@@ -1421,12 +1424,15 @@ export class ArkivProvider extends Observable<string> {
     if (this.role !== "owner" && this.role !== "writer") return false
     const head = await this.store.head()
     const life = blocks(LIFETIME.snapshot)
-    const due = (expiresAt: bigint | null) => expiresAt !== null && expiresAt - head < BigInt(Math.floor(Number(life) * LEASE_RENEW_FRACTION))
+    const due = (expiresAt: bigint | null, lifetime = life) => expiresAt !== null && expiresAt - head < BigInt(Math.floor(Number(lifetime) * LEASE_RENEW_FRACTION))
+    const aclLife = blocks(LIFETIME.acl)
     const me = this.identity.address.toLowerCase()
     const snapshotDue = due(this.snapshot.expiresAt)
-    // only re-read the list's expiry when it looks due: someone may have extended it already
-    if (due(this.aclExpiresAt)) await this.refreshAclExpiry()
-    const aclDue = due(this.aclExpiresAt)
+    // only the owner renews the member list (documents made before 18 Oct 2026 let any member do it);
+    // re-read its expiry only when it looks due: someone may have extended it already
+    const mayExtendAcl = this.role === "owner" || this.aclOpenToAll
+    if (mayExtendAcl && due(this.aclExpiresAt, aclLife)) await this.refreshAclExpiry()
+    const aclDue = mayExtendAcl && due(this.aclExpiresAt, aclLife)
     if (!snapshotDue && !aclDue) return false
     if (snapshotDue && (this.snapshot.creator !== me || this.updatesSinceSnapshot > 0)) {
       // a fresh snapshot renews the lease and folds in every uncovered edit at once
@@ -1498,12 +1504,16 @@ export class ArkivProvider extends Observable<string> {
       if (ceiling <= head + blocks(LIFETIME.snapshot)) {
         throw new Error("The owner keeps this document for its 30-day lease only, and proof cannot outlive the document. Ask the owner to keep it longer (Lifetime tab), then keep your proof.")
       }
-      const until = head + blocks(Math.min(seconds, 3 * 365 * 86400)) < ceiling ? head + blocks(Math.min(seconds, 3 * 365 * 86400)) : ceiling
+      let until = head + blocks(Math.min(seconds, 3 * 365 * 86400)) < ceiling ? head + blocks(Math.min(seconds, 3 * 365 * 86400)) : ceiling
+      // only the owner can extend the member list, and proof cannot outlive it: keepFor extends it to
+      // keepUntil, so this cap matters only if the list has somehow fallen behind
+      const mayExtendAcl = this.role === "owner" || this.aclOpenToAll
+      if (!mayExtendAcl && this.aclExpiresAt !== null && this.aclExpiresAt < until) until = this.aclExpiresAt
       const seconds_ = Number(until - head) * BLOCK_SECONDS
       const mine = await queryAll(this.store, { doc: this.link.doc, kind: KIND.update, creators: [me as Hex] })
       const keys = mine.entities.filter((e) => e.owner.toLowerCase() === me && e.expiresAt < until).map((e) => e.key)
       // the list's expiry was just re-read: an extension that would move it earlier reverts the whole batch
-      if (this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
+      if (mayExtendAcl && this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
       // extensions carry no payload; a hundred per transaction keeps each one small
       for (let i = 0; i < keys.length; i += 100) {
         await this.store.batch({ extensions: keys.slice(i, i + 100).map((key) => ({ key, lifetimeSeconds: seconds_ })) })
@@ -1936,10 +1946,8 @@ function blocks(seconds: number): bigint {
 async function aclSpec(doc: Hex, metaKey: Uint8Array, acl: Acl, epochKey: Uint8Array | undefined, head: bigint): Promise<CreateSpec> {
   const header = (await toHeader(acl, epochKey, doc)) as unknown as Record<string, unknown>
   const payload = encodeOuter(0, await seal(metaKey, encodeFrame({ kind: KIND.acl, doc: hexToBytes(doc), epoch: 0, header, data: new Uint8Array() }, randomBytes)))
-  // anyone can extend the member list, so writers keep a document open while the owner is away.
-  // It holds names and public keys but no text, so a stranger extending it keeps nothing readable
-  // alive: the snapshots still expire on their own, and the owner can delete the list at any time.
-  return { payload, attributes: { doc, kind: KIND.acl, seq: head }, lifetimeSeconds: LIFETIME.acl, permissionlessExtension: true }
+  // owner-only extension: a stranger cannot keep the member list (names, public keys) alive
+  return { payload, attributes: { doc, kind: KIND.acl, seq: head }, lifetimeSeconds: LIFETIME.acl, permissionlessExtension: false }
 }
 
 /**

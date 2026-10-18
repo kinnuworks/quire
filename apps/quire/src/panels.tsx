@@ -570,7 +570,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
           <i style={{ width: `${pct}%` }} />
         </div>
         <p className="muted small" style={{ marginTop: 10 }}>
-          The newest snapshot is a lease. When a member opens the document past its halfway mark, it is renewed. If nobody opens it, it expires from Arkiv's state. Only the document's own members can renew it. Old encrypted payloads can remain in block history, readable only with the old link.
+          The newest snapshot is a lease. When a member opens the document past its halfway mark, it is renewed. If nobody opens it, it expires from Arkiv's state. Only the document's own members can renew it. The member list lives 90 days from the owner's last visit, or until the date the owner chose, and only the owner can extend it. Old encrypted payloads can remain in block history, readable only with the old link.
         </p>
       </section>
       {p.role === "owner" && (
@@ -626,7 +626,7 @@ export function LifetimePanel({ session }: { session: DocumentSession }) {
         <section>
           <h4>Keep proof of what I wrote</h4>
           <p className="muted small">
-            Readers prove who wrote what from each person's edits, which are written for the document's lease. This extends every edit your key wrote here, the member list they are checked against, and a snapshot of yours (your edits sit on text others wrote), so <code>y-arkiv blame</code> keeps proving your text for as long as the document lives. The owner sets that lifetime; proof cannot outlive it.
+            Readers prove who wrote what from each person's edits, which are written for the document's lease. This extends every edit your key wrote here and a snapshot of yours (your edits sit on text others wrote), so <code>y-arkiv blame</code> keeps proving your text for as long as the document lives. The owner sets that lifetime (keeping the document longer also keeps the member list your edits are checked against); proof cannot outlive it.
           </p>
           <button
             className="btn btn-outline"

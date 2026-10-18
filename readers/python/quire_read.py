@@ -2075,7 +2075,7 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
     lines.append(f"wraps        {len(wraps)} (unlabelled; the count is all a link holder learns)")
     if reader.acl_entity is not None:
         ae = reader.acl_entity
-        lines.append(f"acl flags    {qa.flags_text(ae)}  expected permissionless extension only:"
+        lines.append(f"acl flags    {qa.flags_text(ae)}  expected not readonly, extended by its owner:"
                      f" {_yes(not qa.check_flags(ae))}")
     lines.append(f"schemas      {reader.schemas.status}")
     lines.append("")

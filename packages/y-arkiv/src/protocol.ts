@@ -42,8 +42,11 @@ export type Kind = (typeof KIND)[keyof typeof KIND]
 export const LIFETIME = {
   /** Snapshots are a lease: every active session extends the newest one. */
   snapshot: 30 * 24 * 3600,
-  /** The ACL follows the document. Extended together with the snapshot. */
-  acl: 30 * 24 * 3600,
+  /**
+   * The ACL lives 90 days from the owner's last visit (the owner's session renews it), or until the
+   * owner's keepUntil. Only the owner can extend it: no stranger can keep member names alive.
+   */
+  acl: 90 * 24 * 3600,
   /** A join request is answered within minutes or dropped. */
   join: 3600,
   /** Published versions start at a year; any reader can extend them. */

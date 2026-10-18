@@ -19,12 +19,11 @@ Built for Arkiv: Global Tour Stop, in the Privacy, Open Source and Security trac
 
 1. **Drag the scrubber** (1 minute). On the [home page](https://quire-five.vercel.app/#proof), "Someone took the credit" replays a real document on Arkiv block by block: Bea types the key finding, then Asha, the owner, erases her from the member list and pastes the finding back as her own. The member list, the chain's verdict and the edit rhythm change as you drag.
 2. **Open that document in the app** (1 minute). Open the [contested study](https://quire-five.vercel.app/#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0). With no toggles on, the app walks the member list's history, says the owner erased Bea, loads every edit still on chain and says "Typed first by someone else": the finding is one paste by Asha's key, and Bea's key typed the same words first, at blocks 734926 to 734961.
-3. **Check it without our app** (2 minutes). From a clone:
+3. **Check it without our app** (2 minutes). With Node 20 or later, nothing to clone ([y-arkiv on npm](https://www.npmjs.com/package/y-arkiv)):
 
    ```bash
-   pnpm install
-   pnpm --dir packages/y-arkiv exec tsx src/cli.ts timeline '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0'
-   pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0' --at 734966
+   npx y-arkiv timeline '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0'
+   npx y-arkiv blame '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0' --at 734966
    ```
 
    `timeline` lists Bea's seven edits and Asha's single paste that removed 100 characters and added the same 100. `blame --at` proves every word of the finding was Bea's, checked against the member list as it stood at each of her blocks. The independent Python reader gives the same counts (see [the contested demo](#who-is-harmed-today)). On a shared network whose free queries are spent, add `--relay` to send queries through Quire's relay.
@@ -47,8 +46,8 @@ What Quire does not hide is metadata. Anyone who learns a document id can see, f
 **See it settle a dispute.** The [contested demo](https://quire-five.vercel.app/#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0) is a short study co-written by Asha (the owner) and Bea. Bea typed the key finding, a few words at a time. Then Asha erased Bea from the member list, deleted her paragraph and pasted the same words back as one edit of her own. Today's text of the finding is Asha's paste. Open the link and the app says so before you touch anything: it walks the member list's history, finds that Bea was erased, checks every edit still on chain and shows that Bea's key typed the finding first. Three commands, run by anyone, show the same without our page:
 
 ```bash
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts timeline '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0' --at 734966
+npx y-arkiv timeline '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0'
+npx y-arkiv blame '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0' --at 734966
 pip install -r readers/python/requirements.txt
 python3 readers/python/quire_read.py --link '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0' --at 734966 --audit --json
 ```
@@ -126,8 +125,7 @@ The fastest check uses the public demo documents listed under [Submission eviden
 To check a document without our app:
 
 ```bash
-pnpm install
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '<document link>'
+npx y-arkiv verify '<document link>'
 python3 readers/python/quire_audit.py --doc <0x document id>
 ```
 
@@ -214,14 +212,13 @@ qp = str('quire1') AND qd = bytes32(0x0ea1a239c1785872a03a47dc05c11a9ec984772b52
 
 Paste it into the [Data Explorer](https://data.arkiv.network), or look up any address above in the [block explorer](https://tiramisu.explorer.arkiv.network) to see the creating transactions.
 
-To reproduce what the app shows, without the app:
+To reproduce what the app shows, without the app (the Python lines need a clone):
 
 ```bash
-pnpm install
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts verify '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts read '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts timeline '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+npx y-arkiv verify '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+npx y-arkiv read '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+npx y-arkiv blame '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
+npx y-arkiv timeline '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
 python3 readers/python/quire_audit.py --doc 0x7066382f176eef205ab54ef9b784f1a328873493adc950379e9088d567072f67 --owner 0xa7da7e4e17101ad0b4832c7cce0f87bf6e84b546
 ```
 

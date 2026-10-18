@@ -6,6 +6,10 @@ Testnet only (Arkiv Tiramisu). MIT.
 
 ## Use it in place of y-websocket
 
+```bash
+npm install y-arkiv yjs viem
+```
+
 ```ts
 import * as Y from "yjs"
 import { ArkivProvider, newDocLink, prepareDoc, SdkStore } from "y-arkiv"

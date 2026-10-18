@@ -10,7 +10,7 @@
   "dependencies": {
     "@arkiv-network/sdk": "0.8.1",
     "viem": "^2.57.7",
-    "y-arkiv": "workspace:*",
+    "y-arkiv": "^0.1.0",
     "yjs": "^13.6.33"
   },
   "devDependencies": {

@@ -2,9 +2,10 @@
 
 One file, [main.ts](main.ts), using only the public API of `y-arkiv`: Asha creates a document, Bea asks to join and is added, both type at once, someone with only the link reads along, Asha removes Bea (the key rotates), and `blame` attributes every character to the key that wrote it.
 
+It installs `y-arkiv` from npm, as any app would. Outside this repository, copy `main.ts` and run `npm install y-arkiv yjs viem tsx`, then `npx tsx main.ts`.
+
 ```bash
 pnpm install
-pnpm --dir packages/y-arkiv build
 pnpm --dir examples/two-writers start                 # MemoryChain: no network, no gas
 QUIRE_KEY=0x… pnpm --dir examples/two-writers live    # Tiramisu: QUIRE_KEY pays 0.02 test GLM to two fresh keys
 ```

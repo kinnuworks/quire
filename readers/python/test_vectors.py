@@ -1544,14 +1544,18 @@ class ReaderTests(unittest.TestCase):
 
     def test_roster_for_another_document_is_rejected(self) -> None:
         reader = self._acl_with_roster(lambda r: r.update(doc="0x" + "cd" * 32))
-        with self.assertRaisesRegex(RuntimeError, "names document"):
+        # the list is skipped, as the TypeScript reader skips it, with the reason recorded
+        with self.assertRaisesRegex(RuntimeError, "no valid ACL"):
             reader.read()
+        self.assertTrue(any("names document" in r for _k, r in reader.ignored))
 
     def test_roster_for_another_epoch_is_rejected(self) -> None:
         # Schema allows epoch >= 1, so this is caught by the binding check.
         reader = self._acl_with_roster(lambda r: r.update(epoch=2))
-        with self.assertRaisesRegex(RuntimeError, "names epoch"):
+        # the list is skipped, as the TypeScript reader skips it, with the reason recorded
+        with self.assertRaisesRegex(RuntimeError, "no valid ACL"):
             reader.read()
+        self.assertTrue(any("names epoch" in r for _k, r in reader.ignored))
 
     def test_wraps_are_an_unlabelled_list(self) -> None:
         reader, result = self._member_result()

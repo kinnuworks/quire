@@ -40,7 +40,9 @@ function plain(doc: Y.Doc): string {
       : n instanceof Y.XmlElement
         ? n.toArray().map(walk).join("")
         : ""
-  return doc.getXmlFragment("default").toArray().map(walk).join("\n")
+  const blocks = doc.getXmlFragment("default").toArray().map(walk).join("\n")
+  const plainText = doc.getText("t").toString()
+  return [blocks, plainText].filter(Boolean).join("\n")
 }
 
 async function typescript(store: ArkivStore, link: string, memberKey?: Hex, audit = false): Promise<Verdict> {

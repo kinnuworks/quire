@@ -1149,7 +1149,8 @@ describe("removed member's junk with a valid qs", () => {
     await a.provider.revoke(mal.address)
     await settle(chain, [a, m])
     m.provider.destroy()
-    // after the removal: entities whose qs is their own block, so a qs bound alone lets them through
+    chain.mine(70)
+    // well after the removal landed: entities whose qs is their own block, so a qs bound alone lets them through
     for (let i = 0; i < 5; i++) {
       await chain.store(mal.address).batch({
         creates: Array.from({ length: 200 }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true })),
@@ -1342,5 +1343,57 @@ describe("member lists after the owner-only cutoff", () => {
     await ArkivProvider.createDocument({ store: base, link: link2, identity: owner })
     chain.mine()
     expect((await peer(chain, link2, undefined)).provider.acl).not.toBeNull()
+  })
+})
+
+describe("an edit that lands while a removal is in flight", () => {
+  it("still counts for cold readers: the removal is stamped with the owner's head, not the block it lands in", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    // the owner reads a head a few blocks old, as when a transaction takes a few blocks to land
+    const lagging: ArkivStore = { ...chain.store(owner.address), head: async () => chain.block - 3n }
+    const adoc = new Y.Doc()
+    const a = { doc: adoc, provider: new ArkivProvider(adoc, { store: lagging, link, identity: owner, flushIntervalMs: 0, autoCompact: false }), id: owner }
+    await a.provider.connect()
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    chain.mine(5)
+    bea.doc.getText("t").insert(0, "sent just in time")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // stamped three blocks back: before Bea's edit, though it lands after it
+    await a.provider.revoke(bea.id!.address)
+    await settle(chain, [a, bea])
+    const cold = await peer(chain, link, owner)
+    expect(blame(cold.doc, cold.provider).flat().filter((r) => r.proven && r.address === bea.id!.address).map((r) => r.text).join("")).toBe("sent just in time")
+  })
+})
+
+describe("a recreated member list", () => {
+  it("is still detected after hundreds of later writes", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await a.provider.deleteDocument()
+    await settle(chain, [a, bea])
+    a.provider.destroy()
+    bea.provider.destroy()
+    await ArkivProvider.createDocument({ store: chain.store(owner.address), link, identity: owner })
+    chain.mine()
+    const a2 = await peer(chain, link, owner)
+    // 250 ordinary edits afterwards: more than one page of the newest entities
+    for (let i = 0; i < 250; i++) {
+      a2.doc.getText("t").insert(0, "x")
+      await a2.provider.flush()
+      chain.mine()
+    }
+    const reader = await peer(chain, link, undefined)
+    const older = await reader.provider.predatingEntities()
+    expect(older.map((e) => e.creator)).toContain(bea.id!.address)
   })
 })

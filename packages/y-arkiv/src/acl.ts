@@ -121,6 +121,9 @@ export function updateAuthors(acl: Acl): Hex[] {
  * is at most their removal), so junk a removed member writes later never enters a query. A removed
  * member whose removal is before `from` cannot have a valid edit in the window and is left out.
  */
+/** Blocks after a removal's stamped atBlock that its transaction may still be landing in. */
+const REMOVAL_LANDING_MARGIN = 60n
+
 export function updateFilter(acl: Acl, from: bigint): { creators: Hex[]; creatorBounds: { address: Hex; seqLte: bigint }[] } {
   const creators = memberAddresses(acl)
   const ended = new Map<Hex, bigint>()
@@ -130,7 +133,9 @@ export function updateFilter(acl: Acl, from: bigint): { creators: Hex[]; creator
     const at = BigInt(r.atBlock)
     if (!ended.has(a) || at > ended.get(a)!) ended.set(a, at)
   }
-  const creatorBounds = [...ended].filter(([, at]) => at >= from).map(([address, seqLte]) => ({ address, seqLte }))
+  // the removal is stamped with the owner's head, and lands a block or more later: an edit the member sent
+  // in between, with a qs up to the landing block, is still checked (against the list as it stood then)
+  const creatorBounds = [...ended].filter(([, at]) => at + REMOVAL_LANDING_MARGIN >= from).map(([address, at]) => ({ address, seqLte: at + REMOVAL_LANDING_MARGIN }))
   return { creators, creatorBounds }
 }
 

@@ -41,7 +41,7 @@ async function until(cond: () => boolean, ms = 120_000) {
     if (Date.now() > end) throw new Error("timed out")
     if (Date.now() - last > 5000) {
       last = Date.now()
-      await Promise.all(live.map((p) => p.resync({ joins: true }).catch(() => 0)))
+      await Promise.all(live.map((p) => p.resync({ joins: true }).catch((e: Error) => console.error("resync:", e.message.split("\n")[0]))))
     }
     await new Promise((r) => setTimeout(r, 300))
   }
@@ -89,7 +89,11 @@ for (let tries = 0; !(await asha.p.findJoinRequest(beaId.address as Hex)); tries
   await pause(3000)
 }
 await asha.p.approve(beaId.address)
-await until(() => bea.p.role === "writer")
+for (let tries = 0; bea.p.role !== "writer"; tries++) {
+  if (tries > 60) throw new Error(`Bea never saw her approval (role ${bea.p.role})`)
+  await bea.p.resync({ joins: true }).catch((e: Error) => console.error("resync:", e.message.split("\n")[0]))
+  await pause(3000)
+}
 
 para(asha.doc, "Water access study, section 3 (synthetic demo)", true)
 await asha.p.flush()

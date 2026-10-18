@@ -145,7 +145,7 @@ async function main() {
       const by = [...new Set(outsiders)]
       const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
       console.log(`outside    ${n(outsiders.length, "entity", "entities")} by ${n(by.length, "non-member", "non-members")}, never fetched or applied${by.length ? `: ${by.join(", ")}` : ""} (1 more query${provider.outsidersTruncated ? "; first 200 entities only, there are more" : ""})`)
-      const note = recreated(provider, entities)
+      const note = recreated(provider, await provider.predatingEntities())
       if (note) console.log(note)
     }
     process.exit(0)
@@ -168,7 +168,7 @@ async function main() {
     console.log("")
     for (const [a, t] of total) console.log(`${a}  ${t.proven} characters proven, ${t.claimed} claimed`)
     console.log(audited(provider))
-    const note = provider.acl?.rosterHidden ? "" : recreated(provider, await provider.outsiderEntities())
+    const note = recreated(provider, await provider.predatingEntities())
     if (note) console.log(note)
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     process.exit(0)
@@ -220,8 +220,7 @@ async function main() {
  * one under the same link: whatever the new list's members show, the earlier document is still on
  * chain, readable and provable at a block before the new list.
  */
-function recreated(provider: ArkivProvider, outsiders: StoredEntity[]): string {
-  const older = outsiders.filter((e) => e.createdAt < provider.aclCreatedAt && (e.attributes.kind === "u" || e.attributes.kind === "s"))
+function recreated(provider: ArkivProvider, older: StoredEntity[]): string {
   if (!older.length) return ""
   const writers = [...new Set(older.map((e) => e.creator.toLowerCase()))]
   return `recreated  ${older.length} ${older.length === 1 ? "entity predates" : "entities predate"} this member list (made at block ${provider.aclCreatedAt}), written by ${writers.join(", ")}: the owner deleted the list and made a new one under the same link. Read the earlier document with --at ${provider.aclCreatedAt - 1n}`

@@ -1886,6 +1886,18 @@ export class ArkivProvider extends Observable<string> {
    * no more: the document id is public, so anyone can pile junk on it, and following every page would
    * spend every reader's query budget. `outsidersTruncated` says when the page was full.
    */
+  /**
+   * Edits and snapshots written before the member list in use, found with one query on `qs` (a valid
+   * entity's qs is at most its block, so anything stamped before the list could predate it) and checked
+   * by `createdAt`. Any at all means the owner deleted the list and made a new one under the same link;
+   * later writing cannot push them out of view, since they are the only entities stamped that early.
+   */
+  async predatingEntities(): Promise<StoredEntity[]> {
+    if (this.aclCreatedAt === 0n) return []
+    const page = await this.store.query({ doc: this.link.doc, seqLte: this.aclCreatedAt - 1n, limit: 200 })
+    return page.entities.filter((e) => e.createdAt < this.aclCreatedAt && (e.attributes.kind === KIND.update || e.attributes.kind === KIND.snapshot))
+  }
+
   async outsiderEntities(): Promise<StoredEntity[]> {
     if (!this.acl || this.acl.rosterHidden) return []
     const all = await this.store.query({ doc: this.link.doc, limit: 200 })

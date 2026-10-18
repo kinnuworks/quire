@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from pycrdt import Doc, XmlElement, XmlFragment, XmlText
+from pycrdt import Doc, Text, XmlElement, XmlFragment, XmlText
 
 import quire_audit as qa
 from quire_audit import Entity
@@ -936,6 +936,10 @@ class Source:
         es = self.by_kind(doc, "u", None, 0, self.max_qs)
         return es, True
 
+    def stamped_before(self, doc: str, block: int) -> list[Entity]:
+        """One page of entities for `doc` whose qs is below `block`, whoever wrote them."""
+        raise NotImplementedError
+
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         """Every entity for `doc` whose creator is not a member, join
         requests aside (strangers send those by design). The member-filtered
@@ -980,6 +984,9 @@ class VectorSource(Source):
 
     def entity(self, key: str) -> Entity | None:
         return next((e for e in self.entities if e.key == key.lower()), None)
+
+    def stamped_before(self, doc: str, block: int) -> list[Entity]:
+        return [e for e in self.entities if str(e.attr("qd")).lower() == doc.lower() and isinstance(e.attr("qs"), int) and e.attr("qs") < block][:200]
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         return [
@@ -1048,6 +1055,9 @@ class RpcSource(Source):
         raw = qa.get_entity(self.url, key)
         e = qa.parse_entity(raw) if raw else None
         return e if e is not None and well_formed(e) else None
+
+    def stamped_before(self, doc: str, block: int) -> list[Entity]:
+        return self._run(f"qp = str('quire1') AND qd = bytes32({doc.lower()}) AND qs <= u64({block - 1})", max_pages=1)
 
     def outsiders(self, doc: str, members: list[str]) -> list[Entity]:
         # one query with no kind or creator filter
@@ -1393,10 +1403,23 @@ class Reader:
             if str(header.get("owner", "")).lower() != self.link.owner:
                 self._ignore(e, "ACL header owner differs from link owner")
                 continue
+            self._unwrap(header)
+            # the list must name its owner, as owner, wherever this reader can see the roster (as the
+            # TypeScript reader requires); one that does not is skipped for the next valid one
+            try:
+                roster = self.roster(header)
+            except Exception as exc:
+                self._ignore(e, _why(exc))
+                continue
+            if roster is not None and not any(
+                isinstance(m, dict) and str(m.get("address", "")).lower() == self.link.owner and m.get("role") == "owner"
+                for m in (roster.get("members") or [])
+            ):
+                self._ignore(e, "ACL does not list its owner as owner")
+                continue
             self._note(e)
             self.applied.append(e.key)
             self.acl_entity = e
-            self._unwrap(header)
             return header
         raise RuntimeError("no valid ACL created by the link owner")
 
@@ -1660,6 +1683,14 @@ class Reader:
         added = self.added_at.get(e.creator)
         return added is not None and e.created_at >= added
 
+    def predating(self) -> list[Entity]:
+        """Edits and snapshots written before the member list in use: any at all means the owner
+        deleted the list and made a new one under the same link (one query on qs, checked by createdAt)."""
+        if self.acl_entity is None or self.acl_entity.created_at == 0:
+            return []
+        return [e for e in self.source.stamped_before(self.link.doc, self.acl_entity.created_at)
+                if e.created_at < self.acl_entity.created_at and e.kind in ("u", "s")]
+
     def before_acl(self, e: Entity) -> bool:
         """Section 5: nothing written before the member list in use belongs to its members, so an
         owner who deletes the list and makes a new one under the same link cannot pass old writing
@@ -1763,7 +1794,9 @@ class Reader:
         authors = sorted(set(members) | set(self.revoked_at))  # removed members too, for their intervals
         # Section 5: each removed member is read only up to their last removal block (a valid edit's qs is at
         # most the block it landed in), and not at all once that block is before the window
-        all_bounds = {a: max(end for _s, end in spans) for a, spans in self.revoked_at.items() if a not in members}
+        # plus 60 blocks: a removal is stamped with the owner's head and lands later, and an edit sent in
+        # between is still checked, against the member list as it stood then
+        all_bounds = {a: max(end for _s, end in spans) + SNAPSHOT_WINDOW for a, spans in self.revoked_at.items() if a not in members}
         bounds = {a: b for a, b in all_bounds.items() if b >= min_qs}
         ever = self.ever_listed(authors) if self.audit and self.source.has_history else None
         if ever is not None:
@@ -1964,7 +1997,7 @@ class Reader:
                 continue
             self._note(e)
             self.applied.append(e.key)
-        text = fragment_text(doc.get("default", type=XmlFragment))
+        text = document_text(doc)
         ranges = text_ranges(doc.get_update(), verified, [(s.entity.creator, s.structs) for s in snapshots])
         return ReadResult(
             text, acl, epoch, sorted(self.keys), [m for m in raw_members if isinstance(m, dict)], revoked,
@@ -2080,7 +2113,7 @@ def read_version(link: VersionLink, source: Source, schemas: Schemas | None = No
     doc = Doc()
     doc.apply_update(data)
     return VersionResult(
-        fragment_text(doc.get("default", type=XmlFragment)), head, frame.header, frame.epoch,
+        document_text(doc), head, frame.header, frame.epoch,
         list(frame.header.get("chunks") or []), doc,
     )
 
@@ -2127,6 +2160,14 @@ def node_text(node: XmlFragment | XmlElement | XmlText) -> str:
     return "".join(node_text(child) for child in node.children)
 
 
+def document_text(doc: Doc) -> str:
+    """The document's paragraphs, then any plain text in the Y.Text "t" (as a y-arkiv app that uses
+    getText("t") writes it) on the line after them."""
+    blocks = fragment_text(doc.get("default", type=XmlFragment))
+    plain = str(doc.get("t", type=Text))
+    return "\n".join(part for part in (blocks, plain) if part)
+
+
 def fragment_text(fragment: XmlFragment) -> str:
     """One line per top-level element (paragraph) of the fragment."""
     return "\n".join(node_text(child) for child in fragment.children)
@@ -2162,6 +2203,12 @@ def trust_report(reader: Reader, result: ReadResult) -> str:
     lines.append(f"wraps        {len(wraps)} (unlabelled; the count is all a link holder learns)")
     if reader.acl_entity is not None:
         ae = reader.acl_entity
+        older = reader.predating()
+        if older:
+            writers = sorted({e.creator for e in older})
+            lines.append(f"recreated    {len(older)} entities predate this member list (created at block {ae.created_at}),"
+                         f" written by {', '.join(writers)}: the owner deleted the list and made a new one"
+                         f" under the same link. Read the earlier document with --at {ae.created_at - 1}")
         lines.append(f"acl flags    {qa.flags_text(ae)}  expected not readonly, extended by its owner:"
                      f" {_yes(not qa.check_flags(ae))}")
     lines.append(f"schemas      {reader.schemas.status}")

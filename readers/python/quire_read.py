@@ -1003,10 +1003,9 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
     compatibility forms, case and Cyrillic and Greek look-alikes folded. A
     passage of n words matches a stretch of someone's text if at most n // 6
     words differ, and a match is dated by its newest word. The passage is
-    flagged only if another member's match is older than every match of its
-    own writer (counting the passage as it stands now less its n // 6 newest
-    words), and that member's stretch is not itself a copy of the writer's
-    earlier text. Passages under 24 characters are skipped; passages over 80
+    flagged only if another member's match is older than the passage itself
+    (dated by its words less the n // 6 newest), and that member's stretch is
+    not itself a copy of what the writer had typed before it existed. Passages under 24 characters are skipped; passages over 80
     words are checked in 40-word windows. It is a pointer, not a verdict."""
     ordered = sorted(updates, key=lambda u: (u[0].created_at, u[0].key))
     if not ordered:
@@ -1155,9 +1154,6 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
                 if _match(best[3], typed_before(author, best[1]), len(best[3]) // 6) is not None:
                     continue
                 own = sorted((w.t for w in ws[i:j]), reverse=True)[k]
-                mine = earliest(p, streams.get(author), k)
-                if mine is not None and mine[0] < own:
-                    own = mine[0]
                 if best[1] < own:
                     flagged.append((i, j, best[0], best[1], best[2]))
             # each flagged stretch once: overlapping passages naming the same earlier writer merge

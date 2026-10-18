@@ -120,9 +120,9 @@ export type EarlierWriter = {
  * nothing are dropped, compatibility forms and case are folded, Cyrillic and Greek look-alikes become
  * Latin, and whitespace only separates words. A passage of n words matches a stretch of someone's text
  * if at most n/6 words differ (inserted, dropped or changed), and a match is dated by its newest word.
- * The passage is flagged only if another member's match is older than every match of its own writer
- * (counting the passage as it stands now less its n/6 newest words), and that other member's stretch
- * is not itself a copy of the writer's earlier text. Passages under 24 characters are skipped, and
+ * The passage is flagged only if another member's match is older than the passage itself (dated by
+ * its words less the n/6 newest), and that other member's stretch is not itself a copy of what the
+ * writer had typed before it existed. Passages under 24 characters are skipped, and
  * passages over 80 words are checked in 40-word windows.
  *
  * This is a pointer, not a verdict: it compares text, and text can be reworded past any threshold.
@@ -267,10 +267,8 @@ export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWrit
         // rewording of her sentence, or a paste of it): read her text as she had typed it before their
         // words existed, deleted characters included, and if it holds their words she had them first
         if (match(best.q, typedBefore(run.author, best.t), Math.floor(best.q.length / 6))) continue
-        // the writer's own passage dates from its words less the k newest; or an older match of theirs
-        let own = ws.slice(i, j).map((w) => w.t).sort((x, y) => y - x)[k]!
-        const mine = earliest(p, streams.get(run.author), k)
-        if (mine && mine.t < own) own = mine.t
+        // the writer's own passage dates from its words less the k newest
+        const own = ws.slice(i, j).map((w) => w.t).sort((x, y) => y - x)[k]!
         if (best.t < own) flagged.push({ i, j, first: best.who, t: best.t, f: best.f })
       }
       // report each flagged stretch once: overlapping passages (a run, its sentences, its windows) that

@@ -15,14 +15,22 @@ Built for Arkiv: Global Tour Stop, in the Privacy, Open Source and Security trac
 - **Open Source:** a published protocol with JSON Schema, conformance vectors and 23 edge cases, two independent readers (TypeScript and Python) diffed against each other, and a Yjs provider any editor can swap in. [PROTOCOL.md](PROTOCOL.md).
 - **Security:** every edit is a readonly entity whose `$creator` nobody can forge, so `y-arkiv blame` proves which key wrote each passage, checked against the member list as it stood at that block, without trusting us. The [contested demo](#who-is-harmed-today) shows an owner trying to take a co-author's paragraph, and the chain showing who wrote it.
 
-**Check it in a minute.** Open the [live demo document](https://quire-five.vercel.app/#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546): it is read straight from Arkiv in three queries, plus one that lists the writes kept out. Turn on **Who wrote what** to color each paragraph by the key that wrote it, and open **Explorer** to see the public entity next to what your browser decrypts. Then, without our app:
+## Five minutes, for judges
 
-```bash
-pnpm install
-pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546'
-```
+1. **Drag the scrubber** (1 minute). On the [home page](https://quire-five.vercel.app/#proof), "Someone took the credit" replays a real document on Arkiv block by block: Bea types the key finding, then Asha, the owner, erases her from the member list and pastes the finding back as her own. The member list, the chain's verdict and the edit rhythm change as you drag.
+2. **Open that document in the app** (1 minute). Open the [contested study](https://quire-five.vercel.app/#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0) and turn on **Who wrote what**. The app loads every edit still on chain and says "Typed first by someone else": the finding is one paste by Asha's key, and Bea's key typed the same words first, at blocks 734926 to 734961.
+3. **Check it without our app** (2 minutes). From a clone:
 
-That prints every paragraph with the address, block and entity that prove who wrote it. [Submission evidence](#submission-evidence) has the rest.
+   ```bash
+   pnpm install
+   pnpm --dir packages/y-arkiv exec tsx src/cli.ts timeline '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0'
+   pnpm --dir packages/y-arkiv exec tsx src/cli.ts blame '#/d/DqGiOcF4WHKgOkfcBcEansmEdytSLBHDv5EkQf6YNFQ.EBkcdL5buH73K8vSpkP_8akeH1w-npysYnwdf3SzokY.b83063cf00de65f09187c9600b0b3fd951f60fb0' --at 734966
+   ```
+
+   `timeline` lists Bea's seven edits and Asha's single paste that removed 100 characters and added the same 100. `blame --at` proves every word of the finding was Bea's, checked against the member list as it stood at each of her blocks. The independent Python reader gives the same counts (see [the contested demo](#who-is-harmed-today)).
+4. **See what the chain sees** (1 minute). In the [shared water log](https://quire-five.vercel.app/#/d/cGY4Lxdu7yBatU75t4TxoyiHNJOtyVA3npCI1WcHL2c.OPYzqRUr9D1b_T_O3-7fsA0layOo0LcNOlMaphGxpSE.a7da7e4e17101ad0b4832c7cce0f87bf6e84b546), the **Explorer** tab puts each public entity (four attributes and a block of ciphertext) next to what your browser decrypts, and the **People** tab lists the one forged write from outside the member list that no reader applies.
+
+Contents: [who is harmed today](#who-is-harmed-today) · [why Arkiv](#why-arkiv-and-what-stays-off-it) · [try it](#try-it) · [how it uses Arkiv](#how-it-uses-arkiv) · [cost](#what-it-costs) · [what still leaks](#privacy-model) · [submission evidence](#submission-evidence) · [repository](#repository) · [run it locally](#run-it-locally)
 
 ## Who is harmed today
 

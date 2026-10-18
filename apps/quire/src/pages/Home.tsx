@@ -106,6 +106,11 @@ function CreateForm({ id }: { id: string }) {
 
 export function Home() {
   useReveal()
+  // a link such as /#proof arrives before the section exists: scroll to it once the page has rendered
+  useEffect(() => {
+    const id = location.hash.slice(1)
+    if (/^[a-z]+$/.test(id)) document.getElementById(id)?.scrollIntoView()
+  }, [])
   const docs = knownDocuments()
   return (
     <>

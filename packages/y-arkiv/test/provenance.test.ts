@@ -1397,3 +1397,23 @@ describe("a recreated member list", () => {
     expect(older.map((e) => e.creator)).toContain(bea.id!.address)
   })
 })
+
+describe("a session whose socket never works", () => {
+  it("still picks up new edits by resync long after it connected", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const deaf: ArkivStore = { ...chain.store(undefined), watch: () => () => undefined }
+    const doc = new Y.Doc()
+    const reader = new ArkivProvider(doc, { store: deaf, link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true })
+    await reader.connect()
+    // far more than the 60-block margin passes before anyone writes
+    chain.mine(500)
+    a.doc.getText("t").insert(0, "written later")
+    await a.provider.flush()
+    chain.mine()
+    await reader.resync()
+    expect(doc.getText("t").toString()).toBe("written later")
+    reader.destroy()
+  })
+})

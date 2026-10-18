@@ -572,7 +572,7 @@ export class ArkivProvider extends Observable<string> {
     // without the roster we do not know whose entities to trust, and could not decrypt them anyway
     if (!this.acl || this.acl.rosterHidden) return
     const writers = memberAddresses(this.acl)
-    const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers, seqLte: this.qsCeiling() })
+    const snaps = await queryAll(this.store, { doc: this.link.doc, kind: KIND.snapshot, creators: writers, seqLte: await this.freshQsCeiling() })
     this.sawHead(snaps.block)
     // order by the writer's block height (qs), newest first; Arkiv does not promise any order.
     // Apply every snapshot close to the newest base, which covers concurrent compactions.
@@ -655,7 +655,8 @@ export class ArkivProvider extends Observable<string> {
    * AUDIT_PAGES pages and falls back to the filter, and `auditNarrowed` says so.
    */
   private async queryUpdates(from: bigint): Promise<{ entities: StoredEntity[]; block: bigint }> {
-    const filtered = { doc: this.link.doc, kind: KIND.update, ...updateFilter(this.acl!, from), seqGte: from, seqLte: this.qsCeiling() }
+    const ceiling = await this.freshQsCeiling()
+    const filtered = { doc: this.link.doc, kind: KIND.update, ...updateFilter(this.acl!, from), seqGte: from, seqLte: ceiling }
     // the wider read is for full audits only; a normal session still checks each fetched edit at its block
     if (!this.membershipAtBlock || !this.fullHistory) return queryAll(this.store, filtered)
     // an audit reads the edits of everyone any version of the list ever named, 64 addresses a query:
@@ -671,7 +672,7 @@ export class ArkivProvider extends Observable<string> {
       }
       return { entities, block }
     }
-    const spec = { doc: this.link.doc, kind: KIND.update, seqGte: from, seqLte: this.qsCeiling() }
+    const spec = { doc: this.link.doc, kind: KIND.update, seqGte: from, seqLte: ceiling }
     const first = await this.store.query(spec)
     const out = [...first.entities]
     let cursor = first.cursor
@@ -719,6 +720,20 @@ export class ArkivProvider extends Observable<string> {
    * leaving it out of the query stops anyone, a removed member included, from parking far-future
    * entities in every reader's window.
    */
+  /**
+   * The ceiling with the head read just now. A session whose socket is down sees no events, so the
+   * head it last saw goes stale, and a ceiling built from it would leave out every edit written more
+   * than 60 blocks later. Reading the head is one cheap call, not a query.
+   */
+  private async freshQsCeiling(): Promise<bigint | undefined> {
+    try {
+      this.sawHead(await this.store.head())
+    } catch {
+      // keep the last head seen; the next call tries again
+    }
+    return this.qsCeiling()
+  }
+
   qsCeiling(): bigint | undefined {
     return this.headSeen > 0n ? this.headSeen + CATCH_UP_MARGIN_BLOCKS : undefined
   }

@@ -115,6 +115,25 @@ export function updateAuthors(acl: Acl): Hex[] {
   return [...new Set([...memberAddresses(acl), ...acl.revoked.map((r) => r.address.toLowerCase() as Hex)])]
 }
 
+/**
+ * The creator filter for update queries: today's members, and each removed member bounded at their
+ * last removal block (a valid edit's qs is at most the block it landed in, which for a removed member
+ * is at most their removal), so junk a removed member writes later never enters a query. A removed
+ * member whose removal is before `from` cannot have a valid edit in the window and is left out.
+ */
+export function updateFilter(acl: Acl, from: bigint): { creators: Hex[]; creatorBounds: { address: Hex; seqLte: bigint }[] } {
+  const creators = memberAddresses(acl)
+  const ended = new Map<Hex, bigint>()
+  for (const r of acl.revoked) {
+    const a = r.address.toLowerCase() as Hex
+    if (creators.includes(a)) continue // a member added back: today's membership covers them
+    const at = BigInt(r.atBlock)
+    if (!ended.has(a) || at > ended.get(a)!) ended.set(a, at)
+  }
+  const creatorBounds = [...ended].filter(([, at]) => at >= from).map(([address, seqLte]) => ({ address, seqLte }))
+  return { creators, creatorBounds }
+}
+
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 

@@ -46,7 +46,7 @@ await reader.connect() // three queries, then live over WebSocket
 - Join requests sealed to the owner, approval, and revocation that rotates the key and seals the roster.
 - Snapshots as a 30-day lease renewed by members, published readonly versions anyone can keep alive, `keepFor`, `deleteDocument` and `shredMine`.
 - Time travel with `loadAt(store, link, block)`, which uses `atBlock` reads.
-- `blame(doc, provider)`: every visible run of text with its author, proven by an update entity or claimed through a snapshot. Open with `fullHistory: true` to count every edit still on chain.
+- `blame(doc, provider)`: every visible run of text with its author, proven by an update entity or claimed through a snapshot. Open with `fullHistory: true` to count every edit still on chain; the provider checks each author against the member list as it stood at that edit's block by default (`membershipAtBlock`).
 - `MemoryChain`, an in-memory Arkiv for tests: blocks, `$creator`, expiry, flags, atomic batches, and the RPC's request size limit.
 
 ## CLI
@@ -55,6 +55,7 @@ await reader.connect() // three queries, then live over WebSocket
 npx y-arkiv verify '<document link>'   # members, epoch, lease, ignored writes, query cost
 npx y-arkiv read '<document link>'
 npx y-arkiv blame '<document link>'    # who wrote each run of text, with the entity and block that prove it
+npx y-arkiv timeline '<document link>' # every edit in order, with characters added and removed
 npx y-arkiv watch '<document link>'
 QUIRE_KEY=0x… npx y-arkiv extend '<version link>'
 npx y-arkiv check-signature <address> '<message>' <signature>   # a "Prove this key is yours" signature

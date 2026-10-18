@@ -4,7 +4,7 @@
  * reader built on this package run against the vectors exactly as it runs against Arkiv.
  */
 import { fromRpcEntity, type RpcEntity } from "./sdk.js"
-import type { ArkivStore, StoredEntity } from "./store.js"
+import { type ArkivStore, creatorMatches, type StoredEntity } from "./store.js"
 
 export function vectorStore(vectors: { head: string; entities: RpcEntity[] }): ArkivStore {
   const head = BigInt(vectors.head)
@@ -23,7 +23,7 @@ export function vectorStore(vectors: { head: string; entities: RpcEntity[] }): A
           (!spec.kind || e.attributes.kind === spec.kind) &&
           (spec.seqGte === undefined || e.attributes.seq >= spec.seqGte) &&
           (spec.seqLte === undefined || e.attributes.seq <= spec.seqLte) &&
-          (!spec.creators || spec.creators.some((c) => c.toLowerCase() === e.creator)),
+          (!(spec.creators?.length || spec.creatorBounds?.length) || creatorMatches(spec, e)),
       ),
       block: head,
     }),

@@ -58,6 +58,8 @@ export type QuerySpec = {
   seqLte?: bigint
   /** Only entities whose on-chain `$creator` is one of these. */
   creators?: Hex[]
+  /** Also entities from these creators, but only with `qs` at most the bound (a removed member's edits end at their removal). */
+  creatorBounds?: { address: Hex; seqLte: bigint }[]
   atBlock?: bigint
   limit?: number
   cursor?: string
@@ -83,6 +85,12 @@ export interface ArkivStore {
   get(key: Hex, block?: bigint): Promise<StoredEntity | null>
   /** Live events. Must push (no polling loop) where the transport allows it. */
   watch(onEvent: (event: ChainEvent) => void, onError?: (error: Error) => void): () => void
+}
+
+/** Whether an entity passes a query's creator filter, bounded creators included (for in-memory stores). */
+export function creatorMatches(spec: QuerySpec, e: StoredEntity): boolean {
+  if ((spec.creators ?? []).some((c) => c.toLowerCase() === e.creator)) return true
+  return (spec.creatorBounds ?? []).some((b) => b.address.toLowerCase() === e.creator && e.attributes.seq <= b.seqLte)
 }
 
 /**

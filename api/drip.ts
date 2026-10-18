@@ -24,6 +24,8 @@ const recent = new Map<string, number>()
 // at most this many transfers per instance per 10 minutes, whatever the IPs
 const GLOBAL_CAP = 40
 const sent: number[] = []
+const PER_IP_CAP = 3
+const perIp = new Map<string, number[]>()
 /**
  * Proof of work: sha256("quire-drip:" + address + ":" + minute + ":" + nonce) must start with
  * DIFFICULTY zero bits. About a million hashes, two seconds in a browser, and one hash to check here,
@@ -72,8 +74,10 @@ export default async function handler(req: Req, res: Res) {
   const now = Date.now()
   // IPs are held for a minute; addresses for five, longer than a proof of work stays fresh, so one proof cannot be replayed
   for (const [k, t] of recent) if (now - t > (k.startsWith("0x") ? 300_000 : 60_000)) recent.delete(k)
-  if ((recent.get(ip) ?? 0) > now - 10_000 || recent.has(address.toLowerCase())) {
-    return res.status(429).json({ error: "One request every 10 seconds, please." })
+  // at most three keys per IP in ten minutes, so one IP cannot hold the whole cap
+  const mine = (perIp.get(ip) ?? []).filter((t) => t > now - 600_000)
+  if ((recent.get(ip) ?? 0) > now - 10_000 || recent.has(address.toLowerCase()) || mine.length >= PER_IP_CAP) {
+    return res.status(429).json({ error: mine.length >= PER_IP_CAP ? "This network has had three keys funded in the last ten minutes. Try again later, or fund this key from your own wallet or the faucet at https://hub.arkiv.network/faucet." : "One request every 10 seconds, please." })
   }
   while (sent.length && sent[0]! < now - 600_000) sent.shift()
   if (sent.length >= GLOBAL_CAP) {
@@ -83,9 +87,11 @@ export default async function handler(req: Req, res: Res) {
   recent.set(ip, now)
   recent.set(address.toLowerCase(), now)
   sent.push(now)
+  perIp.set(ip, [...mine, now])
   const release = () => {
     const i = sent.indexOf(now)
     if (i >= 0) sent.splice(i, 1)
+    perIp.set(ip, (perIp.get(ip) ?? []).filter((t) => t !== now))
   }
 
   try {

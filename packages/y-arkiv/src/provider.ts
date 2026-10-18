@@ -11,7 +11,7 @@ import * as Y from "yjs"
 import { recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { Observable } from "lib0/observable"
-import { type Acl, clipName, emptyAcl, fromHeader, isMember, type Member, memberAddresses, memberAt, toHeader, updateAuthors, wroteAsMember } from "./acl.js"
+import { type Acl, clipName, emptyAcl, fromHeader, isMember, type Member, memberAddresses, memberAt, toHeader, updateAuthors, updateFilter, wroteAsMember } from "./acl.js"
 import { decodeFrame, decodeOuter, encodeFrame, encodeOuter, equalBytes, type Frame } from "./codec.js"
 import {
   addressOfPublicKey,
@@ -621,7 +621,7 @@ export class ArkivProvider extends Observable<string> {
    * AUDIT_PAGES pages and falls back to the filter, and `auditNarrowed` says so.
    */
   private async queryUpdates(from: bigint): Promise<{ entities: StoredEntity[]; block: bigint }> {
-    const filtered = { doc: this.link.doc, kind: KIND.update, creators: updateAuthors(this.acl!), seqGte: from, seqLte: this.qsCeiling() }
+    const filtered = { doc: this.link.doc, kind: KIND.update, ...updateFilter(this.acl!, from), seqGte: from, seqLte: this.qsCeiling() }
     // the wider read is for full audits only; a normal session still checks each fetched edit at its block
     if (!this.membershipAtBlock || !this.fullHistory) return queryAll(this.store, filtered)
     // an audit reads the edits of everyone any version of the list ever named, 64 addresses a query:
@@ -631,7 +631,7 @@ export class ArkivProvider extends Observable<string> {
       const entities: StoredEntity[] = []
       let block = 0n
       for (let i = 0; i < ever.length; i += 64) {
-        const page = await queryAll(this.store, { ...filtered, creators: ever.slice(i, i + 64) })
+        const page = await queryAll(this.store, { ...filtered, creators: ever.slice(i, i + 64), creatorBounds: undefined })
         entities.push(...page.entities)
         block = page.block
       }
@@ -685,7 +685,7 @@ export class ArkivProvider extends Observable<string> {
    * leaving it out of the query stops anyone, a removed member included, from parking far-future
    * entities in every reader's window.
    */
-  private qsCeiling(): bigint | undefined {
+  qsCeiling(): bigint | undefined {
     return this.headSeen > 0n ? this.headSeen + CATCH_UP_MARGIN_BLOCKS : undefined
   }
 

@@ -646,6 +646,11 @@ describe("membership is tied to time", () => {
     await settle(chain, [a, mal])
     const cold = await peer(chain, link, undefined)
     expect(cold.doc.getText("t").toString()).toBe("after joining ")
+    // the same verdict from today's list alone, as a reader without history reaches it
+    const today = new ArkivProvider(new Y.Doc(), { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, membershipAtBlock: false })
+    await today.connect()
+    expect(today.doc.getText("t").toString()).toBe("after joining ")
+    today.destroy()
     a.provider.destroy()
   })
 })
@@ -711,13 +716,17 @@ describe("membership intervals", () => {
     await settle(chain, [a, bea2])
     await a.provider.revoke(bea.id!.address)
     await settle(chain, [a, bea2])
-    const cold = new Y.Doc()
-    const p = new ArkivProvider(cold, { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: true })
-    await p.connect()
-    const proven = blame(cold, p).flat().filter((r) => r.proven).map((r) => r.text).join("")
-    expect(proven).toContain("first stint.")
-    expect(proven).toContain("second stint.")
-    expect(proven).not.toContain("GAP")
+    // with the member list at each edit's block, and with today's list and its removal intervals alone
+    for (const membershipAtBlock of [true, false]) {
+      const cold = new Y.Doc()
+      const p = new ArkivProvider(cold, { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, fullHistory: true, membershipAtBlock })
+      await p.connect()
+      const proven = blame(cold, p).flat().filter((r) => r.proven).map((r) => r.text).join("")
+      expect(proven).toContain("first stint.")
+      expect(proven).toContain("second stint.")
+      expect(proven).not.toContain("GAP")
+      p.destroy()
+    }
     a.provider.destroy()
   })
 })
@@ -1089,5 +1098,90 @@ describe("audit against junk and an erased member", () => {
     expect(audit.auditNarrowed).toBe(true)
     expect(queries).toBeLessThanOrEqual(9)
     audit.destroy()
+  })
+})
+
+describe("removed member's junk with a valid qs", () => {
+  it("is never fetched: a removed member's edits are read only up to their removal block", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const mal = identity("mal")
+    const m = await peer(chain, link, mal)
+    await admit(chain, a, m)
+    m.doc.getText("t").insert(0, "Mal, before removal. ")
+    await m.provider.flush()
+    await settle(chain, [a, m])
+    await a.provider.revoke(mal.address)
+    await settle(chain, [a, m])
+    m.provider.destroy()
+    // after the removal: entities whose qs is their own block, so a qs bound alone lets them through
+    for (let i = 0; i < 5; i++) {
+      await chain.store(mal.address).batch({
+        creates: Array.from({ length: 200 }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.update, seq: chain.block }, lifetimeSeconds: 3600, readonly: true })),
+      })
+      chain.mine()
+    }
+    const base = chain.store(owner.address)
+    let fetched = 0
+    const counting: ArkivStore = { ...base, query: async (spec) => { const page = await base.query(spec); fetched += page.entities.length; return page } }
+    const doc = new Y.Doc()
+    const reader = new ArkivProvider(doc, { store: counting, link, identity: owner, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true, membershipAtBlock: false })
+    await reader.connect()
+    expect(doc.getText("t").toString()).toContain("Mal, before removal.")
+    expect(fetched).toBeLessThan(100)
+    reader.destroy()
+  })
+})
+
+describe("an applied edit extended past the ceiling, seen by a live tab", () => {
+  it("reports divergence, so the tab reloads to what every cold reader shows", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    let diverged = false
+    a.provider.on("diverged", () => (diverged = true))
+    bea.doc.getText("t").insert(0, "HELLO")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    expect(text(a)).toBe("HELLO")
+    // the open tab already applied it; now Bea pushes it past a 30-day lease from this block
+    const mine = (await chain.store(undefined).query({ doc: link.doc, kind: KIND.update, creators: [bea.id!.address] })).entities[0]!
+    await chain.store(bea.id!.address).batch({ extensions: [{ key: mine.key, lifetimeSeconds: LIFETIME.snapshot + 3600 }] })
+    await settle(chain, [a, bea])
+    expect(diverged).toBe(true)
+    const cold = await peer(chain, link, undefined)
+    expect(text(cold)).toBe("")
+  })
+})
+
+describe("far-future qs from a current member", () => {
+  it("never enters a reader's queries either", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = identity("bea")
+    const b = await peer(chain, link, bea)
+    await admit(chain, a, b)
+    a.doc.getText("t").insert(0, "Owner wrote this.")
+    await a.provider.flush()
+    await settle(chain, [a, b])
+    for (let i = 0; i < 5; i++) {
+      await chain.store(bea.address).batch({
+        creates: Array.from({ length: 200 }, () => ({ payload: randomBytes(64), attributes: { doc: link.doc, kind: KIND.update, seq: 1n << 62n }, lifetimeSeconds: 3600, readonly: true })),
+      })
+      chain.mine()
+    }
+    const base = chain.store(owner.address)
+    let fetched = 0
+    const counting: ArkivStore = { ...base, query: async (spec) => { const page = await base.query(spec); fetched += page.entities.length; return page } }
+    const doc = new Y.Doc()
+    const reader = new ArkivProvider(doc, { store: counting, link, identity: owner, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true })
+    await reader.connect()
+    expect(doc.getText("t").toString()).toBe("Owner wrote this.")
+    expect(fetched).toBeLessThan(100)
+    reader.destroy()
   })
 })

@@ -8,16 +8,7 @@
  */
 import { randomBytes } from "./crypto.js"
 import { bytesToHex } from "./hex.js"
-import type {
-  ArkivStore,
-  BatchResult,
-  BatchSpec,
-  ChainEvent,
-  Hex,
-  QueryPage,
-  QuerySpec,
-  StoredEntity,
-} from "./store.js"
+import { type ArkivStore, type BatchResult, type BatchSpec, type ChainEvent, creatorMatches, type Hex, type QueryPage, type QuerySpec, type StoredEntity } from "./store.js"
 
 const BLOCK_SECONDS = 2
 const TX_PAYLOAD_LIMIT = 128_000
@@ -148,7 +139,6 @@ export class MemoryChain {
   query(spec: QuerySpec): QueryPage {
     this.stats.queries++
     const at = spec.atBlock ?? this.block
-    const creators = spec.creators?.map((c) => c.toLowerCase())
     const all: StoredEntity[] = []
     for (const key of this.versions.keys()) {
       const e = this.live(key, at)
@@ -157,7 +147,7 @@ export class MemoryChain {
       if (spec.kind && e.attributes.kind !== spec.kind) continue
       if (spec.seqGte !== undefined && e.attributes.seq < spec.seqGte) continue
       if (spec.seqLte !== undefined && e.attributes.seq > spec.seqLte) continue
-      if (creators && !creators.includes(e.creator.toLowerCase())) continue
+      if ((spec.creators?.length || spec.creatorBounds?.length) && !creatorMatches(spec, e)) continue
       all.push(e)
     }
     // Arkiv returns newest first and offers no ordering control

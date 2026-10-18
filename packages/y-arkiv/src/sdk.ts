@@ -221,10 +221,9 @@ export function toExpression(spec: QuerySpec): Expression {
   if (spec.kind) parts.push(eq("qk", str(spec.kind)))
   if (spec.seqGte !== undefined) parts.push(gte("qs", u64(spec.seqGte)))
   if (spec.seqLte !== undefined) parts.push(lte("qs", u64(spec.seqLte)))
-  if (spec.creators?.length) {
-    const byCreator = spec.creators.map((c) => eq("$creator", addr(c)))
-    parts.push(byCreator.length === 1 ? byCreator[0]! : or(byCreator))
-  }
+  const byCreator: Expression[] = (spec.creators ?? []).map((c) => eq("$creator", addr(c)))
+  for (const b of spec.creatorBounds ?? []) byCreator.push(and([eq("$creator", addr(b.address)), lte("qs", u64(b.seqLte))]))
+  if (byCreator.length) parts.push(byCreator.length === 1 && !spec.creatorBounds?.length ? byCreator[0]! : or(byCreator))
   return and(parts)
 }
 

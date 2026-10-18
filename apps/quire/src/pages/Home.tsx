@@ -255,7 +255,7 @@ export function Home() {
             <div className="card card--chosen reveal" style={{ "--i": 1 } as React.CSSProperties}>
               <p className="t-title">With Quire</p>
               <p className="t-small" style={{ marginTop: 14 }}>
-                Members hold the keys. Arkiv holds ciphertext that only members can open. Quire runs no server that can read your writing: the optional relay passes along encrypted query results only, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. What still stands in the way: this page is served by Vercel, today's network has one public endpoint, and new keys get gas from our sponsor. The readers in the repository work without the page, and any Arkiv node can serve the data.
+                Members and link holders hold the keys. Arkiv holds ciphertext that only they can open, and rotating the key shuts out an old link. Quire runs no server that can read your writing: the optional relay passes along encrypted query results only, so we hold no text to hand over. Arkiv's RPC still sees which document ids your IP address opens. What still stands in the way: this page is served by Vercel, today's network has one public endpoint, and new keys get gas from our sponsor. The readers in the repository work without the page, and any Arkiv node can serve the data.
               </p>
               <div className="flow">
                 <span>Your browser</span>

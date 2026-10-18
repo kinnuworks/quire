@@ -270,24 +270,66 @@ const probes: Record<string, () => Promise<unknown>> = {
     }
   },
 
-  /** A raw WebSocket upgrade with and without an access key, and over HTTP/2 (friction item 12). */
+  /**
+   * Friction item 12: how many WebSocket connections one IP may hold open at once, and what a refused
+   * handshake says. Opens keyless sockets one after another and keeps each open until one is refused.
+   */
   async wsHandshake() {
     const { request } = await import("node:https")
+    type Result = { status: number; body?: string; socket?: { destroy: () => void } }
     const upgrade = (headers: Record<string, string>) =>
-      new Promise<number>((resolve) => {
+      new Promise<Result>((resolve) => {
         const req = request(RPC, { method: "GET", headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", ...headers } })
-        req.on("upgrade", (res, socket) => (socket.destroy(), resolve(res.statusCode ?? 101)))
-        req.on("response", (res) => (res.resume(), resolve(res.statusCode ?? 0)))
-        req.on("error", () => resolve(-1))
+        req.on("upgrade", (res, socket) => resolve({ status: res.statusCode ?? 101, socket }))
+        req.on("response", (res) => {
+          let body = ""
+          res.on("data", (c) => (body += c))
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: body.slice(0, 300) }))
+        })
+        req.on("error", () => resolve({ status: -1 }))
         req.end()
       })
+    const open: Result[] = []
+    let refused: Result | undefined
+    for (let i = 0; i < 40 && !refused; i++) {
+      const r = await upgrade({})
+      if (r.status === 101) open.push(r)
+      else refused = r
+    }
     const access = process.env.ARKIV_ACCESS_KEY
+    const withKey = access ? await upgrade({ "x-api-key": access }) : undefined
+    for (const r of [...open, withKey]) r?.socket?.destroy()
     return {
-      expected: "the handshake limit documented, and a refusal that says why",
-      keyless: await upgrade({}),
-      withAccessKey: access ? await upgrade({ "x-api-key": access }) : "no ARKIV_ACCESS_KEY set",
-      // HTTP/2 cannot carry an Upgrade handshake; fetch negotiates it where the server offers it
-      postWithGet: (await fetch(RPC, { method: "GET" })).status,
+      expected: "the connection limit documented, and a refusal that says why",
+      keylessHeldOpenBeforeRefusal: open.length,
+      refusal: refused ? { status: refused.status, body: refused.body } : "none within 40",
+      withAccessKeyWhileAtLimit: withKey ? withKey.status : "no ARKIV_ACCESS_KEY set",
+      // HTTP/2 cannot carry an Upgrade handshake
+      plainGet: (await fetch(RPC, { method: "GET" })).status,
+    }
+  },
+
+  /**
+   * Friction item 15: operator precedence in query strings. The SDK writes and() inside or() without
+   * parentheses, so the result depends on AND binding tighter than OR on the node.
+   */
+  async queryPrecedence() {
+    const { or, and, lte } = await import("@arkiv-network/sdk/query")
+    const make = async (qs: bigint) =>
+      (await wallet.createEntity({ payload: payload(16), contentType: "application/octet-stream", attributes: { ...attrs, qs: u64(qs) }, expires: ExpirationTime.fromHours(1) })).entityKey
+    await make(10n)
+    await make(1n)
+    // "$owner = me OR $owner = me AND qs <= 1" reads as (A) OR (A AND qs <= 1) with AND first: both entities.
+    // Written as the SDK writes it, a node that read it left to right would give ((A OR A) AND qs <= 1): one.
+    const me = account.address
+    const expr = and([eq("qp", str(tag)), or([eq("$owner", (await import("@arkiv-network/sdk/attr")).addr(me)), and([eq("$owner", (await import("@arkiv-network/sdk/attr")).addr(me)), lte("qs", u64(1n))])])])
+    const result = await reader.query(expr, { limit: 10 })
+    const plain = await rpc("arkiv_query", [`qp = str('${tag}') AND ($owner = addr(${me}) OR $owner = addr(${me}) AND qs <= u64(1))`, { limit: "0xa" }])
+    return {
+      expected: "precedence documented, or the SDK writing the parentheses it means",
+      sdkResultCount: result.entities.length,
+      rawStringWithoutParentheses: plain.body.slice(0, 200),
+      reading: result.entities.length === 2 ? "AND binds tighter than OR" : "left to right",
     }
   },
 

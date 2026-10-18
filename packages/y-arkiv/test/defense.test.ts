@@ -20,7 +20,7 @@ import { admit, identity, newDocument, peer, settle, text } from "./helpers.js"
 
 /** An RPC that ignores the creator filter and returns everything for the document. */
 function lying(store: ArkivStore): ArkivStore {
-  return { ...store, query: (spec) => store.query({ ...spec, creators: undefined }) }
+  return { ...store, query: (spec) => store.query({ ...spec, creators: undefined, creatorBounds: undefined }) }
 }
 
 async function framePayload(link: DocLink, kind: string, header: Record<string, unknown>, data: Uint8Array, key = deriveEpochZeroKey(link.secret), epoch = 0) {

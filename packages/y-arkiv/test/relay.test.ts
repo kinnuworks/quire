@@ -33,7 +33,8 @@ describe("relay", () => {
       sent.push(JSON.parse(String(init?.body)))
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { data: [], blockNumber: "0x10" } }))
     })
-    const query = `qp = str('quire1') AND qd = bytes32(0x${"ab".repeat(32)})`
+    const scan = `qp = str('quire1') AND qd = bytes32(0x${"ab".repeat(32)})`
+    const query = `${scan} AND qk = str('u')`
     const call = async (opts: unknown, ip: string) => {
       let status = 200
       const res = { status: (n: number) => ((status = n), res), json: () => undefined, setHeader: () => undefined }
@@ -41,6 +42,11 @@ describe("relay", () => {
       return status
     }
     expect(await call({ select: { key: true, payload: true }, limit: "0xc8", cursor: "abc", atBlock: "0x10" }, "1.1.1.1")).toBe(200)
+    // the unfiltered scan reads one page only
+    let status = 200
+    const res2 = { status: (n: number) => ((status = n), res2), json: () => undefined, setHeader: () => undefined }
+    await handler({ method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [scan, { cursor: "abc" }] }), headers: { "x-forwarded-for": "1.1.1.3" } }, res2)
+    expect(status).toBe(400)
     for (const bad of [{ limit: -5 }, { limit: 1.5 }, { limit: "0xc9" }, { limit: "0x0" }, { atBlock: -1 }, { atBlock: "latest" }, { cursor: 7 }, { cursor: "a b" }, { select: "*" }, { select: ["key"] }, { select: { secret: true } }, { select: { key: 1 } }, { extra: 1 }]) {
       expect(await call(bad, "1.1.1.2")).toBe(400)
     }
@@ -54,6 +60,10 @@ describe("relay", () => {
     expect(QUIRE_QUERY.test(`${doc} AND qk = str('u') AND qs >= u64(5) AND qs <= u64(9) AND ${two}`)).toBe(true)
     expect(QUIRE_QUERY.test(`${doc} AND qk = str('s') AND qs <= u64(9) AND $creator = addr(0x${"cd".repeat(20)})`)).toBe(true)
     expect(QUIRE_QUERY.test(`${doc} AND qk = str('u') AND qs <= u64(9) OR qk = str('a')`)).toBe(false)
+    // removed members bounded at their removal block, exactly as the SDK writes the group
+    const bounded = `($creator = addr(0x${"cd".repeat(20)}) OR $creator = addr(0x${"ef".repeat(20)}) AND qs <= u64(5) OR $creator = addr(0x${"22".repeat(20)}) AND qs <= u64(6))`
+    expect(QUIRE_QUERY.test(`${doc} AND qk = str('u') AND qs >= u64(1) AND qs <= u64(9) AND ${bounded}`)).toBe(true)
+    expect(QUIRE_QUERY.test(`${doc} AND qk = str('u') AND ($creator = addr(0x${"cd".repeat(20)}) AND qk = str('a'))`)).toBe(false)
   })
 
   it("the SDK's own requests pass the relay end to end, cursor pages included", async () => {

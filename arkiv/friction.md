@@ -21,10 +21,11 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 9 | RPC gateway | Python's default user agent gets HTTP 403 | Low |
 | 10 | `arkiv-encryption` | No associated data; plaintext cap below the payload cap; key-in-URL guidance | Low |
 | 11 | Docs | `atBlock` retention range is not stated | Low |
-| 12 | WebSocket gateway | Handshakes are rate-limited per IP in bursts, and a refused handshake reaches the client as a bare error with no status | Medium: live push silently stopped |
+| 12 | WebSocket gateway | Concurrent connections are capped per IP (429 `WS_CONN_LIMIT`), and the refusal reaches a browser as a bare `ErrorEvent` with close code 1006 | Medium: live edits silently stop; we poll instead and say so |
 | 13 | Entity metadata | A patch keeps `createdAt`, and `updatedAt` moves on extensions too, so a reader cannot tell rewritten content from a renewed lease | High for us: authorship could be backdated |
 | 14 | Entity lifetimes | `expiresIn` counts from the block a write lands in, and there is no absolute expiry, so carrying an expiry forward drifts | Medium: a kept document lost its text after about 300 sessions until we fixed it |
-| 15 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
+| 15 | Query language | AND binds tighter than OR, undocumented; the SDK writes nested `and` inside `or` without parentheses and relies on it | Low: we confirmed it with a probe before depending on it |
+| 16 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
 ## 1. Keyless query budget: the SDK hangs on 429 without saying so
 
@@ -210,19 +211,17 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **Suggested fix.** State the retention policy, and say whether it will shrink on mainnet.
 
-## 12. WebSocket handshakes share a burst limit, and a refusal says nothing
+## 12. WebSocket connections are capped per IP, and a browser cannot see why it was refused
 
-**What happened.** After a busy hour from one IP (a few sessions plus test runs), new sessions stopped receiving live events. The provider's socket reported an `ErrorEvent` with no message and close code 1006, and nothing else.
+**What happened.** After a busy hour from one IP (a few app tabs, test runs, review sessions), new sessions stopped receiving live events. In the browser the provider's socket reported an `ErrorEvent` with no message and close code 1006, and nothing else.
 
-**Measured** ([notes](probes/websocket-handshake-2026-10-18.json), typed up from the `curl` session at the time): a raw WebSocket upgrade without a key got HTTP 429; the same request with an `x-api-key` header got 101 at the same moment; a minute later the keyless upgrade got 101 again. The probe `wsHandshake` in `scripts/friction-probes.ts` repeats the check on demand; on a quiet IP it gets 101 both ways ([run](probes/2026-10-18-02-18.json)), which is the point: the limit only shows after a burst, and nothing tells the client. An HTTP/2 upgrade gets 405 ("only POST JSON-RPC is supported"), so clients must use HTTP/1.1 for the socket.
+**Measured** ([probe](probes/2026-10-18-05-36.json), `npx tsx scripts/friction-probes.ts wsHandshake`, which holds keyless sockets open until one is refused): with this IP's existing sessions still connected, the first new keyless upgrade got HTTP 429 with the body `{"error":"WS_CONN_LIMIT","message":"too many concurrent websocket connections"}`, while the same upgrade with an `x-api-key` header got 101 at the same moment. So the limit is on concurrent connections per IP, not a burst of handshakes, and the gateway does explain itself, but only in the HTTP response, which the browser WebSocket API never exposes. An earlier run on a quiet IP ([notes](probes/websocket-handshake-2026-10-18.json)) got 101 both ways. A plain GET gets 405, so clients must use an HTTP/1.1 upgrade.
 
-**Expected.** The limit documented next to the query budget, a close frame or error that carries the status, and a way for browsers to authenticate the socket (they cannot set headers on a WebSocket).
+**Expected.** The per-IP connection cap documented next to the query budget, a close frame that carries the reason (browsers can read a close code and reason, not the HTTP body), and a way for browsers to authenticate the socket, since they cannot set headers on a WebSocket.
 
-**Steps to reproduce.** Open several WebSockets from one IP in quick succession, then `curl --http1.1 -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://rpc.tiramisu.db-chain.testnet.arkiv.network/`.
+**Suggested fix.** Document the cap, send the refusal as a close frame with a code and reason, and accept a key in the WebSocket subprotocol or a query parameter for browser clients.
 
-**Suggested fix.** Document the handshake limit, send the 429 reason in the close frame, and accept a key in the WebSocket subprotocol or a query parameter for browser clients.
-
-**What we did.** While its socket is failing, the provider catches up by query every 20 seconds and stops as soon as a live event arrives again ([provider.ts](../packages/y-arkiv/src/provider.ts) `socketFailed`).
+**What we did.** While its socket is refused, the provider catches up by query: every 20 seconds for two minutes, then less often, up to every five minutes, so an idle tab does not spend its query budget. The app says "Synced · live paused" instead of pretending to be live ([provider.ts](../packages/y-arkiv/src/provider.ts) `socketFailed`). One-shot CLI commands open no socket at all. Sharing one socket across tabs of the same origin would be the next step.
 
 ## 13. Nothing in an entity's metadata says its content changed
 
@@ -245,6 +244,18 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 **Suggested fix.** Accept an absolute `expiresAtBlock` alongside `expiresIn` in `createEntity`, `extendEntity` and `executeBatch`, and say in the docs which block a relative lifetime counts from.
 
 **What we did.** Every snapshot's lifetime is computed afresh from the owner's `keepUntil`, never from an earlier expiry, so the overshoot is the one or two blocks of landing delay and never grows ([provider.ts](../packages/y-arkiv/src/provider.ts) `writeSnapshot`, test "does not creep past the owner's ceiling"). Readers in turn measure the 30-day part of the ceiling from each entity's own `updatedAt` rather than from their own head, which item 13's probe shows moves on every extension. A live tab and a reader opening a week later then reach the same verdict.
+
+## 15. Query precedence is undocumented, and the SDK relies on it
+
+**What happened.** To keep a removed member's junk out of every reader's queries, we bound each removed member's edits at their removal block: `$creator = M OR ($creator = R AND qs <= u64(<removal>))`. The SDK's `or([eq(...), and([eq(...), lte(...)])])` writes that without the inner parentheses: `$creator = M OR $creator = R AND qs <= u64(<removal>)`. Whether that is right depends on AND binding tighter than OR on the node, which neither the SDK nor the query docs state.
+
+**Measured** ([probe](probes/2026-10-18-05-37.json), `npx tsx scripts/friction-probes.ts queryPrecedence`): two entities with `qs` 10 and 1, queried as the SDK writes `A OR A AND qs <= 1`, returned both, so the node reads it as `A OR (A AND qs <= 1)`. The same string sent raw returned the same two keys. Quire's relay also checks query strings against a pattern, so it had to match the SDK's exact unparenthesized spelling.
+
+**Expected.** Operator precedence stated in the query docs, and the SDK writing the parentheses its expression tree means, so a reader of the string sees the same thing the node does.
+
+**Suggested fix.** Emit parentheses around every nested `and`/`or` in the SDK's serializer, and document AND-before-OR in the query grammar.
+
+**What we did.** Confirmed the node's reading with the probe, matched the SDK's spelling in the relay pattern ([api/rpc.ts](../api/rpc.ts) `QUIRE_QUERY`), and test that pattern against the SDK's real output (`relay.test.ts`).
 
 ## Paths we tested that worked well
 

@@ -909,9 +909,12 @@ class Source:
         raise NotImplementedError
 
     def by_kind(
-        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None
+        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None,
+        bounds: dict[str, int] | None = None,
     ) -> list[Entity]:
-        """Entities of one kind; `creators=None` means any creator; `qs` within [min_qs, max_qs]."""
+        """Entities of one kind; `creators=None` means any creator; `qs` within [min_qs, max_qs].
+        `bounds` adds creators whose entities count only up to a qs: a removed member's edits end at
+        their removal block."""
         raise NotImplementedError
 
     def entity(self, key: str) -> Entity | None:
@@ -961,14 +964,15 @@ class VectorSource(Source):
         return [e for e in self.entities if self._match(e, doc, "a") and e.creator == owner]
 
     def by_kind(
-        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None
+        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None,
+        bounds: dict[str, int] | None = None,
     ) -> list[Entity]:
         qs: Callable[[Entity], int] = lambda e: e.attr("qs") if isinstance(e.attr("qs"), int) else -1
         return [
             e
             for e in self.entities
             if self._match(e, doc, kind)
-            and (creators is None or e.creator in creators)
+            and (creators is None or e.creator in creators or (bounds is not None and e.creator in bounds and qs(e) <= bounds[e.creator]))
             and qs(e) >= min_qs
             and (max_qs is None or qs(e) <= max_qs)
         ]
@@ -1003,7 +1007,8 @@ class RpcSource(Source):
         return self._run(self._base(doc, "a") + f" AND $creator = addr({owner})")
 
     def by_kind(
-        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None
+        self, doc: str, kind: str, creators: list[str] | None, min_qs: int = 0, max_qs: int | None = None,
+        bounds: dict[str, int] | None = None,
     ) -> list[Entity]:
         query = self._base(doc, kind)
         if min_qs:
@@ -1011,9 +1016,11 @@ class RpcSource(Source):
         if max_qs is not None:
             query += f" AND qs <= u64({max_qs})"
         if creators is not None:
-            if not creators:
+            terms = [f"$creator = addr({c})" for c in creators]
+            terms += [f"$creator = addr({c}) AND qs <= u64({b})" for c, b in sorted((bounds or {}).items())]
+            if not terms:
                 return []
-            query += " AND (" + " OR ".join(f"$creator = addr({c})" for c in creators) + ")"
+            query += " AND (" + " OR ".join(terms) + ")"
         # join requests from anyone: one page only, so junk requests cannot drain the budget
         return self._run(query, max_pages=1 if kind == "j" and creators is None else None)
 
@@ -1726,6 +1733,10 @@ class Reader:
         min_qs = max(0, window_base - SNAPSHOT_WINDOW) if window_base is not None else 0
         accepted: list[tuple[Entity, bytes, list[Struct], str, list[int]]] = []
         authors = sorted(set(members) | set(self.revoked_at))  # removed members too, for their intervals
+        # Section 5: each removed member is read only up to their last removal block (a valid edit's qs is at
+        # most the block it landed in), and not at all once that block is before the window
+        all_bounds = {a: max(end for _s, end in spans) for a, spans in self.revoked_at.items() if a not in members}
+        bounds = {a: b for a, b in all_bounds.items() if b >= min_qs}
         ever = self.ever_listed(authors) if self.audit and self.source.has_history else None
         if ever is not None:
             # an audit reads the edits of everyone any version of the list ever named, 64 addresses a
@@ -1740,9 +1751,9 @@ class Reader:
             found, complete = self.source.all_updates(self.link.doc, AUDIT_PAGES)
             if not complete:
                 self.audit_narrowed = True
-            candidates = found if complete else self.source.by_kind(self.link.doc, "u", authors, 0, self.qs_ceiling)
+            candidates = found if complete else self.source.by_kind(self.link.doc, "u", members, 0, self.qs_ceiling, all_bounds)
         else:
-            candidates = self.source.by_kind(self.link.doc, "u", authors, min_qs, self.qs_ceiling)
+            candidates = self.source.by_kind(self.link.doc, "u", members, min_qs, self.qs_ceiling, bounds)
         for e in candidates:
             if not self.member_then(e, members):
                 self._ignore(e, "created before its creator was added" if e.creator in members else "creator not in ACL")

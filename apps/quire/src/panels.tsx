@@ -1,7 +1,7 @@
 import { render } from "@arkiv-network/sdk/query"
 import { useEffect, useState } from "react"
 import { privateKeyToAccount } from "viem/accounts"
-import { type ArkivProvider, type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, type Identity, KIND, loadAt, type StoredEntity, toExpression } from "y-arkiv"
+import { type ArkivProvider, type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, type Identity, KIND, loadAt, type StoredEntity, toExpression, updateFilter } from "y-arkiv"
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
 import { balanceOf, formatGlm } from "./gas"
@@ -227,7 +227,9 @@ export function ChainPanel({ session }: { session: DocumentSession }) {
   }, [p, target])
   if (!p) return null
   const base = p.snapshot?.base ?? 0n
-  const sample = render(toExpression({ doc: p.link.doc, kind: KIND.update, seqGte: base > 60n ? base - 60n : 0n, creators: p.acl ? p.acl.members.map((m) => m.address) : [] }))
+  // the exact filter readers send: the window, the qs ceiling, members, and removed members bounded at their removal
+  const from = base > 60n ? base - 60n : 0n
+  const sample = render(toExpression({ doc: p.link.doc, kind: KIND.update, seqGte: from, seqLte: p.qsCeiling(), ...(p.acl ? updateFilter(p.acl, from) : {}) }))
 
   return (
     <div className="panel-card">

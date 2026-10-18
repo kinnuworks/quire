@@ -241,12 +241,16 @@ describe("defence in depth", () => {
     chain.mine()
     // a dishonest or buggy RPC that drops the creators filter
     const honest = chain.store(undefined)
-    const lying = { ...honest, query: (spec: Parameters<typeof honest.query>[0]) => honest.query({ ...spec, creators: undefined }) }
+    const lying = { ...honest, query: (spec: Parameters<typeof honest.query>[0]) => honest.query({ ...spec, creators: undefined, creatorBounds: undefined }) }
     const { ArkivProvider } = await import("../src/provider.js")
-    const reader = new ArkivProvider(new Y.Doc(), { store: lying, link, flushIntervalMs: 0, autoCompact: false })
-    await reader.connect()
-    expect(reader.doc.getText("t").toString()).toBe("real ")
-    expect(reader.stats.rejectedWrites).toBeGreaterThan(0)
+    // with the member list as it stood at each edit's block, and with today's list
+    for (const membershipAtBlock of [true, false]) {
+      const reader = new ArkivProvider(new Y.Doc(), { store: lying, link, flushIntervalMs: 0, autoCompact: false, membershipAtBlock })
+      await reader.connect()
+      expect(reader.doc.getText("t").toString()).toBe("real ")
+      expect(reader.stats.rejectedWrites).toBeGreaterThan(0)
+      reader.destroy()
+    }
   })
 
   it("a client id already attributed to one address is not handed to another, even if the hash matched", async () => {

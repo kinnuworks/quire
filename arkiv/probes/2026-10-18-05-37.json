@@ -1,0 +1,12 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-18T05:37:13.671Z",
+  "tag": "probe-mvde8hqf",
+  "queryPrecedence": {
+    "expected": "precedence documented, or the SDK writing the parentheses it means",
+    "sdkResultCount": 2,
+    "rawStringWithoutParentheses": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"data\":[{\"key\":\"0xf09b10a3ad17d672146498c09d628ce7cfa12fdca5d4da3fb09e95b7d2100cc4\"},{\"key\":\"0xff608e455eb68a2a3550f7c2473ba2661545dac7b4607a21efdacd64a986122e\"}],\"bl",
+    "reading": "AND binds tighter than OR"
+  }
+}

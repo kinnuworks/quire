@@ -13,6 +13,7 @@ export type {
   RemoteEdit,
   Role,
 } from "./provider.js"
+export { updateFilter } from "./acl.js"
 export type { Acl, Member } from "./acl.js"
 export { formatDocLink, formatVersionLink, newDocLink, parseDocLink, parseVersionLink } from "./link.js"
 export type { DocLink, VersionLink } from "./link.js"

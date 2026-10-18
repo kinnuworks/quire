@@ -1,0 +1,16 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-18T05:36:30.000Z",
+  "tag": "probe-mvde7k1b",
+  "wsHandshake": {
+    "expected": "the connection limit documented, and a refusal that says why",
+    "keylessHeldOpenBeforeRefusal": 0,
+    "refusal": {
+      "status": 429,
+      "body": "{\"error\":\"WS_CONN_LIMIT\",\"message\":\"too many concurrent websocket connections\"}\n"
+    },
+    "withAccessKeyWhileAtLimit": 101,
+    "plainGet": 405
+  }
+}

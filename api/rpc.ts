@@ -15,14 +15,16 @@
 
 const RPC = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 // exactly the query shapes Quire sends (toExpression in y-arkiv), matched whole: one document, an
-// optional kind, optional qs bounds, an optional set of creators. Nothing can be appended.
+// optional kind, optional qs bounds, an optional set of creators (each optionally bounded on qs). Nothing can be appended.
 const ADDR = "addr\\(0x[0-9a-fA-F]{40}\\)"
+// one creator, optionally bounded: a removed member's edits are read only up to their removal block
+const ONE = `\\$creator = ${ADDR}( AND qs <= u64\\([0-9]{1,20}\\))?`
 export const QUIRE_QUERY = new RegExp(
   "^qp = str\\('quire1'\\) AND qd = bytes32\\(0x[0-9a-fA-F]{64}\\)" +
     "( AND qk = str\\('[ausjcv]'\\))?" +
     "( AND qs >= u64\\([0-9]{1,20}\\))?" +
     "( AND qs <= u64\\([0-9]{1,20}\\))?" +
-    `( AND (\\$creator = ${ADDR}|\\(\\$creator = ${ADDR}( OR \\$creator = ${ADDR}){1,63}\\)))?$`,
+    `( AND (\\$creator = ${ADDR}|${ONE}|\\(${ONE}( OR ${ONE}){0,63}\\)))?$`,
 )
 const MAX_BODY = 8_192
 // the entity fields arkiv_query can return; the SDK sends each as true or false
@@ -66,6 +68,11 @@ export default async function handler(req: Req, res: Res) {
     (o.limit === undefined || (hex(o.limit, 2) && Number(o.limit) >= 1 && Number(o.limit) <= 200)) &&
     (o.atBlock === undefined || hex(o.atBlock, 16)) &&
     (o.cursor === undefined || (typeof o.cursor === "string" && /^[\x21-\x7e]{1,1024}$/.test(o.cursor)))
+  // a query without a kind is the one-page scan for writes kept out: it may not page through a whole
+  // document on our key
+  if (!query.includes(" AND qk = ") && (o.cursor !== undefined || o.atBlock !== undefined)) {
+    return res.status(400).json({ error: "The relay reads one page of an unfiltered document scan." })
+  }
   if ((call.params as unknown[]).length > 2 || (opts !== undefined && (typeof opts !== "object" || opts === null || Object.keys(opts).some((k) => !allowed.includes(k)) || !pageOk))) {
     return res.status(400).json({ error: "The relay forwards only Quire's own query options." })
   }

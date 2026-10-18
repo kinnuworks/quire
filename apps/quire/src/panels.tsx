@@ -474,7 +474,7 @@ function RotateKey({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (wh
         Rotate it for me every {ROTATE_EVERY_DAYS} days
       </label>
       <p className="muted small">
-        When you open the document and {ROTATE_EVERY_DAYS} days have passed since the last rotation, this browser rotates the key first. A leaked link then opens at most a month of writing. Anyone who reads by link alone has to ask to join after each rotation. The setting lives in this browser only.
+        When you open the document in this browser and {ROTATE_EVERY_DAYS} days have passed since the last rotation, it rotates the key first. A leaked link then opens writing only up to your next visit after the month is up. Anyone who reads by link alone has to ask to join after each rotation. The setting lives in this browser only.
       </p>
     </section>
   )

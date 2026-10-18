@@ -105,7 +105,9 @@ export class SdkStore implements ArkivStore {
     this.reader = createPublicClient({ chain, transport: transport() }) as PublicArkivClient<Transport, Chain>
     this.socket = createPublicClient({
       chain,
-      transport: webSocket(options.wsUrl ?? TIRAMISU_WS, { reconnect: { attempts: 1_000, delay: 1_000 }, keepAlive: { interval: 20_000 } }),
+      // a refused socket is retried every 15 seconds, not every second: while the gateway's per-IP connection
+      // cap is full, quick retries only burn handshakes, and the provider catches up by query meanwhile
+      transport: webSocket(options.wsUrl ?? TIRAMISU_WS, { reconnect: { attempts: 240, delay: 15_000 }, keepAlive: { interval: 20_000 } }),
     }) as PublicArkivClient<Transport, Chain>
     if (options.privateKey) {
       const account = privateKeyToAccount(options.privateKey)

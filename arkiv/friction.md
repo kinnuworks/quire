@@ -15,8 +15,8 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 3 | RPC / docs | The real per-transaction payload limit is about 128 KB total, not 128 KiB per entity | Medium |
 | 4 | `watchEntityEvents` | No server-side filter: every client receives every entity event on the network | Medium |
 | 5 | SDK `getEntity` | Billed as a query (cost 100); the raw `arkiv_getEntity` is free but missing from the SDK's RPC types; free still counts against an undocumented 600 requests per minute | Medium |
-| 6 | SDK writes | `createEntity` resolves about 3 s after the WebSocket event for the same entity | Low |
-| 7 | Queries | An untyped literal compared with a typed attribute silently matches nothing | Low |
+| 6 | Chain definition | No `blockTime` on Tiramisu, so receipts are polled every 4 s and `createEntity` resolves up to 3.6 s after the WebSocket event | Low |
+| 7 | Queries | A bare number (an `i32`) compared with a `u64` attribute silently matches nothing | Low |
 | 8 | Events | `EntityCreated` has `owner` but no `creator` | Low |
 | 9 | RPC gateway | Python's default user agent gets HTTP 403 | Low |
 | 10 | `arkiv-encryption` | No associated data; plaintext cap below the payload cap; key-in-URL guidance | Low |
@@ -24,8 +24,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 12 | WebSocket gateway | Concurrent connections are capped per IP (429 `WS_CONN_LIMIT`), and the refusal reaches a browser as a bare `ErrorEvent` with close code 1006 | Medium: live edits silently stop; we poll instead and say so |
 | 13 | Entity metadata | A patch keeps `createdAt`, and `updatedAt` moves on extensions too, so a reader cannot tell rewritten content from a renewed lease | High for us: authorship could be backdated |
 | 14 | Lifetime docs | A duration counts from the landing block; we used durations where `ExpirationTime.atBlock` was the right tool, and the docs could say so | Low, and our mistake: fixed by switching to `atBlock` |
-| 15 | Query language | AND binds tighter than OR, undocumented; the SDK writes nested `and` inside `or` without parentheses and relies on it | Low: we confirmed it with a probe before depending on it |
-| 16 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
+| 15 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
 ## 1. Keyless query budget: the SDK hangs on 429 without saying so
 
@@ -147,19 +146,19 @@ The SDK's `client.getEntity(key)` is documented in its own JSDoc as using `arkiv
 | 2 | 3,855 ms | 6,729 ms |
 | 3 | 3,121 ms | 6,706 ms |
 
-The SDK waits for the receipt by polling, so it resolves up to 3.6 seconds after the entity is already live and pushed to subscribers.
+The SDK waits for the receipt by polling, so it resolves up to 3.6 seconds after the entity is already live and pushed to subscribers. The cause is the chain definition: `tiramisu` in `@arkiv-network/sdk/chains` sets no `blockTime`, so viem falls back to its default four-second polling interval on a chain that makes a block every two seconds. A client can already pass its own `pollingInterval`; we had not.
 
 **Expected.** Resolution within about one block of the event.
 
-**Suggested fix.** Expose `pollingInterval` for receipt waits, or wait on the WebSocket client when one is available.
+**Suggested fix.** Set `blockTime: 2_000` in the Tiramisu chain definition, so every viem client polls at the chain's real pace without having to know about it.
 
 **What we did.** Quire never waits on its own writes to update the screen. Local edits show instantly, and other members see them about one block after they land. Our echo handling dedupes by entity key, because the event usually arrives before the write call returns.
 
-## 7. Untyped literal against a typed attribute: silent empty result
+## 7. A bare number against a `u64` attribute: silent empty result
 
-**Measured** (probe `untypedPredicate`): entities with `qs = u64(7)` exist. The raw query `qp = str('<tag>') AND qs = 7` returns `data: []`, with no error. The same query with `qs = u64(7)` matches.
+**Measured** (probe `untypedPredicate`): entities with `qs = u64(7)` exist. The raw query `qp = str('<tag>') AND qs = 7` returns `data: []`, with no error. The same query with `qs = u64(7)` matches. As the SDK documents, a bare number is an `i32` literal, so this compares an `i32` with a `u64` attribute.
 
-**Expected.** An error saying the types differ, as the SDK's typed builder implies.
+**Expected.** An error saying the types differ, rather than an empty result that looks like no data.
 
 **Suggested fix.** Reject comparisons between mismatched types in the node, or coerce integer literals. This is related to [arkiv-sdk-js#113](https://github.com/Arkiv-Network/arkiv-sdk-js/issues/113).
 
@@ -247,18 +246,6 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **What we did.** Everything written for the owner's chosen lifetime now uses `ExpirationTime.atBlock(keepUntil)`: snapshots, edits, the member list's extension in `keepFor`, and Keep my proof's extensions ([provider.ts](../packages/y-arkiv/src/provider.ts) `keepDeadline`). The test "does not creep past the owner's ceiling" now checks that every kept snapshot expires at exactly `keepUntil`. Readers measure the 30-day part of the ceiling from each entity's own `updatedAt`, which item 13's probe shows moves on every extension, so a live tab and a reader opening a week later reach the same verdict.
 
-## 15. Query precedence is undocumented, and the SDK relies on it
-
-**What happened.** To keep a removed member's junk out of every reader's queries, we bound each removed member's edits at their removal block: `$creator = M OR ($creator = R AND qs <= u64(<removal>))`. The SDK's `or([eq(...), and([eq(...), lte(...)])])` writes that without the inner parentheses: `$creator = M OR $creator = R AND qs <= u64(<removal>)`. Whether that is right depends on AND binding tighter than OR on the node, which neither the SDK nor the query docs state.
-
-**Measured** ([probe](probes/2026-10-18-05-37.json), `npx tsx scripts/friction-probes.ts queryPrecedence`): two entities with `qs` 10 and 1, queried as the SDK writes `A OR A AND qs <= 1`, returned both, so the node reads it as `A OR (A AND qs <= 1)`. The same string sent raw returned the same two keys. Quire's relay also checks query strings against a pattern, so it had to match the SDK's exact unparenthesized spelling.
-
-**Expected.** Operator precedence stated in the query docs, and the SDK writing the parentheses its expression tree means, so a reader of the string sees the same thing the node does.
-
-**Suggested fix.** Emit parentheses around every nested `and`/`or` in the SDK's serializer, and document AND-before-OR in the query grammar.
-
-**What we did.** Confirmed the node's reading with the probe, matched the SDK's spelling in the relay pattern ([api/rpc.ts](../api/rpc.ts) `QUIRE_QUERY`), and test that pattern against the SDK's real output (`relay.test.ts`).
-
 ## Paths we tested that worked well
 
 | What | Expected | What happened | Probe |
@@ -268,6 +255,7 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 | ACL patch plus snapshot create in one batch | atomic | atomic; our key rotation depends on it | live test |
 | Plain value transfer to fund a fresh key | works | 21,000 gas, success | `burnerFunding` |
 | `watchEntityEvents` over WebSocket with no `fromBlock` | push, no polling | push; events arrived 3.1 to 3.9 s after sending | `wsLatency` |
+| Nested `and` inside `or` in a query | brackets where the expression tree needs them | the SDK writes minimal brackets and documents that AND binds tighter than OR; the node reads `A OR B AND qs <= 1` the same way ([probe](probes/2026-10-18-05-37.json)) | `queryPrecedence` |
 | Cursor paging pinned with `atBlock` | stable pages while the head moves | stable | `store.ts queryAll` |
 | End-to-end collaboration on Tiramisu | two keys edit, a cold reader rebuilds | passed in 154 s, including a 250 KB chunked paste, a revocation and a published version | `test/live.test.ts` |
 

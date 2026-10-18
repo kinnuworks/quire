@@ -1268,3 +1268,59 @@ describe("a document created as an authorship record", () => {
     expect(text(later)).toBe("kept")
   })
 })
+
+describe("an owner who replays or recreates the member list", () => {
+  const erase = (p: ArkivProvider, address: string) =>
+    (p as unknown as { updateAcl: (f: (acl: { members: { address: string }[]; revoked: unknown[] }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => {
+      acl.members = acl.members.filter((m) => m.address !== address)
+      acl.revoked = []
+      return {}
+    })
+
+  it("replaying an old version of the list, bytes and qs stamp included, does not hide the versions in between", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const first = (await chain.store(undefined).query({ doc: link.doc, kind: KIND.acl })).entities[0]!
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // the owner puts back the creation list's exact payload and its old qs: Bea appears in no current version
+    await chain.store(owner.address).batch({ patches: [{ key: first.key, payload: first.payload, attributes: first.attributes }] })
+    await settle(chain, [a, bea])
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await audit.connect()
+    expect(blame(doc, audit).flat().filter((r) => r.proven && r.address === bea.id!.address).map((r) => r.text).join("")).toBe("bea's essay")
+    audit.destroy()
+  })
+
+  it("a list deleted and made again under the same link takes over none of the earlier writing", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await erase(a.provider, bea.id!.address)
+    await a.provider.deleteDocument()
+    await settle(chain, [a, bea])
+    a.provider.destroy()
+    // a new list under the same link, with a sock puppet as a writer
+    await ArkivProvider.createDocument({ store: chain.store(owner.address), link, identity: owner })
+    chain.mine()
+    const a2 = await peer(chain, link, owner)
+    const puppet = await peer(chain, link, identity("puppet"))
+    await admit(chain, a2, puppet)
+    const doc = new Y.Doc()
+    const reader = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await reader.connect()
+    expect(doc.getText("t").toString()).not.toContain("bea's essay")
+    expect(blame(doc, reader).flat().filter((r) => r.proven && r.address === puppet.id!.address).map((r) => r.text).join("")).toBe("")
+    reader.destroy()
+  })
+})

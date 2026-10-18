@@ -1510,6 +1510,9 @@ class Reader:
             if not self.member_at(e):
                 self._ignore(e, "created before its creator was added")
                 continue
+            if self.before_acl(e):
+                self._ignore(e, "created before the member list in use")
+                continue
             try:
                 decoded.append((e, self._decode_snapshot(e)))
             except Exception as exc:
@@ -1653,10 +1656,18 @@ class Reader:
         added = self.added_at.get(e.creator)
         return added is not None and e.created_at >= added
 
+    def before_acl(self, e: Entity) -> bool:
+        """Section 5: nothing written before the member list in use belongs to its members, so an
+        owner who deletes the list and makes a new one under the same link cannot pass old writing
+        to the new list's members."""
+        return self.acl_entity is not None and e.created_at < self.acl_entity.created_at
+
     def member_then(self, e: Entity, members: list[str]) -> bool:
         """Whether the creator was in the member list as it stood at the entity's block.
         Today's list decides (wrote_as_member) only where the source keeps no history,
         or that past list cannot be read or opened; those edits are counted as unchecked."""
+        if self.before_acl(e):
+            return False
         if not (self.at_block or self.audit) or not self.source.has_history or self.acl_entity is None:
             return self.wrote_as_member(e, members)
         block = e.created_at
@@ -1685,10 +1696,8 @@ class Reader:
         """Every address any version of the member list named, as a member or a
         removal, found by walking the list's own history: the version before one
         last changed at block B is the list as it stood at B - 1 (arkiv_getEntity
-        with a block, free). Extensions change no content, so a version whose exact
-        payload already stood 61 blocks after its qs stamp is skipped back to there.
-        None if a version could not be read or opened; a walk cut short by the read
-        limit keeps what it found and sets audit_narrowed."""
+        with a block, free). None if a version could not be read or opened; a walk
+        cut short by the read limit keeps what it found and sets audit_narrowed."""
         if self.acl_entity is None:
             return None
         out = set(today)
@@ -1702,15 +1711,8 @@ class Reader:
             changed = changed_at(version)
             if changed <= version.created_at:
                 return sorted(out)
-            stamp = version.attr("qs")
-            if isinstance(stamp, int) and changed > stamp + 61:
-                settled = self.past_acl(stamp + 61)
-                reads += 1
-                if settled is False:
-                    return None
-                if isinstance(settled, Entity) and changed_at(settled) < changed and settled.payload == version.payload:
-                    version = settled
-                    continue
+            # every version, one block before the next change: trusting the list's own qs stamp or bytes
+            # would let an owner who replays an old version skip the ones in between
             before = self.past_acl(changed - 1)
             reads += 1
             if before is False:

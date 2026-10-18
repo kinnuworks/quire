@@ -186,6 +186,8 @@ export class ArkivProvider extends Observable<string> {
   /** An audit found more update entities than AUDIT_PAGES pages and read only those from today's list (see queryUpdates). */
   /** Whether anyone may extend the member list: true only for documents made before owner-only lists. */
   private aclOpenToAll = false
+  /** The block the member list in use was created: nothing written before it belongs to this document's members. */
+  aclCreatedAt = 0n
   auditNarrowed = false
   /** Edits whose member list (or keepUntil) at their block could not be read after retries, so today's list decided. */
   auditUnchecked = 0
@@ -270,20 +272,8 @@ export class ArkivProvider extends Observable<string> {
         return [...out]
       }
       if (version.updatedAt <= version.createdAt) return [...out]
-      // Extensions move updatedAt without touching the list, and anyone can extend the list of a document
-      // made before owner-only lists. Each patch stamps qs with the owner's head, and its fresh encryption
-      // makes the payload unique, so if the list held these exact bytes 61 blocks after that stamp, no
-      // patch landed in between: skip the extensions and keep walking from there.
-      const stamp = version.attributes.seq
-      if (version.updatedAt > stamp + 61n) {
-        const settled = await this.pastAclEntity(stamp + 61n)
-        reads++
-        if (settled === undefined) return null
-        if (settled && settled.updatedAt < version.updatedAt && bytesEqual(settled.payload, version.payload)) {
-          version = settled
-          continue
-        }
-      }
+      // every version, one block before the next change: a shortcut that trusted the list's own qs stamp
+      // or payload bytes would let an owner who replays an old version skip the ones in between
       const before = await this.pastAclEntity(version.updatedAt - 1n)
       reads++
       if (before === undefined) return null
@@ -570,6 +560,7 @@ export class ArkivProvider extends Observable<string> {
     this.aclSeq = entity.attributes.seq
     this.aclExpiresAt = entity.expiresAt
     this.aclOpenToAll = entity.permissionlessExtension
+    this.aclCreatedAt = entity.createdAt
     this.joinRequests = this.joinRequests.filter((j) => !isMember(acl, j.address))
     this.emit("acl", [acl])
   }
@@ -999,8 +990,10 @@ export class ArkivProvider extends Observable<string> {
     if (this.seen.has(entity.key)) return
     // in audits, the member list as it stood at the edit's block decides; it falls back to today's list
     // only where that past state cannot be opened (an epoch whose key this session never held)
-    const then = this.membershipAtBlock ? await this.memberAtBlock(entity) : undefined
-    if (!this.acl || !(then ?? wroteAsMember(this.acl, entity.creator, entity.createdAt))) {
+    // an edit older than the member list in use cannot belong to it: if the owner deleted the list and
+    // made a new one under the same link, the old writing must not pass to the new list's members
+    const then = this.membershipAtBlock && entity.createdAt >= this.aclCreatedAt ? await this.memberAtBlock(entity) : undefined
+    if (!this.acl || entity.createdAt < this.aclCreatedAt || !(then ?? wroteAsMember(this.acl, entity.creator, entity.createdAt))) {
       this.seen.add(entity.key)
       return this.reject()
     }
@@ -1081,7 +1074,7 @@ export class ArkivProvider extends Observable<string> {
     // seen before: an applied one still counts as this member's choice (with its base), so a reload
     // after an ACL patch does not fall back to an older one; anything else stays as it was
     if (this.seen.has(entity.key)) return this.snapshotBases.get(entity.key) ?? null
-    if (!this.acl || !memberAt(this.acl, entity.creator, entity.createdAt)) {
+    if (!this.acl || entity.createdAt < this.aclCreatedAt || !memberAt(this.acl, entity.creator, entity.createdAt)) {
       this.seen.add(entity.key)
       this.reject()
       return null
@@ -2064,9 +2057,6 @@ export function atBlockStore(store: ArkivStore, block: bigint): ArkivStore {
 
 // ------------------------------------------------------------------ helpers
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i])
-}
 
 const BLOCK_SECONDS = 2
 /** Slack on the expiry ceiling, for the gap between a writer's head and a reader's (ten minutes of blocks). */

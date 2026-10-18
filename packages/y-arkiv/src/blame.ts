@@ -116,15 +116,17 @@ export type EarlierWriter = {
  * all, with every word dated by the block its characters arrived in.
  *
  * Each passage someone holds now (their whole run of text in a paragraph, each single edit inside it,
- * and each sentence) is compared word by word with every member's typed text. Invisible format
- * characters (zero-width spaces and the like) are dropped and whitespace only separates words. A
- * passage of n words matches a stretch of someone's text if at most n/6 words differ (inserted,
- * dropped or changed), so a copy with a word changed still matches. A match is dated by the newest
- * word in it. The passage is flagged only if another member's match is older than every match of its
- * own writer, counting the writer's passage as it stands now less its n/6 newest words. Someone who
- * copied text while it was being written therefore copied words its writer already had, and cannot
- * make the real writer look like the copier. Passages under 24 characters or over 80 words are not
- * checked on their own (a long passage is checked sentence by sentence).
+ * and each sentence) is compared word by word with every member's typed text. Characters that draw
+ * nothing are dropped, compatibility forms and case are folded, Cyrillic and Greek look-alikes become
+ * Latin, and whitespace only separates words. A passage of n words matches a stretch of someone's text
+ * if at most n/6 words differ (inserted, dropped or changed), and a match is dated by its newest word.
+ * The passage is flagged only if another member's match is older than every match of its own writer
+ * (counting the passage as it stands now less its n/6 newest words), and that other member's stretch
+ * is not itself a copy of the writer's earlier text. Passages under 24 characters are skipped, and
+ * passages over 80 words are checked in 40-word windows.
+ *
+ * This is a pointer, not a verdict: it compares text, and text can be reworded past any threshold.
+ * What proves authorship is blame at a block, which checks every edit's key against the member list.
  */
 export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWriter[] {
   void doc
@@ -178,12 +180,15 @@ export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWrit
     for (let item = start; item; item = item.right) {
       const content = item.content as { str?: string; type?: unknown }
       if (typeof content.str === "string") {
-        for (let i = 0; i < content.str.length; i++) {
+        // by code point, as the Python reader walks text; clocks still count UTF-16 units
+        let i = 0
+        for (const ch of content.str) {
           const clock = item.id.clock + i
+          i += ch.length
           const p = proofOf(item.id.client, clock)
           const author = authorOf.get(item.id.client)
           chars.push({
-            ch: content.str[i]!,
+            ch,
             author,
             block: p?.[2] ?? Infinity,
             entity: p?.[3],
@@ -222,6 +227,18 @@ export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWrit
     return !x ? y : !y ? x : y.t < x.t || (y.t === x.t && y.f < x.f) ? y : x
   }
 
+  // a member's typed text from before block `t` only
+  const typedBefore = (who: Hex, t: number): Word[] => {
+    const out: Word[] = []
+    for (const chars of nodes) {
+      const ws = words(chars.filter((c) => c.author === who && c.block < t))
+      if (!ws.length) continue
+      if (out.length) out.push(BARRIER)
+      out.push(...ws)
+    }
+    return out
+  }
+
   const out: EarlierWriter[] = []
   for (const chars of nodes) {
     // the passages each member holds now: runs of one member's visible characters
@@ -239,25 +256,35 @@ export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWrit
       for (const [i, j] of passages(ws)) {
         const p = ws.slice(i, j).map((w) => w.w)
         const k = Math.floor(p.length / 6)
-        let best: { who: Hex; t: number; f: number } | undefined
+        let best: { who: Hex; t: number; f: number; q: string[] } | undefined
         for (const [who, s] of [...streams].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
           if (who === run.author) continue
           const m = earliest(p, s, k)
           if (m && (!best || m.t < best.t)) best = { who, ...m }
         }
         if (!best) continue
+        // the other member's words may themselves be a copy of this writer's earlier text (a suggested
+        // rewording of her sentence, or a paste of it): read her text as she had typed it before their
+        // words existed, deleted characters included, and if it holds their words she had them first
+        if (match(best.q, typedBefore(run.author, best.t), Math.floor(best.q.length / 6))) continue
         // the writer's own passage dates from its words less the k newest; or an older match of theirs
         let own = ws.slice(i, j).map((w) => w.t).sort((x, y) => y - x)[k]!
         const mine = earliest(p, streams.get(run.author), k)
         if (mine && mine.t < own) own = mine.t
         if (best.t < own) flagged.push({ i, j, first: best.who, t: best.t, f: best.f })
       }
-      // report the longest flagged passages, not the sentences inside them
+      // report each flagged stretch once: overlapping passages (a run, its sentences, its windows) that
+      // name the same earlier writer merge into one
       const kept: typeof flagged = []
-      for (const f of [...flagged].sort((x, y) => y.j - y.i - (x.j - x.i) || x.i - y.i)) {
-        if (!kept.some((g) => g.i <= f.i && f.j <= g.j)) kept.push(f)
+      for (const f of [...flagged].sort((x, y) => x.i - y.i || y.j - x.j)) {
+        const last = kept[kept.length - 1]
+        if (last && last.first === f.first && f.i < last.j) {
+          last.j = Math.max(last.j, f.j)
+          last.t = Math.max(last.t, f.t)
+          last.f = Math.min(last.f, f.f)
+        } else kept.push({ ...f })
       }
-      for (const f of kept.sort((x, y) => x.i - y.i)) {
+      for (const f of kept) {
         const span = run.chars.slice(ws[f.i]!.a, ws[f.j - 1]!.b)
         out.push({
           text: span.map((c) => c.ch).join(""),
@@ -277,8 +304,17 @@ type TypedChar = { ch: string; author: Hex | undefined; block: number; entity: H
 /** A word: its text, the newest and oldest block among its characters, where it sits, and whether a sentence ends after it. */
 type Word = { w: string; t: number; f: number; a: number; b: number; end: boolean; entity: Hex | undefined | null }
 
-/** Zero-width spaces, joiners, direction marks and other format characters: invisible, so they are not text. */
-const INVISIBLE = /\p{Cf}/u
+/**
+ * Characters that draw nothing: format characters (zero-width spaces, joiners, direction marks, tags),
+ * variation selectors, the combining grapheme joiner and the Hangul and Mongolian fillers.
+ */
+const INVISIBLE = /[\p{Cf}\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u3164\uFE00-\uFE0F\uFFA0\u{E0100}-\u{E01EF}]/u
+/** Cyrillic and Greek letters that look like Latin ones, folded to them before words are compared. */
+const LOOKALIKE: Record<string, string> = { а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y", х: "x", і: "i", ј: "j", ѕ: "s", ԁ: "d", һ: "h", ӏ: "l", α: "a", β: "b", ε: "e", ι: "i", κ: "k", ν: "v", ο: "o", ρ: "p", τ: "t", υ: "u", χ: "x" }
+/** A word as it is compared: compatibility forms folded (NFKC), lower case, look-alike letters folded. */
+export function foldWord(w: string): string {
+  return [...w.normalize("NFKC").toLowerCase()].map((c) => LOOKALIKE[c] ?? c).join("")
+}
 const SPACE = /[\s\x1c-\x1f\x85]/u
 /** Stands between two text nodes in a stream; never matches and is never older than anything. */
 const BARRIER: Word = { w: "\u0000", t: Infinity, f: Infinity, a: 0, b: 0, end: true, entity: null }
@@ -301,7 +337,10 @@ function words(chars: TypedChar[]): Word[] {
     w.b = n + 1
     if (w.entity !== c.entity) w.entity = null
   })
-  for (const x of out) if (/[.!?]["')\]]*$/.test(x.w)) x.end = true
+  for (const x of out) {
+    if (/[.!?]["')\]]*$/.test(x.w)) x.end = true
+    x.w = foldWord(x.w)
+  }
   return out
 }
 
@@ -309,7 +348,12 @@ function words(chars: TypedChar[]): Word[] {
 function passages(ws: Word[]): [number, number][] {
   const out = new Map<string, [number, number]>()
   const add = (i: number, j: number) => {
-    if (j <= i || j - i > 80) return
+    if (j <= i) return
+    // a long passage is also checked in 40-word windows, 20 words apart
+    if (j - i > 80) {
+      for (let a = i; a < j; a += 20) add(a, Math.min(a + 40, j))
+      return
+    }
     let chars = j - i - 1
     for (let n = i; n < j; n++) chars += ws[n]!.w.length
     if (chars >= 24) out.set(`${i}:${j}`, [i, j])
@@ -335,7 +379,7 @@ function passages(ws: Word[]): [number, number][] {
  * newest word (t) and its oldest (f). Stretches that share too few words with `p` are skipped before
  * the edit distance is worked out.
  */
-function match(p: string[], s: Word[], k: number): { t: number; f: number } | undefined {
+function match(p: string[], s: Word[], k: number): { t: number; f: number; q: string[] } | undefined {
   const n = p.length
   if (s.length < n - k) return undefined
   const want = new Map<string, number>()
@@ -363,7 +407,7 @@ function match(p: string[], s: Word[], k: number): { t: number; f: number } | un
     if (last && a <= last[1]) last[1] = a + width
     else slices.push([a, a + width])
   }
-  let best: { t: number; f: number } | undefined
+  let best: { t: number; f: number; q: string[] } | undefined
   for (const [lo, hi] of slices) {
     const m = align(p, s.slice(lo, hi), k)
     if (m && (!best || m.t < best.t || (m.t === best.t && m.f < best.f))) best = m
@@ -372,7 +416,7 @@ function match(p: string[], s: Word[], k: number): { t: number; f: number } | un
 }
 
 /** Semi-global word alignment: the stretch of `s` within k edits of all of `p` whose newest word is oldest. */
-function align(p: string[], s: Word[], k: number): { t: number; f: number } | undefined {
+function align(p: string[], s: Word[], k: number): { t: number; f: number; q: string[] } | undefined {
   const n = p.length
   const L = s.length
   // value: the newest block among the words of s used so far; start: where in s the stretch began
@@ -408,14 +452,14 @@ function align(p: string[], s: Word[], k: number): { t: number; f: number } | un
     prevV = curV
     prevS = curS
   }
-  let best: { t: number; f: number } | undefined
+  let best: { t: number; f: number; q: string[] } | undefined
   for (let j = 0; j <= L; j++) {
     const t = prevV[k]![j]!
     if (t === Infinity || t === -Infinity) continue
     const a = prevS[k]![j]!
     let f = Infinity
     for (let x = a; x < j; x++) f = Math.min(f, s[x]!.f)
-    if (!best || t < best.t || (t === best.t && f < best.f)) best = { t, f }
+    if (!best || t < best.t || (t === best.t && f < best.f)) best = { t, f, q: s.slice(a, j).map((w) => w.w) }
   }
   return best
 }

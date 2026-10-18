@@ -1946,6 +1946,7 @@ class EarlierWritersTests(unittest.TestCase):
         self.assertEqual(p.found(), [("bea", "asha")])
 
 
+@unittest.skipIf(SCHEMA_SKIP, SCHEMA_SKIP)
 class SchemaTests(unittest.TestCase):
     def test_vector_entities_match_entity_schema(self) -> None:
         schemas = quire_read.Schemas()

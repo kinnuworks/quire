@@ -2,7 +2,7 @@ import Collaboration from "@tiptap/extension-collaboration"
 import Placeholder from "@tiptap/extension-placeholder"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { type DocLink, earlierWriters, type Identity, type StoredEntity } from "y-arkiv"
 import { AuthorshipBars, blockAuthors, setMembers } from "../authorship"
 import { rotatedNow, rotationDue } from "../autorotate"
@@ -139,7 +139,17 @@ export function DocPage({ link }: { link: DocLink }) {
   // the copy note replays every edit, so it runs again only when the set of edits changes, not on every render
   const historyLength = provider?.history.length ?? 0
   const copyCheck = (blame || erased.length > 0) && session.fullHistory && provider?.status === "synced"
-  const copies = useMemo(() => (copyCheck && provider ? earlierWriters(doc, provider) : []), [copyCheck, provider, doc, historyLength])
+  // the note replays every edit, which takes a moment on a long document: work it out once editing has
+  // paused for a second and a half, never inside a render, so typing never waits for it
+  const [copies, setCopies] = useState<ReturnType<typeof earlierWriters>>([])
+  useEffect(() => {
+    if (!copyCheck || !provider) {
+      setCopies([])
+      return
+    }
+    const timer = setTimeout(() => setCopies(earlierWriters(doc, provider)), 1500)
+    return () => clearTimeout(timer)
+  }, [copyCheck, provider, doc, historyLength])
 
   // scheduled rotation: the owner turned it on and a full period has passed since the last one
   const rotating = useRef(false)
@@ -354,7 +364,7 @@ export function DocPage({ link }: { link: DocLink }) {
       {copies.map((c) => (
         <div className="ws-banner accent" key={`${c.block}-${c.first}-${c.text.slice(0, 24)}`}>
           <span>
-            <b>Typed first by someone else.</b> “{c.text.length > 80 ? `${c.text.slice(0, 77)}…` : c.text}” is proven as {c.address.slice(0, 8)}…{c.address.slice(-4)}'s writing, finished at block {String(c.block)}, but {c.first.slice(0, 8)}…{c.first.slice(-4)} typed the same words, or all but a few, earlier, at blocks {String(c.from)} to {String(c.to)}. Run <code>y-arkiv blame --at {String(c.to + 5n)}</code> to see them proven as theirs.
+            <b>Typed first by someone else.</b> “{c.text.length > 80 ? `${c.text.slice(0, 77)}…` : c.text}” is proven as {c.address.slice(0, 8)}…{c.address.slice(-4)}'s writing, finished at block {String(c.block)}, but {c.first.slice(0, 8)}…{c.first.slice(-4)} typed the same words, or all but a few, earlier, at blocks {String(c.from)} to {String(c.to)}. Run <code>y-arkiv blame --at {String(c.block - 1n)}</code>, the block before that edit, to see them proven as theirs.
           </span>
         </div>
       ))}

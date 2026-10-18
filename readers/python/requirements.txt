@@ -1,4 +1,4 @@
 cryptography>=42
 pycrdt>=0.12
-# optional: checks decrypted headers against spec/schema
-# jsonschema>=4.18
+# checks decrypted headers against spec/schema (the reader runs without it; the schema tests need it)
+jsonschema>=4.18

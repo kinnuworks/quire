@@ -1,0 +1,40 @@
+# Both readers' test suites on every push: the TypeScript package on the in-memory chain, and the
+# Python reader with readers/python/requirements.txt installed, exactly as the README says to run them.
+# Neither touches the network.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    name: y-arkiv (TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir packages/y-arkiv test
+
+  python:
+    name: Python reader
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r readers/python/requirements.txt
+      - run: python3 readers/python/test_vectors.py

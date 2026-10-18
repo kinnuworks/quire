@@ -999,14 +999,15 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
 
     Each passage someone holds now (their whole run of text in a paragraph,
     each single edit inside it, and each sentence) is compared word by word
-    with every member's typed text, with invisible format characters dropped.
-    A passage of n words matches a stretch of someone's text if at most n // 6
+    with every member's typed text, with characters that draw nothing dropped,
+    compatibility forms, case and Cyrillic and Greek look-alikes folded. A
+    passage of n words matches a stretch of someone's text if at most n // 6
     words differ, and a match is dated by its newest word. The passage is
     flagged only if another member's match is older than every match of its
-    own writer, counting the writer's passage as it stands now less its n // 6
-    newest words, so someone who copied text while it was being written cannot
-    make the real writer look like the copier. Passages under 24 characters or
-    over 80 words are not checked on their own."""
+    own writer (counting the passage as it stands now less its n // 6 newest
+    words), and that member's stretch is not itself a copy of the writer's
+    earlier text. Passages under 24 characters are skipped; passages over 80
+    words are checked in 40-word windows. It is a pointer, not a verdict."""
     ordered = sorted(updates, key=lambda u: (u[0].created_at, u[0].key))
     if not ordered:
         return []
@@ -1097,7 +1098,7 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
             every.extend(_words([c for c in chars if c.author == a]))
             kept.extend(_words([c for c in chars if c.author == a and not c.self_deleted]))
 
-    def earliest(p: list[str], s: tuple[list[_Word], list[_Word]] | None, k: int) -> tuple[float, float] | None:
+    def earliest(p: list[str], s: tuple[list[_Word], list[_Word]] | None, k: int) -> tuple[float, float, list[str]] | None:
         if s is None:
             return None
         x, y = _match(p, s[0], k), _match(p, s[1], k)
@@ -1107,12 +1108,24 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
             return x
         return y if (y[0] < x[0] or (y[0] == x[0] and y[1] < x[1])) else x
 
+    def typed_before(who: str, t: float) -> list[_Word]:
+        """A member's typed text from before block t only."""
+        before: list[_Word] = []
+        for chars in nodes:
+            ws = _words([c for c in chars if c.author == who and c.block < t])
+            if not ws:
+                continue
+            if before:
+                before.append(_BARRIER)
+            before.extend(ws)
+        return before
+
     out: list[EarlierWriter] = []
     for chars in nodes:
         runs: list[tuple[str, list[_Typed]]] = []
         current: tuple[str, list[_Typed]] | None = None
         for c in chars:
-            if c.deleted or unicodedata.category(c.ch) == "Cf":
+            if c.deleted or _invisible(c.ch):
                 continue
             if not c.author:
                 current = None
@@ -1127,14 +1140,19 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
             for i, j in _passages(ws):
                 p = [w.w for w in ws[i:j]]
                 k = len(p) // 6
-                best: tuple[str, float, float] | None = None
+                best: tuple[str, float, float, list[str]] | None = None
                 for who in sorted(streams):
                     if who == author:
                         continue
                     m = earliest(p, streams[who], k)
                     if m is not None and (best is None or m[0] < best[1]):
-                        best = (who, m[0], m[1])
+                        best = (who, m[0], m[1], m[2])
                 if best is None:
+                    continue
+                # the other member's words may themselves be a copy of this writer's earlier text (a
+                # suggested rewording of her sentence, or a paste of it): read her text as she had typed it
+                # before their words existed, deleted characters included; if it holds their words she had them first
+                if _match(best[3], typed_before(author, best[1]), len(best[3]) // 6) is not None:
                     continue
                 own = sorted((w.t for w in ws[i:j]), reverse=True)[k]
                 mine = earliest(p, streams.get(author), k)
@@ -1142,11 +1160,17 @@ def earlier_writers(updates: list[tuple[Entity, bytes, list[Struct]]]) -> list[E
                     own = mine[0]
                 if best[1] < own:
                     flagged.append((i, j, best[0], best[1], best[2]))
-            kept_spans: list[tuple[int, int, str, float, float]] = []
-            for f in sorted(flagged, key=lambda f: (-(f[1] - f[0]), f[0])):
-                if not any(g[0] <= f[0] and f[1] <= g[1] for g in kept_spans):
-                    kept_spans.append(f)
-            for i, j, first, t, fr in sorted(kept_spans):
+            # each flagged stretch once: overlapping passages naming the same earlier writer merge
+            kept_spans: list[list[Any]] = []
+            for f in sorted(flagged, key=lambda f: (f[0], -f[1])):
+                last = kept_spans[-1] if kept_spans else None
+                if last is not None and last[2] == f[2] and f[0] < last[1]:
+                    last[1] = max(last[1], f[1])
+                    last[3] = max(last[3], f[3])
+                    last[4] = min(last[4], f[4])
+                else:
+                    kept_spans.append(list(f))
+            for i, j, first, t, fr in kept_spans:
                 span = run[ws[i].a:ws[j - 1].b]
                 out.append(EarlierWriter("".join(c.ch for c in span), author, int(max(c.block for c in span)),
                                          first, int(fr), int(t)))
@@ -1184,12 +1208,29 @@ _BARRIER = _Word("\x00", _INF, _INF, 0, 0, True, _MIXED)
 _SENTENCE_END = re.compile(r"[.!?][\"')\]]*$")
 
 
+# characters that draw nothing beyond the format category: the combining grapheme joiner, Hangul and
+# Mongolian fillers and variation selectors (the TypeScript reader's INVISIBLE)
+_DRAWS_NOTHING = {0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0} | set(range(0x180B, 0x1810)) | set(range(0xFE00, 0xFE10)) | set(range(0xE0100, 0xE01F0))
+# Cyrillic and Greek letters that look like Latin ones
+_LOOKALIKE = {"а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "һ": "h", "ӏ": "l",
+              "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x"}
+
+
+def _invisible(ch: str) -> bool:
+    return unicodedata.category(ch) == "Cf" or ord(ch) in _DRAWS_NOTHING
+
+
+def fold_word(w: str) -> str:
+    """A word as it is compared: compatibility forms folded (NFKC), lower case, look-alike letters folded."""
+    return "".join(_LOOKALIKE.get(c, c) for c in unicodedata.normalize("NFKC", w).lower())
+
+
 def _words(chars: list[_Typed]) -> list[_Word]:
     """Characters cut into words at whitespace, with invisible characters dropped."""
     out: list[_Word] = []
     w: _Word | None = None
     for n, c in enumerate(chars):
-        if unicodedata.category(c.ch) == "Cf":
+        if _invisible(c.ch):
             continue
         if c.ch.isspace():
             if w is not None and c.ch == "\n":
@@ -1208,6 +1249,7 @@ def _words(chars: list[_Typed]) -> list[_Word]:
     for x in out:
         if _SENTENCE_END.search(x.w):
             x.end = True
+        x.w = fold_word(x.w)
     return out
 
 
@@ -1216,7 +1258,12 @@ def _passages(ws: list[_Word]) -> list[tuple[int, int]]:
     out: set[tuple[int, int]] = set()
 
     def add(i: int, j: int) -> None:
-        if j <= i or j - i > 80:
+        if j <= i:
+            return
+        # a long passage is also checked in 40-word windows, 20 words apart
+        if j - i > 80:
+            for a in range(i, j, 20):
+                add(a, min(a + 40, j))
             return
         if j - i - 1 + sum(len(ws[n].w) for n in range(i, j)) >= 24:
             out.add((i, j))
@@ -1240,8 +1287,8 @@ def _passages(ws: list[_Word]) -> list[tuple[int, int]]:
     return sorted(out)
 
 
-def _match(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
-    """The oldest stretch of s within k word edits of p, as (newest block, oldest block)."""
+def _match(p: list[str], s: list[_Word], k: int) -> tuple[float, float, list[str]] | None:
+    """The oldest stretch of s within k word edits of p, as (newest block, oldest block, its words)."""
     n = len(p)
     if len(s) < n - k:
         return None
@@ -1275,7 +1322,7 @@ def _match(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
             slices[-1][1] = a + width
         else:
             slices.append([a, a + width])
-    best: tuple[float, float] | None = None
+    best: tuple[float, float, list[str]] | None = None
     for lo, hi in slices:
         m = _align(p, s[lo:hi], k)
         if m is not None and (best is None or m[0] < best[0] or (m[0] == best[0] and m[1] < best[1])):
@@ -1283,7 +1330,7 @@ def _match(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
     return best
 
 
-def _align(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
+def _align(p: list[str], s: list[_Word], k: int) -> tuple[float, float, list[str]] | None:
     """Semi-global word alignment: the stretch of s within k edits of all of p whose newest word is oldest."""
     n, size = len(p), len(s)
     prev_v = [[-_INF] * (size + 1) for _ in range(k + 1)]
@@ -1310,7 +1357,7 @@ def _align(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
                 cur_v[d][j] = v
                 cur_s[d][j] = st
         prev_v, prev_s = cur_v, cur_s
-    best: tuple[float, float] | None = None
+    best: tuple[float, float, list[str]] | None = None
     for j in range(size + 1):
         t = prev_v[k][j]
         if t in (_INF, -_INF):
@@ -1318,7 +1365,7 @@ def _align(p: list[str], s: list[_Word], k: int) -> tuple[float, float] | None:
         a = prev_s[k][j]
         f = min((s[x].f for x in range(a, j)), default=_INF)
         if best is None or t < best[0] or (t == best[0] and f < best[1]):
-            best = (t, f)
+            best = (t, f, [w.w for w in s[a:j]])
     return best
 
 

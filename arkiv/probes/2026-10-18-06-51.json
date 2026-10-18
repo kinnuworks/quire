@@ -1,0 +1,14 @@
+{
+  "sdk": "0.8.1",
+  "chainId": 7738577,
+  "startedAt": "2026-10-18T06:50:52.008Z",
+  "tag": "probe-mvdgv6y0",
+  "absoluteExpiry": {
+    "expected": "expiresAt equals the block asked for, wherever the transaction lands",
+    "asked": "729243",
+    "createdExpiresAt": "729243",
+    "createdAt": "728245",
+    "askedOnExtend": "729743",
+    "extendedExpiresAt": "729743"
+  }
+}

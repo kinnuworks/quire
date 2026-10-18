@@ -333,6 +333,25 @@ const probes: Record<string, () => Promise<unknown>> = {
     }
   },
 
+  /** Friction item 14: an absolute deadline with ExpirationTime.atBlock, on create and on extend. */
+  async absoluteExpiry() {
+    const head = await reader.getBlockNumber()
+    const target = head + 1000n
+    const r = await wallet.executeBatch({ creates: [{ payload: payload(16), contentType: "application/octet-stream", attributes: attrs, expires: ExpirationTime.atBlock(target) }] })
+    const key = r.createdEntities[0]!
+    const created = await reader.getEntity(key)
+    await wallet.executeBatch({ extensions: [{ entityKey: key, expires: ExpirationTime.atBlock(target + 500n) }] })
+    const extended = await reader.getEntity(key)
+    return {
+      expected: "expiresAt equals the block asked for, wherever the transaction lands",
+      asked: String(target),
+      createdExpiresAt: String(created.expiresAt),
+      createdAt: String(created.createdAt),
+      askedOnExtend: String(target + 500n),
+      extendedExpiresAt: String(extended.expiresAt),
+    }
+  },
+
   /** Funding a burner with a plain transfer, as Quire's drip does. */
   async burnerFunding() {
     const burner = privateKeyToAccount(generatePrivateKey())

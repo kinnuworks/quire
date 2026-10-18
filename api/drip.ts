@@ -11,13 +11,15 @@
  * sponsor as the source of its first transfer, so an observer can tell those
  * keys were funded by Quire. It cannot tell who holds them.
  */
-import { createHash } from "node:crypto"
+import { createHash, randomInt } from "node:crypto"
 import { tiramisu } from "@arkiv-network/sdk/chains"
 import { createPublicClient, createWalletClient, formatEther, http, isAddress, parseEther } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 
 const RPC = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 const AMOUNT = parseEther("0.05")
+/** Each transfer is 0.04 to 0.06 GLM, to the wei, so an amount alone does not mark a transfer as the drip's. */
+const amount = () => parseEther("0.04") + (parseEther("0.02") * BigInt(randomInt(1_000_000))) / 1_000_000n + BigInt(randomInt(1_000_000))
 const ONLY_BELOW = parseEther("0.005")
 // per-instance memory: a soft limit, not a guarantee across cold starts
 const recent = new Map<string, number>()
@@ -107,7 +109,9 @@ export default async function handler(req: Req, res: Res) {
       return res.status(503).json({ error: `The drip is out of test GLM (${formatEther(left)} left). Fund this key from your own wallet or the faucet at https://hub.arkiv.network/faucet.`, sponsor: account.address })
     }
     const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), account })
-    const hash = await wallet.sendTransaction({ to: address as `0x${string}`, value: AMOUNT })
+    // a short random wait spreads transfers over a few blocks instead of the block the request came in
+    await new Promise((r) => setTimeout(r, randomInt(500, 6000)))
+    const hash = await wallet.sendTransaction({ to: address as `0x${string}`, value: amount() })
     return res.status(200).json({ hash })
   } catch (e) {
     release()

@@ -1446,6 +1446,8 @@ describe("a passage pasted back by someone else", () => {
     const doc = new Y.Doc()
     const audit = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
     await audit.connect()
+    expect(await audit.erasedMembers()).toEqual([bea.id!.address])
+    expect(await a.provider.erasedMembers()).toEqual([bea.id!.address])
     const found = earlierWriters(doc, audit)
     expect(found.length).toBe(1)
     expect(found[0]!.address).toBe(owner.address)

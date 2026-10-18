@@ -32,7 +32,7 @@ export const TIRAMISU_WS = "wss://rpc.tiramisu.db-chain.testnet.arkiv.network"
 /** The keyless query budget ran out. Thrown at once, instead of waiting out a long Retry-After in silence. */
 export class QueryBudgetError extends Error {
   constructor(readonly retryAfterSeconds: number) {
-    super(`Arkiv's free query budget for this address ran out. It refills in about ${Math.ceil(retryAfterSeconds / 60)} minutes, or use an access key.`)
+    super(`Arkiv's free query budget for this address ran out. It refills in about ${Math.ceil(retryAfterSeconds / 60)} minutes; meanwhile use an access key, or Quire's relay (the CLI takes --relay).`)
     this.name = "QueryBudgetError"
   }
 }

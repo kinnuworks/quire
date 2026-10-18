@@ -485,15 +485,22 @@ function RotateKey({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (wh
  * arrive; one extra query, run once when this panel opens, lists them.
  */
 function OutsideWrites({ p }: { p: ArkivProvider }) {
-  const [outside, setOutside] = useState<Hex[] | null>(null)
+  const [scan, setScan] = useState<Hex[] | null>(null)
+  const [erased, setErased] = useState<Hex[]>([])
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     let alive = true
-    p.scanOutsiders().then((n) => alive && setOutside(n), () => alive && setFailed(true))
+    // someone the owner erased from the list looks like an outsider to today's list: name them apart
+    Promise.all([p.scanOutsiders(), p.erasedMembers()]).then(
+      ([n, e]) => alive && (setErased(e), setScan(n)),
+      () => alive && setFailed(true),
+    )
     return () => {
       alive = false
     }
   }, [p])
+  const outside = scan && scan.filter((c) => !erased.includes(c))
+  const fromErased = scan ? scan.length - outside!.length : 0
   const creators = outside ? [...new Set(outside)] : []
   return (
     <section>
@@ -508,6 +515,11 @@ function OutsideWrites({ p }: { p: ArkivProvider }) {
             : `${outside.length === 1 ? "entity" : "entities"} on chain for this document from outside the member list${creators.length ? ` (${creators.map((x) => short(x)).join(", ")})` : ""}. None were applied.${p.outsidersTruncated ? " This checked the first 200 entities only, so a busy document may hold more." : ""}`}
         </span>
       </p>
+      {erased.length > 0 && (
+        <p className="muted small">
+          Erased from the member list: {erased.map((x) => short(x)).join(", ")}. An earlier version of the list names them and today's leaves them out.{fromErased ? ` Their ${fromErased} ${fromErased === 1 ? "entity is" : "entities are"} not counted above.` : ""} What they wrote while members is checked edit by edit against the list as it stood then.
+        </p>
+      )}
       {p.stats.rejectedWrites > 0 && <p className="muted small">This tab also refused {p.stats.rejectedWrites} {p.stats.rejectedWrites === 1 ? "write" : "writes"} that arrived: from outside the list, under someone else's client id, or malformed.</p>}
     </section>
   )

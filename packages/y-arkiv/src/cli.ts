@@ -17,6 +17,8 @@
  *   QUIRE_KEY=0x…          read as that member: after a removal, the link alone cannot open the sealed roster
  *   --rpc <url> --ws <url> use your own Arkiv node instead of the public endpoint
  *   ARKIV_ACCESS_KEY=…     raise the public endpoint's query budget
+ *   --relay                send queries through Quire's relay when this IP's free budget is spent: it adds
+ *                          its own access key and sees what the RPC operator sees (document id, member addresses)
  */
 import "./node-quiet.js"
 import { verifyMessage } from "viem"
@@ -27,6 +29,9 @@ import { ArkivProvider, atBlockStore, extendVersion } from "./provider.js"
 import { parseDocLink, parseVersionLink } from "./link.js"
 import { SdkStore } from "./sdk.js"
 import type { ArkivStore, StoredEntity } from "./store.js"
+
+/** Quire's relay (api/rpc.ts): forwards only arkiv_query calls for Quire documents, with its own access key. */
+const RELAY_URL = "https://quire-five.vercel.app/api/rpc"
 
 function text(doc: Y.Doc): string {
   const walk = (n: unknown): string => {
@@ -58,6 +63,10 @@ async function main() {
   if (atRaw !== undefined && !/^[0-9]{1,20}$/.test(atRaw)) fail("--at takes a block number")
   const at = atRaw === undefined ? undefined : BigInt(atRaw)
   const wsUrl = flag("--ws")
+  const relayAt = args.indexOf("--relay")
+  if (relayAt >= 0) args.splice(relayAt, 1)
+  const relayUrl = relayAt >= 0 ? RELAY_URL : undefined
+  if (relayUrl && httpUrl) fail("--relay is for the public endpoint; with your own node, use its budget")
   // half a custom node would still send document ids to the public WebSocket endpoint
   if (!!httpUrl !== !!wsUrl) fail("pass --rpc and --ws together, so every request goes to the node you chose")
   const [cmd, raw] = args
@@ -65,7 +74,7 @@ async function main() {
       "usage: y-arkiv read|watch|verify|blame|timeline '<document link>'\n" +
         "       y-arkiv extend '<version link>'          (QUIRE_KEY=a funded key)\n" +
         "       y-arkiv check-signature <address> '<message>' <signature>\n" +
-        "options: --at <block> to read the past; --rpc <url> --ws <url>; QUIRE_KEY to read as a member; ARKIV_ACCESS_KEY for more queries",
+        "options: --at <block> to read the past; --rpc <url> --ws <url>; --relay or ARKIV_ACCESS_KEY for more queries; QUIRE_KEY to read as a member",
     )
   if (cmd === "check-signature") {
     const [, address, message, signature] = args
@@ -87,7 +96,7 @@ async function main() {
   }
   const link = parseDocLink(fragment)
   if (!link) fail("that is not a Quire document link")
-  const store = new SdkStore({ httpUrl, wsUrl, accessKey: process.env.ARKIV_ACCESS_KEY })
+  const store = new SdkStore({ httpUrl, wsUrl, accessKey: process.env.ARKIV_ACCESS_KEY, relayUrl })
   const doc = new Y.Doc()
   // a member's key (QUIRE_KEY) unwraps the current epoch after a removal; the CLI still never writes
   const key = process.env.QUIRE_KEY as `0x${string}` | undefined
@@ -140,11 +149,15 @@ async function main() {
     console.log(`cost       ${store.calls.query} queries, ${store.calls.getEntity} entity reads`)
     // the load above asks only for members' entities; one more query lists everyone else's
     if (!acl.rosterHidden) {
+      // someone the owner erased from the list looks like an outsider to today's list: name them apart
+      const erased = new Set<string>(await provider.erasedMembers())
       const entities = await provider.outsiderEntities()
-      const outsiders = entities.map((e) => e.creator.toLowerCase())
+      const outsiders = entities.map((e) => e.creator.toLowerCase()).filter((c) => !erased.has(c))
+      const fromErased = entities.length - outsiders.length
       const by = [...new Set(outsiders)]
       const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`
       console.log(`outside    ${n(outsiders.length, "entity", "entities")} by ${n(by.length, "non-member", "non-members")}, never fetched or applied${by.length ? `: ${by.join(", ")}` : ""} (1 more query${provider.outsidersTruncated ? "; first 200 entities only, there are more" : ""})`)
+      if (erased.size) console.log(`erased     ${[...erased].join(", ")}: named by an earlier version of the member list, missing from today's, with ${n(fromErased, "entity", "entities")} on chain. Not read above; run blame to prove what they wrote while members`)
       const note = recreated(provider, await provider.predatingEntities())
       if (note) console.log(note)
     }

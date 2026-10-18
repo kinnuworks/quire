@@ -233,7 +233,7 @@ export function Home() {
               Someone took the credit. <span className="t-muted">The chain kept the receipts.</span>
             </h2>
             <p className="lead">
-              A real document on Arkiv. Bea wrote the key finding. Then Asha, who owns the document, erased Bea from the member list and pasted the finding back as her own. Drag through the blocks.
+              A real document on Arkiv. Bea wrote the key finding. Then Asha, who owns the document, erased Bea from the member list and pasted the finding back as her own. Drag through the blocks: each step is one of its edits, recorded from the chain with <code>y-arkiv timeline</code>, which you can run yourself.
             </p>
           </div>
           <Scrubber />
@@ -407,7 +407,7 @@ export function Home() {
           </div>
           <div className="grid grid-3">
             {[
-              { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Swap it for y-websocket and a Yjs editor syncs its document over Arkiv: each writer needs a little test gas, and there are no shared cursors yet." },
+              { i: <PlugIcon />, t: "y-arkiv", d: "A Yjs provider. Use it in place of y-websocket, with three more arguments, and a Yjs editor syncs its document over Arkiv: each writer needs a little test gas, and there are no shared cursors yet." },
               { i: <BookIcon />, t: "A written spec", d: "PROTOCOL.md, JSON Schema for every entity, and test vectors with a forged write." },
               { i: <TerminalIcon />, t: "Read without us", d: "Our CLI and the Python reader rebuild any document from chain data and check its membership and authorship, and a script shows the two agree." },
               { i: <HistoryIcon />, t: "Time travel", d: "Rebuild a document exactly as Arkiv held it at a past block, with atBlock reads." },

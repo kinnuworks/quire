@@ -46,8 +46,8 @@
     "vitest": "^5.0.5"
   },
   "bin": {
-    "y-arkiv": "./dist/cli.js",
-    "quire": "./dist/cli.js"
+    "y-arkiv": "dist/cli.js",
+    "quire": "dist/cli.js"
   },
   "keywords": [
     "yjs",

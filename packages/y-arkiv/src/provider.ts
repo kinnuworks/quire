@@ -289,6 +289,16 @@ export class ArkivProvider extends Observable<string> {
     return [...out]
   }
 
+  /**
+   * Addresses an earlier version of the member list named that today's list leaves out entirely,
+   * neither members nor removals: people the owner erased. Empty if the list's history cannot be read.
+   */
+  async erasedMembers(): Promise<Hex[]> {
+    if (!this.acl) return []
+    const today = new Set(updateAuthors(this.acl).map((a) => a.toLowerCase()))
+    return ((await this.everListed()) ?? []).filter((a) => !today.has(a))
+  }
+
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
   private readonly verifiedUnits = new StructIndex()
   /** Base block of every snapshot this session applied, so a reload knows them without re-reading. */

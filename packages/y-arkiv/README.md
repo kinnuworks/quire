@@ -4,7 +4,7 @@ A Yjs provider whose only backend is [Arkiv](https://arkiv.network). Every edit 
 
 Testnet only (Arkiv Tiramisu). MIT.
 
-## Swap it in for y-websocket
+## Use it in place of y-websocket
 
 ```ts
 import * as Y from "yjs"

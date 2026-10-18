@@ -100,7 +100,22 @@ export function DocPage({ link }: { link: DocLink }) {
   useEffect(() => {
     if (blame && !session.fullHistory) session.loadFullHistory()
   }, [blame, session.fullHistory])
-  const copies = blame && session.fullHistory && provider?.status === "synced" ? earlierWriters(doc, provider) : []
+  // an owner who erases someone from the member list hides their edits from the everyday read, so on
+  // open the app walks the list's history; if anyone was erased it checks every edit, toggle or not
+  const [erased, setErased] = useState<string[]>([])
+  const erasureChecked = useRef("")
+  useEffect(() => {
+    if (!provider || provider.status !== "synced" || erasureChecked.current === link.doc) return
+    erasureChecked.current = link.doc
+    provider.erasedMembers().then(
+      (found) => {
+        setErased(found)
+        if (found.length && !session.fullHistory) session.loadFullHistory()
+      },
+      () => {},
+    )
+  }, [provider, provider?.status, link.doc, session.fullHistory])
+  const copies = (blame || erased.length > 0) && session.fullHistory && provider?.status === "synced" ? earlierWriters(doc, provider) : []
 
   // scheduled rotation: the owner turned it on and a full period has passed since the last one
   const rotating = useRef(false)
@@ -236,6 +251,14 @@ export function DocPage({ link }: { link: DocLink }) {
             Check every edit still on chain
           </button>{" "}
           to prove it from the edits themselves.
+        </div>
+      )}
+
+      {erased.length > 0 && (
+        <div className="ws-banner accent">
+          <span>
+            <b>The owner erased {erased.length === 1 ? "a member" : `${erased.length} members`} from the member list:</b> {erased.map((a) => `${a.slice(0, 8)}…${a.slice(-4)}`).join(", ")}. Earlier versions of the list, read from the chain, still name them, so Quire checked every edit still on chain and what they wrote while members still counts as theirs.
+          </span>
         </div>
       )}
 

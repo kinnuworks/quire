@@ -109,41 +109,99 @@ export type EarlierWriter = {
 }
 
 /**
- * Passages whose exact words a different member typed first. A member can delete someone else's
- * paragraph and paste the same words back as their own edit; blame then proves the copy, correctly,
- * as theirs. This looks through every applied edit (open the provider with `fullHistory`) for an earlier
- * writer: each member's inserted text, in clock order per client, is searched for the passage. Only
- * passages of 24 characters or more are checked, so common short phrases do not match.
+ * Passages whose words a different member held first. A member can delete someone else's paragraph
+ * and paste the same words back as their own edit; blame then proves the copy, correctly, as theirs.
+ * This replays every applied edit (open the provider with `fullHistory`) in block order and, after
+ * each block, notes which member's own contiguous text held each passage, comparing with whitespace
+ * collapsed. The paste is flagged only if someone else held the words before its own author ever did,
+ * so a writer who fixed a typo, wrote the sentences out of order or added a space is still found, and a
+ * member who pastes a copy of someone's words and deletes it at once cannot make the real author look
+ * like the copier. Only passages of 24 characters or more are checked, so short phrases do not match.
  */
 export function earlierWriters(doc: Y.Doc, provider: ArkivProvider): EarlierWriter[] {
-  // every insert, per client, with the author and block of the edit that carried it
-  const inserts = new Map<number, { clock: number; str: string; block: bigint; author: Hex }[]>()
-  for (const h of provider.history) {
-    for (const st of Y.decodeUpdate(h.update).structs) {
-      if (!(st instanceof Y.Item) || !(st.content instanceof Y.ContentString)) continue
-      const list = inserts.get(st.id.client) ?? []
-      list.push({ clock: st.id.clock, str: st.content.str, block: h.block, author: h.author })
-      inserts.set(st.id.client, list)
+  const targets = blame(doc, provider)
+    .flat()
+    .filter((r) => r.proven && r.address && r.block !== undefined && norm(r.text).text.length >= 24)
+  if (!targets.length) return []
+  const blocks = new Map<bigint, Uint8Array[]>()
+  const authorOf = new Map<number, Hex>()
+  for (const h of [...provider.history].sort((x, y) => (x.block === y.block ? 0 : x.block < y.block ? -1 : 1))) {
+    blocks.set(h.block, [...(blocks.get(h.block) ?? []), h.update])
+    // an edit carries only its writer's own client ids (the provider refuses anything else)
+    for (const st of Y.decodeUpdate(h.update).structs) authorOf.set(st.id.client, h.author)
+  }
+  // for each passage: the first block each member held it, and the earliest block among those characters
+  const held = targets.map(() => new Map<Hex, { at: bigint; from: bigint }>())
+  const keys = targets.map((r) => norm(r.text).text)
+  const replay = new Y.Doc()
+  for (const [block, updates] of blocks) {
+    Y.transact(replay, () => updates.forEach((u) => Y.applyUpdate(replay, u)))
+    for (const segment of segments(replay, authorOf)) {
+      const n = norm(segment.chars.map((c) => c.ch).join(""))
+      keys.forEach((key, i) => {
+        if (held[i]!.has(segment.author)) return
+        const at = n.text.indexOf(key)
+        if (at < 0) return
+        let from = block
+        for (let k = at; k < at + key.length; k++) {
+          const c = segment.chars[n.index[k]!]!
+          const b = provider.provenanceOf(c.client, c.clock)?.block
+          if (b !== undefined && b < from) from = b
+        }
+        held[i]!.set(segment.author, { at: block, from })
+      })
     }
   }
   const out: EarlierWriter[] = []
-  for (const run of blame(doc, provider).flat()) {
-    if (!run.proven || !run.address || run.block === undefined || run.text.trim().length < 24) continue
-    for (const list of inserts.values()) {
-      const earlier = list.filter((i) => i.author !== run.address && i.block < run.block!).sort((x, y) => x.clock - y.clock)
-      if (!earlier.length) continue
-      const typed = earlier.map((i) => i.str).join("")
-      const at = typed.indexOf(run.text)
-      if (at < 0) continue
-      // the edits that carried the matching characters
-      let pos = 0
-      const used = earlier.filter((i) => {
-        const start = pos
-        pos += i.str.length
-        return start < at + run.text.length && pos > at
-      })
-      out.push({ text: run.text, address: run.address, block: run.block, first: used[0]!.author, from: used[0]!.block, to: used[used.length - 1]!.block })
-      break
+  targets.forEach((run, i) => {
+    const own = held[i]!.get(run.address!)?.at ?? run.block!
+    let first: [Hex, { at: bigint; from: bigint }] | undefined
+    for (const [who, h] of held[i]!) if (who !== run.address && h.at < own && (!first || h.at < first[1].at)) first = [who, h]
+    if (first) out.push({ text: run.text, address: run.address!, block: run.block!, first: first[0], from: first[1].from, to: first[1].at })
+  })
+  return out
+}
+
+/** Text with whitespace runs collapsed to one space and trimmed, and where each kept character came from. */
+function norm(s: string): { text: string; index: number[] } {
+  let text = ""
+  const index: number[] = []
+  for (let i = 0; i < s.length; i++) {
+    const space = /\s/.test(s[i]!)
+    if (space && (text === "" || text.endsWith(" "))) continue
+    text += space ? " " : s[i]
+    index.push(i)
+  }
+  if (text.endsWith(" ")) {
+    text = text.slice(0, -1)
+    index.pop()
+  }
+  return { text, index }
+}
+
+type Char = { ch: string; client: number; clock: number }
+/** Each paragraph's visible text cut into runs of one member's characters, in document order. */
+function segments(doc: Y.Doc, authorOf: Map<number, Hex>): { author: Hex; chars: Char[] }[] {
+  const paragraphs: Item[][] = []
+  for (const block of doc.getXmlFragment("default").toArray()) {
+    const items: Item[] = []
+    collect(block, items)
+    paragraphs.push(items)
+  }
+  const plain: Item[] = []
+  walk((doc.getText("t") as unknown as { _start: Item | null })._start, plain)
+  paragraphs.push(plain)
+  const out: { author: Hex; chars: Char[] }[] = []
+  for (const items of paragraphs) {
+    let current: { author: Hex; chars: Char[] } | undefined
+    for (const it of items) {
+      const author = authorOf.get(it.id.client)
+      if (!author) {
+        current = undefined
+        continue
+      }
+      if (!current || current.author !== author) out.push((current = { author, chars: [] }))
+      for (let i = 0; i < it.content.str!.length; i++) current.chars.push({ ch: it.content.str![i]!, client: it.id.client, clock: it.id.clock + i })
     }
   }
   return out

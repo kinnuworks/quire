@@ -5,6 +5,7 @@ import StarterKit from "@tiptap/starter-kit"
 import { useEffect, useRef, useState } from "react"
 import type { DocLink, Identity } from "y-arkiv"
 import { AuthorshipBars, blockAuthors, setMembers } from "../authorship"
+import { rotatedNow, rotationDue } from "../autorotate"
 import { ensureGas, fundFromWallet, hasWallet, WALLET_WARNING } from "../gas"
 import { ActivityPanel, ChainPanel, HistoryPanel, LifetimePanel, PeoplePanel } from "../panels"
 import { identityFor, newIdentity, preferredName, saveIdentity, setPreferredName, shareUrl } from "../session"
@@ -94,6 +95,17 @@ export function DocPage({ link }: { link: DocLink }) {
     // redraw the authorship bars when they are toggled or authorship changes
     if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta("authorship", true))
   }, [editor, blame, session.tick])
+
+  // scheduled rotation: the owner turned it on and a full period has passed since the last one
+  const rotating = useRef(false)
+  useEffect(() => {
+    if (!provider || provider.status !== "synced" || provider.role !== "owner" || rotating.current || !rotationDue(link.doc)) return
+    rotating.current = true
+    provider.rotateKey().then(
+      () => rotatedNow(link.doc),
+      () => undefined,
+    ).finally(() => (rotating.current = false))
+  }, [provider, session.tick, link.doc])
 
   // after a fresh identity connects, send its join request
   useEffect(() => {

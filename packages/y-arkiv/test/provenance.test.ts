@@ -4,7 +4,7 @@ import * as Y from "yjs"
 import { blame } from "../src/blame.js"
 import { MemoryChain } from "../src/memory.js"
 import { KIND, LIFETIME } from "../src/protocol.js"
-import { ArkivProvider } from "../src/provider.js"
+import { ArkivProvider, atBlockStore } from "../src/provider.js"
 import { decodeFrame, decodeOuter, encodeFrame, encodeOuter } from "../src/codec.js"
 import { clientIdFor, deriveEpochZeroKey, open, randomBytes, seal } from "../src/crypto.js"
 import { bytesToHex, hexToBytes } from "../src/hex.js"
@@ -801,6 +801,11 @@ describe("membership at each edit's block", () => {
     expect(await read(true)).toEqual({ bea: "Bea wrote this. ", mal: "" })
     // a normal session, as the app opens one: the backdated newcomer still proves nothing
     expect((await read(true, false)).mal).toBe("")
+    // and so does a session that sets nothing, as the CLI's read and verify open one
+    const plain = new ArkivProvider(new Y.Doc(), { store: chain.store(owner.address), link, identity: owner, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0 })
+    await plain.connect()
+    expect(blame(plain.doc, plain).flat().filter((r) => r.proven && r.address === mal.id!.address).map((r) => r.text).join("")).toBe("")
+    plain.destroy()
     a.provider.destroy()
   })
 })
@@ -840,8 +845,8 @@ describe("snapshot expiry under keepUntil", () => {
       expiries.push((await chain.store(owner.address).get(s.p.snapshot!.key))!.expiresAt)
       s.p.destroy()
     }
-    // a block or two of landing delay, once, never growing session after session
-    for (const e of expiries) expect(e - keepUntil).toBeLessThanOrEqual(3n)
+    // pinned to keepUntil itself with an absolute deadline, whatever block each transaction lands in
+    for (const e of expiries) expect(e).toBe(keepUntil)
   })
 })
 
@@ -1077,6 +1082,35 @@ describe("audit against junk and an erased member", () => {
     audit.destroy()
   })
 
+  it("a thousand extensions of the member list cannot exhaust the history walk", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    await (a.provider as unknown as { updateAcl: (f: (acl: { members: { address: string }[]; revoked: unknown[] }) => Promise<object>) => Promise<void> }).updateAcl(async (acl) => {
+      acl.members = acl.members.filter((m) => m.address !== bea.id!.address)
+      acl.revoked = []
+      return {}
+    })
+    await settle(chain, [a, bea])
+    // every extension is a new version of the list, with the same content
+    for (let i = 0; i < 1100; i++) {
+      await chain.store(owner.address).batch({ extensions: [{ key: a.provider.aclKey!, lifetimeSeconds: LIFETIME.acl }] })
+      chain.mine()
+    }
+    await junk(chain, link, 1001)
+    const doc = new Y.Doc()
+    const audit = new ArkivProvider(doc, { store: chain.store(undefined), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await audit.connect()
+    expect(blame(doc, audit).flat().filter((r) => r.proven && r.address === bea.id!.address).map((r) => r.text).join("")).toBe("bea's essay")
+    expect(audit.auditNarrowed).toBe(false)
+    audit.destroy()
+  })
+
   it("if the list's history cannot be read, the wider read stops after five pages and says it narrowed", async () => {
     const chain = new MemoryChain()
     const { owner, link } = await newDocument(chain)
@@ -1183,5 +1217,30 @@ describe("far-future qs from a current member", () => {
     expect(doc.getText("t").toString()).toBe("Owner wrote this.")
     expect(fetched).toBeLessThan(100)
     reader.destroy()
+  })
+})
+
+describe("after the owner deletes the document", () => {
+  it("proof is still readable at an earlier block, pinned with atBlock", async () => {
+    const chain = new MemoryChain()
+    const { owner, link } = await newDocument(chain)
+    const a = await peer(chain, link, owner)
+    const bea = await peer(chain, link, identity("bea"))
+    await admit(chain, a, bea)
+    bea.doc.getText("t").insert(0, "bea's essay")
+    await bea.provider.flush()
+    await settle(chain, [a, bea])
+    // the last sealed block before the delete (the delete lands in the block now open)
+    const before = chain.block - 1n
+    await a.provider.deleteDocument()
+    await settle(chain, [a, bea])
+    // today nothing opens
+    await expect(peer(chain, link, undefined)).rejects.toThrow(/document not found/)
+    // as it stood before the delete, Bea's words are proven
+    const doc = new Y.Doc()
+    const past = new ArkivProvider(doc, { store: atBlockStore(chain.store(undefined), before), link, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, readOnly: true, fullHistory: true })
+    await past.connect()
+    expect(blame(doc, past).flat().filter((r) => r.proven && r.address === bea.id!.address).map((r) => r.text).join("")).toBe("bea's essay")
+    past.destroy()
   })
 })

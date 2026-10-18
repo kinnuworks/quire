@@ -46,7 +46,7 @@ function plain(doc: Y.Doc): string {
 async function typescript(store: ArkivStore, link: string, memberKey?: Hex, audit = false): Promise<Verdict> {
   const doc = new Y.Doc()
   const identity = memberKey ? { address: privateKeyToAccount(memberKey).address.toLowerCase() as Hex, privateKey: memberKey, name: "member" } : undefined
-  const p = new ArkivProvider(doc, { store, link: parseDocLink(link)!, identity, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit, membershipAtBlock: audit })
+  const p = new ArkivProvider(doc, { store, link: parseDocLink(link)!, identity, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit })
   p.on("error", () => undefined) // a member session may try to renew a lease on a read-only store
   await p.connect()
   const outsiders = (await p.outsiderEntities()).map((e) => e.key)

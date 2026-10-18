@@ -80,7 +80,7 @@ export class MemoryChain {
       const e = this.live(x.key, now)
       if (!e) throw new ChainError(`extend: no entity ${x.key}`)
       if (e.owner !== sender && !e.permissionlessExtension) throw new ChainError("extend: not permitted")
-      if (now + blocksOf(x.lifetimeSeconds) < e.expiresAt) throw new ChainError("extend: new expiry is earlier")
+      if ((x.expiresAtBlock ?? now + blocksOf(x.lifetimeSeconds)) < e.expiresAt) throw new ChainError("extend: new expiry is earlier")
     }
     for (const k of spec.deletes ?? []) {
       const e = this.live(k, now)
@@ -103,7 +103,7 @@ export class MemoryChain {
         owner: sender,
         createdAt: now,
         updatedAt: now,
-        expiresAt: now + blocksOf(c.lifetimeSeconds),
+        expiresAt: c.expiresAtBlock ?? now + blocksOf(c.lifetimeSeconds),
         attributes: { ...c.attributes },
         payload: c.payload.slice(),
         readonly: !!c.readonly,
@@ -119,7 +119,7 @@ export class MemoryChain {
     }
     for (const x of spec.extensions ?? []) {
       const e = this.live(x.key, now)!
-      const expiresAt = now + blocksOf(x.lifetimeSeconds)
+      const expiresAt = x.expiresAtBlock ?? now + blocksOf(x.lifetimeSeconds)
       this.put(x.key, { ...e, updatedAt: now, expiresAt })
       this.pending.push({ type: "extended", key: x.key, owner: e.owner, block: now, expiresAt })
     }

@@ -19,7 +19,7 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 |---|---|---|---|---|---|---|
 | Member list (ACL) | `a` | document owner | owner key, epoch, wrapped epoch keys, roster (sealed under the epoch key after a revocation) | 90 days from the owner's last visit, or the owner's `keepUntil` | extended and changed only by the owner (`extendEntity`, `patchEntity`) | none: owner-only extension, so no stranger keeps names alive (documents made before 18 Oct 2026 carry `permissionlessExtension`, still accepted) |
 | Update | `u` | a member | Yjs update merging one writer's edits from about one block | as long as a new snapshot (30 days or `keepUntil`) | folded into a snapshot before it can expire; its creator may extend it to `keepUntil` to keep proof (Keep my proof) | `readonly` |
-| Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or `keepUntil`; never shorter than the same member's snapshot it replaces | its creator extends it, or another member writes a fresh one; Keep my proof writes one that lasts to `keepUntil` | `readonly` |
+| Snapshot | `s` | a member | full Yjs state (first part) | 30 days, or exactly `keepUntil` (`ExpirationTime.atBlock`) | its creator extends it, or another member writes a fresh one; Keep my proof writes one that lasts to `keepUntil` | `readonly` |
 | Snapshot chunk | `c` | the snapshot's creator | next part of the state | same as its head | extended together with its head | `readonly` |
 | Join request | `j` | anyone with the link | requester's public key and chosen name, sealed to the owner's key | 1 hour | none | `readonly` |
 | Published version | `v` (+ `c`) | a member | frozen Yjs state under its own key | 1 year | anyone holding the link can extend | `readonly`, `permissionlessExtension` |
@@ -29,7 +29,7 @@ Everything else (text, titles, member names, timestamps, the member list) is ins
 - An update lives as long as a new snapshot would, so it can never expire before a snapshot covers it. Writers also compact about two minutes after they stop typing and when they leave the page, so most documents end every session fully folded into one snapshot.
 - A snapshot is a lease. A member who opens the document past the halfway mark renews it, by extending their own snapshot or writing a fresh one. If nobody opens it for a month, it expires from Arkiv's state. Nobody outside the member list can extend a snapshot, because snapshots and edits carry no permissionless-extension flag. They are readonly, so not even their creator can change their content after the fact. The member list carries no such flag either: only the owner extends it, 90 days from each visit or to the owner's `keepUntil`, so nobody else can keep member names and public keys alive, and the owner can delete it at any time. A document whose owner stays away for 90 days without choosing a longer lifetime stops opening, even for members: the owner decides how long it lives.
 - The owner can keep the document longer (90 days to 3 years). The target is stored in the member list, so every later snapshot honours it. Arkiv only lets an extension move expiry later, so to end a document sooner the owner deletes it, which removes the member list and every entity the owner created in one batch.
-- A writer can keep proof of their own edits (Keep my proof): their edits, the member list and a snapshot of theirs are extended to the owner's `keepUntil`, and never beyond it, so the owner's lifetime stays the ceiling for every readable copy.
+- A writer can keep proof of their own edits (Keep my proof): their edits and a snapshot of theirs are extended to exactly the owner's `keepUntil` (`ExpirationTime.atBlock`), and never beyond it; the member list already lives that long, because the owner's keepFor extends it to the same block, so the owner's lifetime stays the ceiling for every readable copy.
 - A join request is answered within minutes or not at all, so it expires after an hour.
 - A published version is meant to outlive the document, and anyone who holds its link can extend it.
 
@@ -65,7 +65,7 @@ Opening a document costs three queries; the app's People tab then spends one mor
 | Create document | ACL create + snapshot head |
 | Compact | chunks first, in transactions of at most 100,000 payload bytes (payloads travel hex-encoded and the RPC refuses requests over about 256 KiB: 120,000 bytes lands, 130,000 does not); then the head, which lists the chunk keys |
 | Remove a member, or rotate the key | ACL patch (new epoch, re-wrapped keys, sealed roster) + the new snapshot head under the new key; optionally, then, deletes of the owner's own older-epoch entities |
-| Keep my proof | extensions of my updates and the ACL, where they move expiry later, up to `keepUntil`; then my snapshot, written to last as long |
+| Keep my proof | extensions of my updates to exactly `keepUntil` with `ExpirationTime.atBlock`, where they move expiry later (the owner's own session also extends the ACL; on documents made before owner-only lists, any member's does); then my snapshot, written to expire at the same block |
 | Renew lease | extensions for my snapshot and its chunks, and the ACL, only where they move expiry later |
 | Shred my edit history | deletes of my updates and join requests |
 | Delete document | deletes of the ACL and every entity the owner created |

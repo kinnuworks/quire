@@ -23,7 +23,7 @@ To rerun the probes: `QUIRE_DEV_PRIVATE_KEY=0x… pnpm --dir packages/y-arkiv ex
 | 11 | Docs | `atBlock` retention range is not stated | Low |
 | 12 | WebSocket gateway | Concurrent connections are capped per IP (429 `WS_CONN_LIMIT`), and the refusal reaches a browser as a bare `ErrorEvent` with close code 1006 | Medium: live edits silently stop; we poll instead and say so |
 | 13 | Entity metadata | A patch keeps `createdAt`, and `updatedAt` moves on extensions too, so a reader cannot tell rewritten content from a renewed lease | High for us: authorship could be backdated |
-| 14 | Entity lifetimes | `expiresIn` counts from the block a write lands in, and there is no absolute expiry, so carrying an expiry forward drifts | Medium: a kept document lost its text after about 300 sessions until we fixed it |
+| 14 | Lifetime docs | A duration counts from the landing block; we used durations where `ExpirationTime.atBlock` was the right tool, and the docs could say so | Low, and our mistake: fixed by switching to `atBlock` |
 | 15 | Query language | AND binds tighter than OR, undocumented; the SDK writes nested `and` inside `or` without parentheses and relies on it | Low: we confirmed it with a probe before depending on it |
 | 16 | Worked well | Extension errors, patch plus extend in one batch, plain transfers, WebSocket push, atBlock history | none |
 
@@ -235,15 +235,17 @@ Quire's History tab rebuilds a document as of any past block with `atBlock` read
 
 **What we did.** Every update, snapshot, chunk and join request is created `readonly`, and both readers ignore those kinds unless they are readonly ([PROTOCOL.md](../PROTOCOL.md) section 1, edge case `update-not-readonly`).
 
-## 14. Lifetimes are relative to the block a write lands in, and there is no absolute expiry
+## 14. A duration counts from the block a write lands in, and we used durations for deadlines
 
-**What happened.** A blind review found that a document kept for a year slowly lost its text. Our snapshots carried the previous snapshot's expiry forward as "expiry minus the head I just read". A transaction can never land in a block that is already sealed, so it lands at least one block after that head, and `expiresIn` counts from the landing block. Each compaction pushed the expiry a block or more past the owner's ceiling. After about 300 sessions both readers, correctly, refused the snapshot as outliving the owner's lifetime.
+**What happened.** A blind review found that a document kept for a year slowly lost its text. Our snapshots carried the previous snapshot's expiry forward as a duration: "expiry minus the head I just read". A transaction lands at least one block after that head, and a duration (`ExpirationTime.fromSeconds`) counts from the landing block, so each compaction pushed the expiry a block or more past the owner's `keepUntil`. After about 300 sessions both readers, correctly, refused the snapshot as outliving the owner's lifetime.
 
-**Expected.** A way to say "expire at block N" for an entity, since apps that tie lifetimes together (a document and its parts, a member list and its content) think in absolute blocks.
+**This was our mistake, not a missing feature.** SDK 0.8.1 already has absolute deadlines: `ExpirationTime.atBlock(block)` and `atDate(date)` send an `expiresAt` on the wire, and the engine takes the later of that and any minimum lifetime. A later review pointed this out; we had only ever used the `from*` helpers.
 
-**Suggested fix.** Accept an absolute `expiresAtBlock` alongside `expiresIn` in `createEntity`, `extendEntity` and `executeBatch`, and say in the docs which block a relative lifetime counts from.
+**Expected.** Nothing missing in the platform. What would have saved us: the docs' lifetime section leading with "a duration counts from the block the write lands in; for a deadline shared by several entities, use `atBlock`", next to the `fromSeconds` example most people copy.
 
-**What we did.** Every snapshot's lifetime is computed afresh from the owner's `keepUntil`, never from an earlier expiry, so the overshoot is the one or two blocks of landing delay and never grows ([provider.ts](../packages/y-arkiv/src/provider.ts) `writeSnapshot`, test "does not creep past the owner's ceiling"). Readers in turn measure the 30-day part of the ceiling from each entity's own `updatedAt` rather than from their own head, which item 13's probe shows moves on every extension. A live tab and a reader opening a week later then reach the same verdict.
+**Suggested fix.** One sentence and an `atBlock` example in the entity lifetime docs.
+
+**What we did.** Everything written for the owner's chosen lifetime now uses `ExpirationTime.atBlock(keepUntil)`: snapshots, edits, the member list's extension in `keepFor`, and Keep my proof's extensions ([provider.ts](../packages/y-arkiv/src/provider.ts) `keepDeadline`). The test "does not creep past the owner's ceiling" now checks that every kept snapshot expires at exactly `keepUntil`. Readers measure the 30-day part of the ceiling from each entity's own `updatedAt`, which item 13's probe shows moves on every extension, so a live tab and a reader opening a week later reach the same verdict.
 
 ## 15. Query precedence is undocumented, and the SDK relies on it
 

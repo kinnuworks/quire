@@ -33,6 +33,8 @@ export type CreateSpec = {
   payload: Uint8Array
   attributes: QuireAttributes
   lifetimeSeconds: number
+  /** An absolute deadline instead (Arkiv's ExpirationTime.atBlock): the entity expires at exactly this block, wherever the write lands. */
+  expiresAtBlock?: bigint
   readonly?: boolean
   permissionlessExtension?: boolean
   /** Lets one batch reference keys it is about to mint (see predictKeys). */
@@ -42,7 +44,7 @@ export type CreateSpec = {
 export type BatchSpec = {
   creates?: CreateSpec[]
   patches?: { key: Hex; payload: Uint8Array; attributes: QuireAttributes }[]
-  extensions?: { key: Hex; lifetimeSeconds: number }[]
+  extensions?: { key: Hex; lifetimeSeconds: number; expiresAtBlock?: bigint }[]
   deletes?: Hex[]
   ownershipChanges?: { key: Hex; newOwner: Hex }[]
 }

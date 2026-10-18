@@ -2,6 +2,7 @@ import { render } from "@arkiv-network/sdk/query"
 import { useEffect, useState } from "react"
 import { privateKeyToAccount } from "viem/accounts"
 import { type ArkivProvider, type DocLink, formatDocLink, formatVersionLink, type Frame, type Hex, type Identity, KIND, loadAt, type StoredEntity, toExpression, updateFilter } from "y-arkiv"
+import { autoRotateSetting, ROTATE_EVERY_DAYS, rotatedNow, setAutoRotate } from "./autorotate"
 import { colorOf } from "./authorship"
 import { addressUrl, blocksToDuration, entityUrl, hexPreview, plainText, short, txUrl } from "./format"
 import { balanceOf, formatGlm } from "./gas"
@@ -438,6 +439,7 @@ const SHRED_OLD_QUESTION =
 
 /** Owner: a new key for everyone who stays, so a link that may have leaked opens nothing written from now on. */
 function RotateKey({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (what: string, fn: () => Promise<string | void>) => Promise<void> }) {
+  const [auto, setAuto] = useState(() => autoRotateSetting(p.link.doc).on)
   return (
     <section>
       <h4>Rotate the key</h4>
@@ -452,12 +454,28 @@ function RotateKey({ p, busy, run }: { p: ArkivProvider; busy: boolean; run: (wh
           run("rotating", async () => {
             const shredOldEpoch = confirm(SHRED_OLD_QUESTION)
             const r = await p.rotateKey({ shredOldEpoch })
+            rotatedNow(p.link.doc)
             return `Now on epoch ${p.acl!.epoch}.${shredOldEpoch ? ` Deleted ${r.shredded} of your entities from earlier epochs.` : ""}`
           })
         }
       >
         Rotate the key
       </button>
+      <label className="toggle-row" style={{ marginTop: 12 }}>
+        <input
+          className="switch"
+          type="checkbox"
+          checked={auto}
+          onChange={(e) => {
+            setAutoRotate(p.link.doc, e.target.checked)
+            setAuto(e.target.checked)
+          }}
+        />
+        Rotate it for me every {ROTATE_EVERY_DAYS} days
+      </label>
+      <p className="muted small">
+        When you open the document and {ROTATE_EVERY_DAYS} days have passed since the last rotation, this browser rotates the key first. A leaked link then opens at most a month of writing. Anyone who reads by link alone has to ask to join after each rotation. The setting lives in this browser only.
+      </p>
     </section>
   )
 }

@@ -262,9 +262,30 @@ export class ArkivProvider extends Observable<string> {
     if (!this.aclKey || !this.acl) return null
     const out = new Set<Hex>(updateAuthors(this.acl).map((a) => a.toLowerCase() as Hex))
     let version = await this.pastAclEntity()
-    for (let steps = 0; version && steps < 1000; steps++) {
+    let reads = 1
+    while (version) {
+      // a history too long to walk within the read limit: keep every address found so far, and say so
+      if (reads >= 2000) {
+        this.auditNarrowed = true
+        return [...out]
+      }
       if (version.updatedAt <= version.createdAt) return [...out]
+      // Extensions move updatedAt without touching the list, and anyone can extend the list of a document
+      // made before owner-only lists. Each patch stamps qs with the owner's head, and its fresh encryption
+      // makes the payload unique, so if the list held these exact bytes 61 blocks after that stamp, no
+      // patch landed in between: skip the extensions and keep walking from there.
+      const stamp = version.attributes.seq
+      if (version.updatedAt > stamp + 61n) {
+        const settled = await this.pastAclEntity(stamp + 61n)
+        reads++
+        if (settled === undefined) return null
+        if (settled && settled.updatedAt < version.updatedAt && bytesEqual(settled.payload, version.payload)) {
+          version = settled
+          continue
+        }
+      }
       const before = await this.pastAclEntity(version.updatedAt - 1n)
+      reads++
       if (before === undefined) return null
       if (before === null) return [...out]
       // a store without history answers with today's version again: the walk cannot go back
@@ -274,7 +295,7 @@ export class ArkivProvider extends Observable<string> {
       for (const a of updateAuthors(acl)) out.add(a.toLowerCase() as Hex)
       version = before
     }
-    return version === null ? [...out] : null
+    return [...out]
   }
 
   /** What each applied update wrote, per client:clock, so a later conflicting update can be refused. */
@@ -1363,7 +1384,7 @@ export class ArkivProvider extends Observable<string> {
       const result = await this.store.batch({
         // an edit lives as long as a snapshot would: it must never expire before one covers it
         // readonly: an edit can never be patched later, so what readers prove is what was written
-        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: this.snapshotLifetime(head), readonly: true }],
+        creates: [{ payload, attributes: { doc: this.link.doc, kind: KIND.update, seq: head }, lifetimeSeconds: this.snapshotLifetime(head), ...this.keepUntilExpiry(head), readonly: true }],
       })
       this.stats.writes++
       const entity = result.created[0]!
@@ -1438,10 +1459,20 @@ export class ArkivProvider extends Observable<string> {
     const lifetime = Math.max(this.snapshotLifetime(head), Math.min(minLifetimeSeconds, this.snapshotLifetime(head)))
     let written
     try {
-      written = await writeSnapshotEntities(this.store, this.link.doc, epoch, key, state, head, this.now(), KIND.snapshot, this.authorTable(state), lifetime, {
-        ...extra,
-        deletes: [...(extra.deletes ?? []), ...previous],
-      })
+      written = await writeSnapshotEntities(
+        this.store,
+        this.link.doc,
+        epoch,
+        key,
+        state,
+        head,
+        this.now(),
+        KIND.snapshot,
+        this.authorTable(state),
+        lifetime,
+        { ...extra, deletes: [...(extra.deletes ?? []), ...previous] },
+        this.keepDeadline(head),
+      )
     } catch (e) {
       this.pending = [...held, ...this.pending]
       throw e
@@ -1470,6 +1501,20 @@ export class ArkivProvider extends Observable<string> {
    * The lifetime a new snapshot gets: the default 30-day lease, or longer if
    * the owner asked to keep the document until a later block.
    */
+  /**
+   * When the owner keeps the document past a fresh lease, its keepUntil block, so content written for
+   * it expires at exactly that block (Arkiv's ExpirationTime.atBlock) wherever the transaction lands.
+   */
+  private keepDeadline(head: bigint): bigint | undefined {
+    const until = this.acl?.keepUntil ? BigInt(this.acl.keepUntil) : 0n
+    return until > head + blocks(LIFETIME.snapshot) ? until : undefined
+  }
+
+  private keepUntilExpiry(head: bigint): { expiresAtBlock?: bigint } {
+    const at = this.keepDeadline(head)
+    return at === undefined ? {} : { expiresAtBlock: at }
+  }
+
   private snapshotLifetime(head: bigint): number {
     const until = this.acl?.keepUntil ? BigInt(this.acl.keepUntil) : 0n
     return Math.max(LIFETIME.snapshot, Number(until - head) * BLOCK_SECONDS)
@@ -1539,7 +1584,7 @@ export class ArkivProvider extends Observable<string> {
     })
     await this.serial(async () => {
       if (this.aclExpiresAt === null || this.aclExpiresAt < keepUntil) {
-        await this.store.batch({ extensions: [{ key: this.aclKey!, lifetimeSeconds: seconds }] })
+        await this.store.batch({ extensions: [{ key: this.aclKey!, lifetimeSeconds: seconds, expiresAtBlock: keepUntil }] })
         this.stats.writes++
         this.aclExpiresAt = keepUntil
       }
@@ -1580,7 +1625,7 @@ export class ArkivProvider extends Observable<string> {
       if (mayExtendAcl && this.aclExpiresAt !== null && this.aclExpiresAt < until) keys.push(this.aclKey!)
       // extensions carry no payload; a hundred per transaction keeps each one small
       for (let i = 0; i < keys.length; i += 100) {
-        await this.store.batch({ extensions: keys.slice(i, i + 100).map((key) => ({ key, lifetimeSeconds: seconds_ })) })
+        await this.store.batch({ extensions: keys.slice(i, i + 100).map((key) => ({ key, lifetimeSeconds: seconds_, expiresAtBlock: until })) })
         this.stats.writes++
       }
       if (keys.includes(this.aclKey!)) this.aclExpiresAt = until
@@ -1758,7 +1803,7 @@ export class ArkivProvider extends Observable<string> {
         await this.resync()
         // the new member list and a snapshot under the new key land in the same transaction
         const lifetime = this.snapshotLifetime(head)
-        const w = await writeSnapshotEntities(this.store, this.link.doc, snapshot.epoch, snapshot.key, Y.encodeStateAsUpdate(this.doc), head, this.now(), KIND.snapshot, this.authorTable(Y.encodeStateAsUpdate(this.doc)), lifetime, patch)
+        const w = await writeSnapshotEntities(this.store, this.link.doc, snapshot.epoch, snapshot.key, Y.encodeStateAsUpdate(this.doc), head, this.now(), KIND.snapshot, this.authorTable(Y.encodeStateAsUpdate(this.doc)), lifetime, patch, this.keepDeadline(head))
         this.stats.writes += w.transactions
         for (const k of [w.headKey, ...w.chunks]) this.seen.add(k)
         this.snapshot = { key: w.headKey, base: head, expiresAt: head + blocks(lifetime), chunks: w.chunks, creator: this.identity!.address.toLowerCase() as Hex }
@@ -1974,8 +2019,20 @@ export async function extendVersion(store: ArkivStore, link: VersionLink, second
  * so it doubles as an independent check of what the editor shows.
  */
 export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, identity?: Identity): Promise<Y.Doc> {
-  const historical: ArkivStore = {
-    ...store,
+  const doc = new Y.Doc()
+  const p = new ArkivProvider(doc, { store: atBlockStore(store, block), link, identity, flushIntervalMs: 0, autoCompact: false })
+  await p.connect()
+  p.destroy()
+  return doc
+}
+
+/**
+ * A read-only view of the chain as it stood at `block`: every query and read by key is pinned there
+ * with atBlock, and nothing live. Entities deleted since are still there, so a member's proof outlives
+ * an owner who deletes the member list, for as long as the node keeps past state.
+ */
+export function atBlockStore(store: ArkivStore, block: bigint): ArkivStore {
+  return {
     address: undefined,
     query: (spec) => store.query({ ...spec, atBlock: spec.atBlock ?? block }),
     watch: () => () => undefined,
@@ -1984,14 +2041,13 @@ export async function loadAt(store: ArkivStore, link: DocLink, block: bigint, id
     batch: () => Promise.reject(new Error("read-only")),
     predictKeys: () => Promise.reject(new Error("read-only")),
   }
-  const doc = new Y.Doc()
-  const p = new ArkivProvider(doc, { store: historical, link, identity, flushIntervalMs: 0, autoCompact: false })
-  await p.connect()
-  p.destroy()
-  return doc
 }
 
 // ------------------------------------------------------------------ helpers
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i])
+}
 
 const BLOCK_SECONDS = 2
 /** Slack on the expiry ceiling, for the gap between a writer's head and a reader's (ten minutes of blocks). */
@@ -2033,6 +2089,7 @@ async function writeSnapshotEntities(
   authors: Record<string, { address: Hex; salt: string; sig: Hex }>,
   lifetime: number,
   extra: BatchSpec,
+  expiresAtBlock?: bigint,
 ): Promise<{ result: BatchResult; headKey: Hex; chunks: Hex[]; bytes: number; transactions: number }> {
   const size = MAX_CHUNK_PLAINTEXT - 1024
   // the head carries the header (authors table, chunk keys) as well as data, so its data part is
@@ -2051,6 +2108,7 @@ async function writeSnapshotEntities(
     payload: encodeOuter(epoch, await seal(key, encodeFrame(frame, randomBytes))),
     attributes: { doc, kind: k, seq: head },
     lifetimeSeconds: lifetime,
+    ...(expiresAtBlock !== undefined ? { expiresAtBlock } : {}),
     ...flags,
   })
   const chunkSpecs: CreateSpec[] = []

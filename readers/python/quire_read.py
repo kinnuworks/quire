@@ -1678,24 +1678,39 @@ class Reader:
         """Every address any version of the member list named, as a member or a
         removal, found by walking the list's own history: the version before one
         last changed at block B is the list as it stood at B - 1 (arkiv_getEntity
-        with a block, free). None if some version could not be read or opened."""
+        with a block, free). Extensions change no content, so a version whose exact
+        payload already stood 61 blocks after its qs stamp is skipped back to there.
+        None if a version could not be read or opened; a walk cut short by the read
+        limit keeps what it found and sets audit_narrowed."""
         if self.acl_entity is None:
             return None
         out = set(today)
         version = self.source.entity(self.acl_entity.key)
-        for _ in range(1000):
-            if version is None:
+        reads = 1
+        changed_at = lambda e: e.updated_at if e.updated_at is not None else e.created_at
+        while version is not None:
+            if reads >= 2000:
+                self.audit_narrowed = True
                 return sorted(out)
-            changed = version.updated_at if version.updated_at is not None else version.created_at
+            changed = changed_at(version)
             if changed <= version.created_at:
                 return sorted(out)
+            stamp = version.attr("qs")
+            if isinstance(stamp, int) and changed > stamp + 61:
+                settled = self.past_acl(stamp + 61)
+                reads += 1
+                if settled is False:
+                    return None
+                if isinstance(settled, Entity) and changed_at(settled) < changed and settled.payload == version.payload:
+                    version = settled
+                    continue
             before = self.past_acl(changed - 1)
+            reads += 1
             if before is False:
                 return None
             if before is None:
                 return sorted(out)
-            prior = before.updated_at if before.updated_at is not None else before.created_at
-            if prior >= changed:
+            if changed_at(before) >= changed:
                 return None  # a source without history answers with today's version again
             try:
                 roster = self.roster(self.parse_acl(before))
@@ -1706,7 +1721,7 @@ class Reader:
             members, _added, revoked = membership(roster)
             out |= set(members) | set(revoked)
             version = before
-        return None
+        return sorted(out)
 
     def past_acl(self, block: int) -> Entity | None | bool:
         """The ACL entity as it stood at `block`, None if there was none, or False if

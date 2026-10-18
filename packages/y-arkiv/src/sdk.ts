@@ -137,7 +137,7 @@ export class SdkStore implements ArkivStore {
     const result = await this.wallet.executeBatch({
       creates: spec.creates?.map(toCreate),
       patches: spec.patches?.map((p) => ({ entityKey: p.key, payload: p.payload, contentType: CONTENT_TYPE, set: toAttributes(p.attributes) })),
-      extensions: spec.extensions?.map((x) => ({ entityKey: x.key, expires: ExpirationTime.fromSeconds(x.lifetimeSeconds) })),
+      extensions: spec.extensions?.map((x) => ({ entityKey: x.key, expires: x.expiresAtBlock !== undefined ? ExpirationTime.atBlock(x.expiresAtBlock) : ExpirationTime.fromSeconds(x.lifetimeSeconds) })),
       deletes: spec.deletes?.map((k) => ({ entityKey: k })),
       ownershipChanges: spec.ownershipChanges?.map((o) => ({ entityKey: o.key, newOwner: o.newOwner })),
     })
@@ -209,7 +209,7 @@ function toCreate(c: CreateSpec) {
     payload: c.payload,
     contentType: CONTENT_TYPE,
     attributes: toAttributes(c.attributes),
-    expires: ExpirationTime.fromSeconds(c.lifetimeSeconds),
+    expires: c.expiresAtBlock !== undefined ? ExpirationTime.atBlock(c.expiresAtBlock) : ExpirationTime.fromSeconds(c.lifetimeSeconds),
     flags: { readonly: !!c.readonly, permissionlessExtension: !!c.permissionlessExtension },
     ...(c.salt !== undefined ? { salt: c.salt } : {}),
   }

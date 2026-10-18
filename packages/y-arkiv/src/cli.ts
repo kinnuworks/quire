@@ -13,6 +13,7 @@
  *   y-arkiv check-signature <address> '<message>' <signature>
  *                                           check a "Prove this key is yours" signature from the app
  *
+ *   --at <block>           read the document as it stood at that block (still works after the owner deletes it)
  *   QUIRE_KEY=0x…          read as that member: after a removal, the link alone cannot open the sealed roster
  *   --rpc <url> --ws <url> use your own Arkiv node instead of the public endpoint
  *   ARKIV_ACCESS_KEY=…     raise the public endpoint's query budget
@@ -22,7 +23,7 @@ import { verifyMessage } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
 import { blame, compositionTimeline } from "./blame.js"
-import { ArkivProvider, extendVersion } from "./provider.js"
+import { ArkivProvider, atBlockStore, extendVersion } from "./provider.js"
 import { parseDocLink, parseVersionLink } from "./link.js"
 import { SdkStore } from "./sdk.js"
 import type { ArkivStore } from "./store.js"
@@ -53,6 +54,9 @@ async function main() {
     return v
   }
   const httpUrl = flag("--rpc")
+  const atRaw = flag("--at")
+  if (atRaw !== undefined && !/^[0-9]{1,20}$/.test(atRaw)) fail("--at takes a block number")
+  const at = atRaw === undefined ? undefined : BigInt(atRaw)
   const wsUrl = flag("--ws")
   // half a custom node would still send document ids to the public WebSocket endpoint
   if (!!httpUrl !== !!wsUrl) fail("pass --rpc and --ws together, so every request goes to the node you chose")
@@ -61,7 +65,7 @@ async function main() {
       "usage: y-arkiv read|watch|verify|blame|timeline '<document link>'\n" +
         "       y-arkiv extend '<version link>'          (QUIRE_KEY=a funded key)\n" +
         "       y-arkiv check-signature <address> '<message>' <signature>\n" +
-        "options: --rpc <url> --ws <url>; QUIRE_KEY to read as a member; ARKIV_ACCESS_KEY for more queries",
+        "options: --at <block> to read the past; --rpc <url> --ws <url>; QUIRE_KEY to read as a member; ARKIV_ACCESS_KEY for more queries",
     )
   if (cmd === "check-signature") {
     const [, address, message, signature] = args
@@ -95,11 +99,16 @@ async function main() {
   const audit = cmd === "blame" || cmd === "timeline"
   // only watch needs live events: the one-shot commands never open a WebSocket, so they spend none of
   // this IP's handshake allowance and print no socket noise
+  if (at !== undefined && cmd === "watch") fail("--at reads the past; watch follows the present")
   const reads: ArkivStore =
-    cmd === "watch"
-      ? store
-      : { address: undefined, head: () => store.head(), batch: (b) => store.batch(b), predictKeys: (n) => store.predictKeys(n), query: (q) => store.query(q), get: (k, b) => store.get(k, b), watch: () => () => undefined }
-  const provider = new ArkivProvider(doc, { store: reads, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit, membershipAtBlock: audit })
+    at !== undefined
+      ? atBlockStore(store, at)
+      : cmd === "watch"
+        ? store
+        : { address: undefined, head: () => store.head(), batch: (b) => store.batch(b), predictKeys: (n) => store.predictKeys(n), query: (q) => store.query(q), get: (k, b) => store.get(k, b), watch: () => () => undefined }
+  // every command checks members at each edit's block (the provider's default), so read, verify, blame
+  // and the app all reach the same verdict
+  const provider = new ArkivProvider(doc, { store: reads, link, identity, readOnly: true, flushIntervalMs: 0, autoCompact: false, resyncIntervalMs: 0, fullHistory: audit })
   // a refused WebSocket (the gateway rate-limits handshakes) only matters to watch; say so once, quietly
   let warned = false
   provider.on("error", () => {
@@ -204,8 +213,8 @@ async function main() {
 /** How the audit checked membership, for blame and timeline. */
 function audited(provider: ArkivProvider): string {
   const read = provider.auditNarrowed
-    ? "members    checked at each edit's block, but over 1000 update entities exist (anyone can write junk under the document id), so only today's members and removed members were read"
-    : "members    every update read, each author checked against the member list as it stood at that edit's block"
+    ? "members    checked at each edit's block, but the member list's history could not be walked to its start (too long, or a version could not be read), so edits were read only from the addresses found and from today's members and removed members"
+    : "members    edits read from every address any version of the member list named, each author checked against the list as it stood at that edit's block"
   const unchecked = provider.auditUnchecked
     ? `\nunchecked  ${provider.auditUnchecked} ${provider.auditUnchecked === 1 ? "edit" : "edits"}: the member list at that block could not be read (three failed tries) or opened (sealed under a key this reader lacks), so today's list decided`
     : ""

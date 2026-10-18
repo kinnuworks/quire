@@ -227,11 +227,14 @@ def rpc_call(url: str, method: str, params: list[Any]) -> Any:
     return reply.get("result")
 
 
-def query_all(url: str, query: str, max_pages: int | None = None) -> list[dict[str, Any]]:
+def query_all(url: str, query: str, max_pages: int | None = None, at_block: int | None = None) -> list[dict[str, Any]]:
     """Run arkiv_query, following cursors with atBlock pinned to page one.
     `max_pages=1` reads one page of 200, for queries anyone can flood
-    (join requests, the outside-writes scan)."""
+    (join requests, the outside-writes scan). `at_block` reads the chain as
+    it stood at that block."""
     options: dict[str, Any] = {"select": SELECT_ALL, "limit": "0xc8"}
+    if at_block is not None:
+        options["atBlock"] = hex(at_block)
     rows: list[dict[str, Any]] = []
     pages = 0
     while True:

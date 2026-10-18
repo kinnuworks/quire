@@ -19,7 +19,7 @@ import { privateKeyToAccount } from "viem/accounts"
 import * as Y from "yjs"
 import { blame } from "../src/blame.js"
 import { parseDocLink } from "../src/link.js"
-import { ArkivProvider } from "../src/provider.js"
+import { ArkivProvider, atBlockStore } from "../src/provider.js"
 import { SdkStore } from "../src/sdk.js"
 import type { ArkivStore, Hex } from "../src/store.js"
 import { vectorStore } from "../src/vectors.js"
@@ -74,6 +74,7 @@ for (const f of readdirSync(casesDir).filter((x) => x.endsWith(".json")).sort())
   const member = c.memberKey ? ["--member-key", c.memberKey] : []
   cases.push({ name: `case ${f.replace(/\.json$/, "")}`, ts: () => typescript(vectorStore(c), c.link, c.memberKey), py: () => pythonReader(["--vectors", casesDir + f, ...member]) })
 }
+let pastBlock: bigint | undefined
 if (!offline) {
   const live = () => new SdkStore({ accessKey: process.env.ARKIV_ACCESS_KEY })
   cases.push(
@@ -81,6 +82,12 @@ if (!offline) {
     { name: "live revocation demo", ts: () => typescript(live(), demo.revoked.link), py: () => pythonReader(["--link", demo.revoked.link]) },
     // the audit: every update, each author checked against the member list as it stood at that edit's block
     { name: "live open demo, audit", ts: () => typescript(live(), demo.open.link, undefined, true), py: () => pythonReader(["--link", demo.open.link, "--audit"]) },
+    // pinned to a past block with atBlock, as a reader would after the owner deleted the document
+    {
+      name: "live open demo, 100 blocks ago",
+      ts: async () => typescript(atBlockStore(live(), (pastBlock ??= (await live().head()) - 100n)), demo.open.link),
+      py: () => pythonReader(["--link", demo.open.link, "--at", String(pastBlock)]),
+    },
   )
 }
 

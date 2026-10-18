@@ -993,15 +993,18 @@ class RpcSource(Source):
 
     has_history = True
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, at_block: int | None = None) -> None:
         self.url = url
+        # every query and read by key pinned to this block: the document as it stood then, which still
+        # works after the owner deletes it, for as long as the node keeps past state
+        self.at_block = at_block
 
     @staticmethod
     def _base(doc: str, kind: str) -> str:
         return f"qp = str('quire1') AND qd = bytes32({doc.lower()}) AND qk = str('{kind}')"
 
     def _run(self, query: str, max_pages: int | None = None) -> list[Entity]:
-        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query, max_pages)) if well_formed(e)]
+        return [e for e in (qa.parse_entity(r) for r in qa.query_all(self.url, query, max_pages, self.at_block)) if well_formed(e)]
 
     def acl(self, doc: str, owner: str) -> list[Entity]:
         return self._run(self._base(doc, "a") + f" AND $creator = addr({owner})")
@@ -1025,6 +1028,8 @@ class RpcSource(Source):
         return self._run(query, max_pages=1 if kind == "j" and creators is None else None)
 
     def head(self) -> int:
+        if self.at_block is not None:
+            return self.at_block
         return qa._int(qa.rpc_call(self.url, "eth_blockNumber", []))
 
     def entity_at(self, key: str, block: int) -> Entity | None:
@@ -1037,6 +1042,8 @@ class RpcSource(Source):
         return es, len(es) < max_pages * 200
 
     def entity(self, key: str) -> Entity | None:
+        if self.at_block is not None:
+            return self.entity_at(key, self.at_block)
         raw = qa.get_entity(self.url, key)
         e = qa.parse_entity(raw) if raw else None
         return e if e is not None and well_formed(e) else None
@@ -2259,6 +2266,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--own-salt", help="your writing session's salt (32 hex): refuse snapshots that write"
                     " under your own client id beyond your verified updates; needs --member-key")
     ap.add_argument("--verify", action="store_true", help="print a trust report instead of the text")
+    ap.add_argument("--at", type=int, help="read the document as it stood at this block (still works after the owner deletes it); --rpc only")
     ap.add_argument("--audit", action="store_true", help="read every update and check each author against the member list as it"
                     " stood at that edit's block (arkiv_getEntity with a block), which the owner cannot rewrite; --rpc only")
     ap.add_argument("--json", action="store_true", help="print the verdict as JSON (text, applied, ignored), for comparing readers")
@@ -2275,7 +2283,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             head = data.get("head")
             source: Source = VectorSource(entities, int(head) if isinstance(head, str) and head.isdigit() else None)
         else:
-            data, source = {}, RpcSource(args.rpc)
+            data, source = {}, RpcSource(args.rpc, args.at)
         schemas = Schemas(enabled=not args.no_schema)
         if args.version_link:
             vresult = read_version(parse_version_link(args.version_link), source, schemas)
